@@ -3,7 +3,7 @@ use std::{cell::RefCell, rc::Rc};
 use gpui::ClipboardItem;
 use gpui_text_input::{
     TextInput, TextInputEnterKey, TextInputEvent, TextInputMode, TextInputOptions,
-    TextInputSingleLineVerticalKey, ensure_text_input_bindings,
+    TextInputRetainedCounts, TextInputSingleLineVerticalKey, ensure_text_input_bindings,
 };
 
 #[gpui::test]
@@ -49,6 +49,42 @@ fn lib_docs_widget_example_is_covered_by_nextest(cx: &mut gpui::TestAppContext) 
         assert_eq!(input.text(), "");
         assert_eq!(input.state().mode(), TextInputMode::SingleLine);
     });
+}
+
+#[gpui::test]
+fn widget_retained_counts_forward_state_and_include_layout_cache(cx: &mut gpui::TestAppContext) {
+    let (input, _) = cx.add_window_view(|_, cx| TextInput::new("abc", "Value", cx));
+
+    input.read_with(cx, |input, _| {
+        assert_eq!(
+            input.retained_counts(),
+            TextInputRetainedCounts {
+                current_text_bytes: "abc".len(),
+                widget_layout_line_count: Some(1),
+                widget_visual_line_count: Some(1),
+                widget_visible_text_bytes: Some("abc".len()),
+                ..TextInputRetainedCounts::default()
+            }
+        );
+    });
+}
+
+#[gpui::test]
+fn widget_clear_edit_history_forwards_to_state(cx: &mut gpui::TestAppContext) {
+    let (input, cx) = cx.add_window_view(|window, cx| {
+        let mut input = TextInput::new("", "Value", cx);
+        input.focus(window, cx);
+        input
+    });
+
+    cx.simulate_input("draft");
+    input.update(cx, |input, cx| {
+        input.clear_edit_history();
+        cx.notify();
+    });
+
+    cx.simulate_keystrokes("ctrl-z");
+    input.read_with(cx, |input, _| assert_eq!(input.text(), "draft"));
 }
 
 #[gpui::test]

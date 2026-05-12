@@ -70,6 +70,17 @@
 //! assert_eq!(selection.display_text(), "See [A]");
 //! assert_eq!(selection.copy_text(), "See [Attachment A]");
 //! ```
+//!
+//! Retained-count diagnostics expose app-neutral lower-bound byte counts:
+//!
+//! ```
+//! use gpui_text_input::{TextInputOptions, TextInputState};
+//!
+//! let input = TextInputState::new("draft", TextInputOptions::single_line());
+//! let counts = input.retained_counts();
+//!
+//! assert_eq!(counts.current_text_bytes, "draft".len());
+//! ```
 
 mod actions;
 mod atom;
@@ -94,7 +105,7 @@ pub use atom::{
 };
 pub use change::TextInputChange;
 pub use options::{TextInputMode, TextInputOptions};
-pub use state::TextInputState;
+pub use state::{TextInputRetainedCounts, TextInputState};
 pub use widget::{
     TextInput, TextInputAtomClipboardPolicy, TextInputCommand, TextInputEnterKey, TextInputEvent,
     TextInputRichPastePolicy, TextInputSelection, TextInputSingleLineVerticalKey, TextInputTheme,

@@ -12,6 +12,46 @@ use crate::{
     newline::normalize_text,
 };
 
+/// Lower-bound retained byte and item counts for a text input.
+///
+/// Byte counts include UTF-8 string contents that this crate can observe, but
+/// exclude allocator, collection, GPUI shaper, and host-owned overhead.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct TextInputRetainedCounts {
+    /// Bytes in the current normalized text buffer.
+    pub current_text_bytes: usize,
+    /// Number of current opaque atom ranges.
+    pub current_atom_count: usize,
+    /// Bytes in current atom host-owned ids.
+    pub current_atom_id_bytes: usize,
+    /// Bytes in current atom visible display text ranges.
+    pub current_atom_display_bytes: usize,
+    /// Bytes in current atom fallback copy text.
+    pub current_atom_copy_text_bytes: usize,
+    /// Number of undo snapshots retained by the state.
+    pub undo_snapshot_count: usize,
+    /// Number of redo snapshots retained by the state.
+    pub redo_snapshot_count: usize,
+    /// Text bytes retained by undo snapshots.
+    pub undo_text_bytes: usize,
+    /// Text bytes retained by redo snapshots.
+    pub redo_text_bytes: usize,
+    /// Atom ranges retained by undo snapshots.
+    pub undo_atom_count: usize,
+    /// Atom ranges retained by redo snapshots.
+    pub redo_atom_count: usize,
+    /// Bytes retained by undo snapshot atom ids, display ranges, and copy text.
+    pub undo_atom_bytes: usize,
+    /// Bytes retained by redo snapshot atom ids, display ranges, and copy text.
+    pub redo_atom_bytes: usize,
+    /// Logical line layouts cached by a widget, when available.
+    pub widget_layout_line_count: Option<usize>,
+    /// Wrapped visual lines cached by a widget, when available.
+    pub widget_visual_line_count: Option<usize>,
+    /// Bytes in the visible text range from a widget's last layout, when available.
+    pub widget_visible_text_bytes: Option<usize>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct EditSnapshot {
     pub(crate) text: String,
@@ -76,8 +116,7 @@ impl TextInputState {
     pub fn reset_text(&mut self, text: impl Into<String>) -> bool {
         let text = normalize_text(&text.into(), self.options.mode());
         let cursor = text.len();
-        self.undo_stack.clear();
-        self.redo_stack.clear();
+        self.clear_edit_history();
 
         if self.text == text
             && self.selected_range == (cursor..cursor)
@@ -94,6 +133,12 @@ impl TextInputState {
         self.marked_range = None;
         self.atoms.clear();
         true
+    }
+
+    /// Clears undo and redo snapshots without changing the current buffer.
+    pub fn clear_edit_history(&mut self) {
+        self.undo_stack.clear();
+        self.redo_stack.clear();
     }
 
     /// Returns the current normalized selection range.
@@ -114,6 +159,34 @@ impl TextInputState {
     /// Returns opaque inline atom ranges in display-text order.
     pub fn atoms(&self) -> &[TextInputAtom] {
         &self.atoms
+    }
+
+    /// Returns lower-bound retained byte and item counts for diagnostics.
+    pub fn retained_counts(&self) -> TextInputRetainedCounts {
+        let mut counts = TextInputRetainedCounts {
+            current_text_bytes: self.text.len(),
+            current_atom_count: self.atoms.len(),
+            current_atom_id_bytes: atom_id_bytes(&self.atoms),
+            current_atom_display_bytes: atom_display_bytes(&self.text, &self.atoms),
+            current_atom_copy_text_bytes: atom_copy_text_bytes(&self.atoms),
+            undo_snapshot_count: self.undo_stack.len(),
+            redo_snapshot_count: self.redo_stack.len(),
+            ..TextInputRetainedCounts::default()
+        };
+
+        for snapshot in &self.undo_stack {
+            counts.undo_text_bytes += snapshot.text.len();
+            counts.undo_atom_count += snapshot.atoms.len();
+            counts.undo_atom_bytes += snapshot_atom_bytes(snapshot);
+        }
+
+        for snapshot in &self.redo_stack {
+            counts.redo_text_bytes += snapshot.text.len();
+            counts.redo_atom_count += snapshot.atoms.len();
+            counts.redo_atom_bytes += snapshot_atom_bytes(snapshot);
+        }
+
+        counts
     }
 
     /// Returns the atom containing `offset`, if any.
@@ -354,21 +427,73 @@ impl TextInputState {
     }
 
     pub(crate) fn push_undo_snapshot(&mut self, snapshot: EditSnapshot) {
-        Self::push_snapshot(&mut self.undo_stack, snapshot, self.options.undo_limit());
+        Self::push_snapshot(
+            &mut self.undo_stack,
+            snapshot,
+            self.options.undo_limit(),
+            self.options.undo_byte_limit(),
+        );
     }
 
     pub(crate) fn push_redo_snapshot(&mut self, snapshot: EditSnapshot) {
-        Self::push_snapshot(&mut self.redo_stack, snapshot, self.options.undo_limit());
+        Self::push_snapshot(
+            &mut self.redo_stack,
+            snapshot,
+            self.options.undo_limit(),
+            self.options.undo_byte_limit(),
+        );
     }
 
-    fn push_snapshot(stack: &mut VecDeque<EditSnapshot>, snapshot: EditSnapshot, limit: usize) {
-        if limit == 0 || stack.back() == Some(&snapshot) {
+    fn push_snapshot(
+        stack: &mut VecDeque<EditSnapshot>,
+        snapshot: EditSnapshot,
+        count_limit: usize,
+        byte_limit: usize,
+    ) {
+        let snapshot_bytes = snapshot_retained_bytes(&snapshot);
+        if count_limit == 0
+            || byte_limit == 0
+            || snapshot_bytes > byte_limit
+            || stack.back() == Some(&snapshot)
+        {
             return;
         }
 
         stack.push_back(snapshot);
-        while stack.len() > limit {
+        while stack.len() > count_limit || snapshots_retained_bytes(stack) > byte_limit {
             stack.pop_front();
         }
     }
+}
+
+fn snapshots_retained_bytes(stack: &VecDeque<EditSnapshot>) -> usize {
+    stack.iter().map(snapshot_retained_bytes).sum()
+}
+
+fn snapshot_retained_bytes(snapshot: &EditSnapshot) -> usize {
+    snapshot.text.len() + snapshot_atom_bytes(snapshot)
+}
+
+fn snapshot_atom_bytes(snapshot: &EditSnapshot) -> usize {
+    atom_id_bytes(&snapshot.atoms)
+        + atom_display_bytes(&snapshot.text, &snapshot.atoms)
+        + atom_copy_text_bytes(&snapshot.atoms)
+}
+
+fn atom_id_bytes(atoms: &[TextInputAtom]) -> usize {
+    atoms.iter().map(|atom| atom.id.len()).sum()
+}
+
+fn atom_display_bytes(text: &str, atoms: &[TextInputAtom]) -> usize {
+    atoms
+        .iter()
+        .map(|atom| {
+            text.get(atom.range.clone())
+                .map_or(atom.range.len(), str::len)
+        })
+        .sum()
+}
+
+fn atom_copy_text_bytes(atoms: &[TextInputAtom]) -> usize {
+    atoms.iter().map(|atom| atom.copy_text.len()).sum()
 }

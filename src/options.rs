@@ -13,11 +13,14 @@ pub struct TextInputOptions {
     mode: TextInputMode,
     read_only: bool,
     undo_limit: usize,
+    undo_byte_limit: usize,
 }
 
 impl TextInputOptions {
     /// Default maximum undo snapshots retained by a field.
     pub const DEFAULT_UNDO_LIMIT: usize = 128;
+    /// Default maximum bytes retained by each undo or redo stack.
+    pub const DEFAULT_UNDO_BYTE_LIMIT: usize = 4 * 1024 * 1024;
 
     /// Creates editable single-line input options.
     pub const fn single_line() -> Self {
@@ -25,6 +28,7 @@ impl TextInputOptions {
             mode: TextInputMode::SingleLine,
             read_only: false,
             undo_limit: Self::DEFAULT_UNDO_LIMIT,
+            undo_byte_limit: Self::DEFAULT_UNDO_BYTE_LIMIT,
         }
     }
 
@@ -42,6 +46,7 @@ impl TextInputOptions {
             mode: TextInputMode::Multiline,
             read_only: false,
             undo_limit: Self::DEFAULT_UNDO_LIMIT,
+            undo_byte_limit: Self::DEFAULT_UNDO_BYTE_LIMIT,
         }
     }
 
@@ -60,6 +65,11 @@ impl TextInputOptions {
         self.undo_limit
     }
 
+    /// Returns the configured byte limit for each undo or redo stack.
+    pub const fn undo_byte_limit(self) -> usize {
+        self.undo_byte_limit
+    }
+
     /// Sets read-only behavior.
     pub const fn with_read_only(mut self, read_only: bool) -> Self {
         self.read_only = read_only;
@@ -69,6 +79,14 @@ impl TextInputOptions {
     /// Sets the undo snapshot limit. A zero limit disables undo recording.
     pub const fn with_undo_limit(mut self, undo_limit: usize) -> Self {
         self.undo_limit = undo_limit;
+        self
+    }
+
+    /// Sets the byte limit for each undo or redo stack.
+    ///
+    /// A zero limit disables undo recording.
+    pub const fn with_undo_byte_limit(mut self, undo_byte_limit: usize) -> Self {
+        self.undo_byte_limit = undo_byte_limit;
         self
     }
 }

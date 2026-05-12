@@ -1,5 +1,6 @@
 use gpui_text_input::{
-    TextInputAtom, TextInputAtomError, TextInputOptions, TextInputSelectionAtom, TextInputState,
+    TextInputAtom, TextInputAtomError, TextInputOptions, TextInputRetainedCounts,
+    TextInputSelectionAtom, TextInputState,
 };
 
 #[test]
@@ -231,6 +232,82 @@ fn undo_limit_truncates_old_history() {
 }
 
 #[test]
+fn undo_byte_limit_truncates_old_history() {
+    let mut input =
+        TextInputState::new("", TextInputOptions::single_line().with_undo_byte_limit(6));
+
+    input.paste("aa").expect("first edit");
+    input.paste("bb").expect("second edit");
+    input.paste("cc").expect("third edit");
+    input.paste("dd").expect("fourth edit");
+
+    assert_eq!(input.retained_counts().undo_text_bytes, "aabbcc".len());
+    input.undo().expect("latest retained edit can be undone");
+    assert_eq!(input.text(), "aabbcc");
+    assert!(input.undo().is_none());
+}
+
+#[test]
+fn undo_byte_limit_applies_to_redo_history() {
+    let mut input =
+        TextInputState::new("", TextInputOptions::single_line().with_undo_byte_limit(4));
+
+    input.paste("a").expect("first edit");
+    input.paste("bb").expect("second edit");
+    input.paste("ccc").expect("third edit");
+
+    input.undo().expect("undo restores retained snapshot");
+    assert_eq!(input.text(), "abb");
+    assert!(input.redo().is_none());
+    assert_eq!(input.retained_counts().redo_snapshot_count, 0);
+}
+
+#[test]
+fn zero_undo_byte_limit_disables_undo_recording() {
+    let mut input =
+        TextInputState::new("", TextInputOptions::single_line().with_undo_byte_limit(0));
+
+    input.paste("a").expect("edit changes text");
+
+    assert_eq!(input.text(), "a");
+    assert!(input.undo().is_none());
+    assert_eq!(input.retained_counts().undo_snapshot_count, 0);
+}
+
+#[test]
+fn atom_snapshot_bytes_count_against_undo_byte_limit() {
+    let mut input = TextInputState::new(
+        "x[A]",
+        TextInputOptions::single_line().with_undo_byte_limit(4),
+    );
+    input
+        .set_atoms(vec![TextInputAtom::new(
+            "asset-a",
+            "x".len().."x[A]".len(),
+            "copy",
+        )])
+        .expect("atom range is valid");
+
+    input.paste("!").expect("edit changes text");
+
+    assert_eq!(input.text(), "x[A]!");
+    assert!(input.undo().is_none());
+    assert_eq!(input.retained_counts().undo_snapshot_count, 0);
+}
+
+#[test]
+fn clear_edit_history_keeps_current_text() {
+    let mut input = TextInputState::new("", TextInputOptions::single_line());
+
+    input.paste("draft").expect("edit changes text");
+    input.clear_edit_history();
+
+    assert_eq!(input.text(), "draft");
+    assert!(input.undo().is_none());
+    assert_eq!(input.retained_counts().undo_snapshot_count, 0);
+}
+
+#[test]
 fn builder_read_only_option_rejects_multiline_edits() {
     let mut input = TextInputState::new("a\nb", TextInputOptions::multiline().with_read_only(true));
 
@@ -325,6 +402,67 @@ fn atom_insertions_shift_existing_atoms_and_undo_restores_them() {
     input.undo().expect("undo should restore atom range");
     assert_eq!(input.text(), "x[A]y");
     assert_eq!(input.atoms()[0].range(), "x".len().."x[A]".len());
+}
+
+#[test]
+fn retained_counts_include_current_atoms_and_history_snapshots() {
+    let mut input = TextInputState::new("x[A]y", TextInputOptions::single_line());
+    input
+        .set_atoms(vec![TextInputAtom::new(
+            "a",
+            "x".len().."x[A]".len(),
+            "copy",
+        )])
+        .expect("atom range is valid");
+
+    assert_eq!(
+        input.retained_counts(),
+        TextInputRetainedCounts {
+            current_text_bytes: "x[A]y".len(),
+            current_atom_count: 1,
+            current_atom_id_bytes: "a".len(),
+            current_atom_display_bytes: "[A]".len(),
+            current_atom_copy_text_bytes: "copy".len(),
+            ..TextInputRetainedCounts::default()
+        }
+    );
+
+    input.move_to_offset(1);
+    input.paste("!").expect("edit should record undo snapshot");
+
+    assert_eq!(
+        input.retained_counts(),
+        TextInputRetainedCounts {
+            current_text_bytes: "x![A]y".len(),
+            current_atom_count: 1,
+            current_atom_id_bytes: "a".len(),
+            current_atom_display_bytes: "[A]".len(),
+            current_atom_copy_text_bytes: "copy".len(),
+            undo_snapshot_count: 1,
+            undo_text_bytes: "x[A]y".len(),
+            undo_atom_count: 1,
+            undo_atom_bytes: "a".len() + "[A]".len() + "copy".len(),
+            ..TextInputRetainedCounts::default()
+        }
+    );
+
+    input.undo().expect("undo should record redo snapshot");
+
+    assert_eq!(
+        input.retained_counts(),
+        TextInputRetainedCounts {
+            current_text_bytes: "x[A]y".len(),
+            current_atom_count: 1,
+            current_atom_id_bytes: "a".len(),
+            current_atom_display_bytes: "[A]".len(),
+            current_atom_copy_text_bytes: "copy".len(),
+            redo_snapshot_count: 1,
+            redo_text_bytes: "x![A]y".len(),
+            redo_atom_count: 1,
+            redo_atom_bytes: "a".len() + "[A]".len() + "copy".len(),
+            ..TextInputRetainedCounts::default()
+        }
+    );
 }
 
 #[test]

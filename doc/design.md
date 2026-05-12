@@ -46,6 +46,8 @@ The GPUI widget layer owns focus handling, platform text-input integration, keyb
 
 The widget exposes app-neutral callbacks, events, and key-propagation policies for text-input activity. Those hooks report or delegate baseline text-input activity; they do not encode host commands such as settings apply, conversation submission, color-picker opening, numeric stepping, or backend steering.
 
+Undo and redo history are retained editor mechanics, not host application state. Each stack is bounded by both snapshot count and retained UTF-8 byte budget, and hosts may clear edit history explicitly after accepting or persisting field contents without changing the current buffer.
+
 ## Application Neutrality
 
 The public API uses generic text-input names and value types. It must not expose host application nouns, Codex protocol types, Beryl workspace types, settings-window row types, image-label concepts, or persistence concepts.

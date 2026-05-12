@@ -7,7 +7,7 @@ use gpui::{
 
 use crate::{
     TextInputAtom, TextInputAtomError, TextInputChange, TextInputMode, TextInputOptions,
-    TextInputSelectionAtom, TextInputSelectionExport, TextInputState,
+    TextInputRetainedCounts, TextInputSelectionAtom, TextInputSelectionExport, TextInputState,
 };
 
 mod events;
@@ -173,6 +173,26 @@ impl TextInput {
     /// Returns the current model state.
     pub fn state(&self) -> &TextInputState {
         &self.state
+    }
+
+    /// Returns lower-bound retained byte and item counts for diagnostics.
+    pub fn retained_counts(&self) -> TextInputRetainedCounts {
+        let mut counts = self.state.retained_counts();
+        counts.widget_layout_line_count = Some(self.last_layout.len());
+        counts.widget_visual_line_count = Some(
+            self.last_layout
+                .iter()
+                .map(|line| line.line.wrap_boundaries().len() + 1)
+                .sum(),
+        );
+        counts.widget_visible_text_bytes =
+            Some(visible_text_bytes(self.state.text(), &self.visible_range));
+        counts
+    }
+
+    /// Clears undo and redo snapshots without changing the current buffer.
+    pub fn clear_edit_history(&mut self) {
+        self.state.clear_edit_history();
     }
 
     /// Returns the current visible byte range from the last rendered layout.
@@ -394,4 +414,12 @@ impl Focusable for TextInput {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
     }
+}
+
+fn visible_text_bytes(text: &str, range: &Range<usize>) -> usize {
+    if range.start > range.end {
+        return 0;
+    }
+
+    text.get(range.clone()).map_or(0, str::len)
 }
