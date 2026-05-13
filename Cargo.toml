@@ -9,7 +9,7 @@ rust-version = "1.92"
 version = "0.1.0"
 
 [workspace.dependencies]
-gpui = { git = "https://github.com/berylorg/zed-fork.git", rev = "f2193db331be6424be223f7ea9982c06b978a16a", default-features = false, features = ["windows-manifest"] }
+gpui = { git = "https://github.com/berylorg/zed-fork.git", rev = "c70dbf5244396cea7e627a73ffdcf45f19c9642d", default-features = false, features = ["windows-manifest"] }
 unicode-segmentation = "1.12.0"
 
 [package]
