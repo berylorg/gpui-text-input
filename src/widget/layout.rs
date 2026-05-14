@@ -14,7 +14,7 @@ mod shape;
 pub use shape::wrapped_visual_line_count_for_width;
 
 pub(super) use geometry::{
-    bounds_for_range, index_for_position, max_scroll_y, vertical_target_offset,
+    bounds_for_range, cursor_bounds, index_for_position, max_scroll_y, vertical_target_offset,
 };
 
 use geometry::{
@@ -36,6 +36,7 @@ pub(super) struct BuiltInputLayout {
     pub(super) cursor: Option<PaintQuad>,
     pub(super) scroll_x: Pixels,
     pub(super) scroll_y: Pixels,
+    pub(super) revealed_scroll_y: Pixels,
     pub(super) content_height: Pixels,
     pub(super) visible_range: Range<usize>,
 }
@@ -94,15 +95,29 @@ pub(super) fn build_input_layout(
         .max(line_height);
     let scroll_x =
         desired_horizontal_scroll(mode, &shaped, state, current_scroll_x, bounds, line_height);
-    let scroll_y = desired_vertical_scroll(
+    let clamped_scroll_y = desired_vertical_scroll(
         mode,
         &shaped,
         state,
         current_scroll_y,
         bounds,
         line_height,
-        reveal_cursor,
+        false,
     );
+    let revealed_scroll_y = desired_vertical_scroll(
+        mode,
+        &shaped,
+        state,
+        current_scroll_y,
+        bounds,
+        line_height,
+        true,
+    );
+    let scroll_y = if reveal_cursor {
+        revealed_scroll_y
+    } else {
+        clamped_scroll_y
+    };
     let top = match mode {
         TextInputMode::SingleLine => centered_line_bounds(bounds, line_height).top(),
         TextInputMode::Multiline => bounds.top() - scroll_y,
@@ -144,6 +159,7 @@ pub(super) fn build_input_layout(
         cursor,
         scroll_x,
         scroll_y,
+        revealed_scroll_y,
         content_height,
         visible_range,
     }

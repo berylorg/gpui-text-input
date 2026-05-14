@@ -388,6 +388,7 @@ impl TextInput {
         cx: &mut Context<Self>,
     ) {
         if let Some(change) = change {
+            self.reveal_cursor = true;
             self.emit_selection_changed(cx);
             cx.emit(TextInputEvent::Changed(change));
             cx.notify();

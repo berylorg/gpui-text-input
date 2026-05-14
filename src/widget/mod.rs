@@ -11,6 +11,7 @@ use crate::{
 };
 
 mod events;
+mod geometry_api;
 mod ime;
 mod keyboard;
 mod layout;
@@ -19,6 +20,7 @@ mod theme;
 mod utf16;
 
 pub use events::{TextInputCommand, TextInputEvent, TextInputSelection};
+pub use geometry_api::{TextInputGeometry, TextInputScrollLimits, TextInputVerticalReveal};
 pub use layout::wrapped_visual_line_count_for_width;
 pub use theme::TextInputTheme;
 
@@ -73,6 +75,7 @@ pub struct TextInput {
     rich_paste_policy: TextInputRichPastePolicy,
     last_layout: Vec<InputLineLayout>,
     last_bounds: Option<Bounds<Pixels>>,
+    last_geometry: Option<TextInputGeometry>,
     scroll_x: Pixels,
     scroll_y: Pixels,
     content_height: Pixels,
@@ -131,6 +134,7 @@ impl TextInput {
             rich_paste_policy: TextInputRichPastePolicy::PlainText,
             last_layout: Vec::new(),
             last_bounds: None,
+            last_geometry: None,
             scroll_x: px(0.0),
             scroll_y: px(0.0),
             content_height: px(0.0),
@@ -398,6 +402,13 @@ impl TextInput {
             self.emit_selection_changed(cx);
             cx.notify();
         }
+    }
+
+    fn should_reveal_cursor_for_bounds(&self, bounds: Bounds<Pixels>) -> bool {
+        self.reveal_cursor
+            || self
+                .last_bounds
+                .is_none_or(|last_bounds| last_bounds.size != bounds.size)
     }
 
     fn emit_selection_changed(&self, cx: &mut Context<Self>) {

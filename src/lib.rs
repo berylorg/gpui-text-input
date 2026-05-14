@@ -108,6 +108,7 @@ pub use options::{TextInputMode, TextInputOptions};
 pub use state::{TextInputRetainedCounts, TextInputState};
 pub use widget::{
     TextInput, TextInputAtomClipboardPolicy, TextInputCommand, TextInputEnterKey, TextInputEvent,
-    TextInputRichPastePolicy, TextInputSelection, TextInputSingleLineVerticalKey, TextInputTheme,
+    TextInputGeometry, TextInputRichPastePolicy, TextInputScrollLimits, TextInputSelection,
+    TextInputSingleLineVerticalKey, TextInputTheme, TextInputVerticalReveal,
     wrapped_visual_line_count_for_width,
 };

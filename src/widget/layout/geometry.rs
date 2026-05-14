@@ -151,21 +151,29 @@ pub(super) fn cursor_quad(
     line_height: Pixels,
     caret_color: Hsla,
 ) -> Option<PaintQuad> {
+    Some(fill(
+        cursor_bounds(lines, cursor_offset, line_height)?,
+        caret_color,
+    ))
+}
+
+pub(in crate::widget) fn cursor_bounds(
+    lines: &[InputLineLayout],
+    cursor_offset: usize,
+    line_height: Pixels,
+) -> Option<Bounds<Pixels>> {
     let line = line_for_cursor(lines, cursor_offset)?;
     let local_cursor = cursor_offset
         .saturating_sub(line.range.start)
         .min(line.line.len());
     let cursor_position = local_position_for_index(&line.line, local_cursor, line_height_for(line));
 
-    Some(fill(
-        Bounds::new(
-            point(
-                line.origin.x + cursor_position.x,
-                line.origin.y + cursor_position.y,
-            ),
-            size(px(2.0), line_height),
+    Some(Bounds::new(
+        point(
+            line.origin.x + cursor_position.x,
+            line.origin.y + cursor_position.y,
         ),
-        caret_color,
+        size(px(2.0), line_height),
     ))
 }
 

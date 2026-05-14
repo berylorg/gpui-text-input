@@ -76,6 +76,7 @@ struct PrepaintState {
     lines: Vec<layout::InputLineLayout>,
     cursor: Option<gpui::PaintQuad>,
     selection: Vec<gpui::PaintQuad>,
+    geometry: TextInputGeometry,
     scroll_x: Pixels,
     scroll_y: Pixels,
     content_height: Pixels,
@@ -137,14 +138,16 @@ impl Element for TextInputElement {
             bounds,
             input.scroll_x,
             input.scroll_y,
-            input.reveal_cursor,
+            input.should_reveal_cursor_for_bounds(bounds),
             input.enabled && input.focus_handle.is_focused(window),
             window,
         );
+        let geometry = input.geometry_from_layout(bounds, &layout, window.line_height());
         PrepaintState {
             lines: layout.lines,
             cursor: layout.cursor,
             selection: layout.selection,
+            geometry,
             scroll_x: layout.scroll_x,
             scroll_y: layout.scroll_y,
             content_height: layout.content_height,
@@ -188,6 +191,7 @@ impl Element for TextInputElement {
         self.input.update(cx, |input, _cx| {
             input.last_layout = lines;
             input.last_bounds = Some(bounds);
+            input.last_geometry = Some(prepaint.geometry.clone());
             input.scroll_x = prepaint.scroll_x;
             input.scroll_y = prepaint.scroll_y;
             input.content_height = prepaint.content_height;
