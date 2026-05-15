@@ -26,6 +26,10 @@ It depends directly on `gpui` and exposes an app-neutral public boundary. Consum
 
 The crate owns generic text-input UI mechanics: text storage, cursor and selection state, keyboard editing primitives, pointer selection, IME text range handling, plain-text clipboard behavior, undo and redo state, focus integration, placeholder presentation, single-line layout, multiline layout, scrolling needed for multiline editing, and app-neutral events for text changes or key handling.
 
+Multiline text-input widgets use app-neutral `gpui-scrollbar` primitives for scrollbar chrome, managed visibility and fade behavior, and pointer direct manipulation when measured content overflows vertically. Text-input state remains the owner of text editing, wheel scrolling, keyboard-driven reveal behavior, vertical scroll offset, and scroll-limit clamping; `gpui-scrollbar` receives callback-backed geometry and reports page or drag requests without owning text-input policy.
+
+Scrollbar geometry supplied by multiline text-input widgets is derived from the current authoritative text-input scroll offset and the latest measured scroll limits. Painted geometry may provide bounds and limits, but stale painted offsets must not drive scrollbar thumb position after wheel scrolling or keyboard reveal changes.
+
 The crate supports opaque inline atoms as app-neutral text ranges. Atoms have stable host-owned ids, visible display ranges, and fallback copy text. The crate keeps atom ranges valid across generic text edits, selection, navigation, deletion, undo, redo, and plain clipboard export, but it does not interpret what an atom means or serialize any host domain payload.
 
 Host applications own domain meaning for the text, field validation, settings apply behavior, command submission, transcript quoting, non-text attachments, backend input serialization, storage, and any application-specific clipboard metadata.

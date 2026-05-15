@@ -2,8 +2,10 @@ use std::{cell::RefCell, rc::Rc};
 
 use gpui::prelude::*;
 use gpui::{
-    Bounds, ClipboardItem, Entity, IntoElement, Pixels, Render, Window, div, point, px, size,
+    Bounds, ClipboardItem, Entity, IntoElement, Modifiers, MouseButton, Pixels, Render,
+    ScrollDelta, ScrollWheelEvent, Window, div, point, px, size,
 };
+use gpui_scrollbar::{ScrollbarStyle, scrollbar_metrics, scrollbar_track_geometry};
 use gpui_text_input::{
     TextInput, TextInputAtom, TextInputEnterKey, TextInputEvent, TextInputGeometry, TextInputMode,
     TextInputOptions, TextInputRetainedCounts, TextInputSingleLineVerticalKey,
@@ -270,6 +272,10 @@ fn keyboard_newline_reveals_active_endpoint_under_capped_overflow(cx: &mut gpui:
 
         assert!(geometry.scroll_limits.max_y > px(0.0));
         assert_eq!(geometry.scroll_offset.y, reveal.scroll_y);
+        assert_eq!(
+            input.vertical_scrollbar_scroll_y_for_test(),
+            Some(reveal.scroll_y)
+        );
         assert_active_endpoint_visible(&geometry);
     });
 }
@@ -372,6 +378,190 @@ fn cached_geometry_exposes_last_painted_range_and_scroll_data(cx: &mut gpui::Tes
     });
 }
 
+#[gpui::test]
+fn single_line_input_has_no_scrollbar_visibility_state(cx: &mut gpui::TestAppContext) {
+    let (input, _) = cx.add_window_view(|_, cx| TextInput::new("short", "Name", cx));
+
+    input.read_with(cx, |input, _| {
+        assert!(!input.has_vertical_scrollbar_visibility_state_for_test());
+        assert!(!input.vertical_scrollbar_active_for_test());
+    });
+}
+
+#[gpui::test]
+fn multiline_without_overflow_does_not_activate_scrollbar(cx: &mut gpui::TestAppContext) {
+    let (input, cx) = fixed_multiline_input(cx, "short", input_bounds(300.0, 200.0));
+
+    cx.update(|window, app| {
+        input.update(app, |input, cx| {
+            input.record_vertical_scrollbar_activity_for_test(window, cx);
+        });
+    });
+
+    input.read_with(cx, |input, _| {
+        assert!(input.has_vertical_scrollbar_visibility_state_for_test());
+        assert!(!input.vertical_scrollbar_active_for_test());
+    });
+}
+
+#[gpui::test]
+fn multiline_scrollbar_visibility_is_per_input(cx: &mut gpui::TestAppContext) {
+    let text = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda ".repeat(120);
+    let first_text = text.clone();
+    let second_text = text;
+    let bounds = input_bounds(90.0, 48.0);
+    let (view, cx) = cx.add_window_view(|_, cx| {
+        let first = cx.new(|cx| TextInput::multiline(first_text, "First", cx));
+        let second = cx.new(|cx| TextInput::multiline(second_text, "Second", cx));
+
+        PairInputView {
+            first,
+            second,
+            bounds,
+        }
+    });
+    let (first, second) = view.read_with(cx, |view, _| (view.first.clone(), view.second.clone()));
+
+    cx.update(|window, app| {
+        first.update(app, |input, cx| {
+            input.record_vertical_scrollbar_activity_for_test(window, cx);
+        });
+    });
+
+    first.read_with(cx, |input, _| {
+        assert!(input.vertical_scrollbar_active_for_test());
+    });
+    second.read_with(cx, |input, _| {
+        assert!(!input.vertical_scrollbar_active_for_test());
+    });
+}
+
+#[gpui::test]
+fn multiline_scroll_wheel_records_scrollbar_activity(cx: &mut gpui::TestAppContext) {
+    let text = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda ".repeat(120);
+    let (input, cx) = capped_multiline_input(cx, text);
+    force_input_rerender(&input, cx);
+
+    let (position, before) = input.read_with(cx, |input, _| {
+        let geometry = input.geometry().expect("painted geometry");
+        assert!(!input.vertical_scrollbar_active_for_test());
+        (
+            point(
+                geometry.bounds.left() + px(4.0),
+                geometry.bounds.top() + px(4.0),
+            ),
+            geometry.scroll_offset.y,
+        )
+    });
+    assert!(before > px(0.0));
+
+    cx.simulate_event(ScrollWheelEvent {
+        position,
+        delta: ScrollDelta::Pixels(point(px(0.0), px(10.0))),
+        ..Default::default()
+    });
+
+    input.read_with(cx, |input, _| {
+        assert!(input.scroll_offset().y < before);
+        assert!(input.vertical_scrollbar_active_for_test());
+    });
+}
+
+#[gpui::test]
+fn multiline_scrollbar_state_tracks_wheel_clamped_edges_without_hover(
+    cx: &mut gpui::TestAppContext,
+) {
+    let text = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda ".repeat(120);
+    let (input, cx) = capped_multiline_input(cx, text);
+    force_input_rerender(&input, cx);
+
+    let position = input.read_with(cx, |input, _| {
+        let geometry = input.geometry().expect("painted geometry");
+        assert!(geometry.scroll_limits.max_y > px(0.0));
+        assert!(input.scroll_offset().y > px(0.0));
+        assert_eq!(
+            input.vertical_scrollbar_scroll_y_for_test(),
+            Some(input.scroll_offset().y)
+        );
+        point(
+            geometry.bounds.left() + px(4.0),
+            geometry.bounds.top() + px(4.0),
+        )
+    });
+
+    cx.simulate_event(ScrollWheelEvent {
+        position,
+        delta: ScrollDelta::Pixels(point(px(0.0), px(1_000_000.0))),
+        ..Default::default()
+    });
+
+    input.read_with(cx, |input, _| {
+        assert_eq!(input.scroll_offset().y, px(0.0));
+        assert_eq!(input.vertical_scrollbar_scroll_y_for_test(), Some(px(0.0)));
+    });
+
+    cx.simulate_event(ScrollWheelEvent {
+        position,
+        delta: ScrollDelta::Pixels(point(px(0.0), px(-1_000_000.0))),
+        ..Default::default()
+    });
+
+    input.read_with(cx, |input, _| {
+        let max_y = input.scroll_limits().expect("scroll limits").max_y;
+        assert!(max_y > px(0.0));
+        assert_eq!(input.scroll_offset().y, max_y);
+        assert_eq!(input.vertical_scrollbar_scroll_y_for_test(), Some(max_y));
+    });
+}
+
+#[gpui::test]
+fn rendered_multiline_scrollbar_page_click_scrolls_text_state(cx: &mut gpui::TestAppContext) {
+    let text = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda ".repeat(120);
+    let (input, cx) = capped_multiline_input(cx, text);
+    force_input_rerender(&input, cx);
+
+    let (bounds, before, max_y, click_position) = input.read_with(cx, |input, _| {
+        let geometry = input.geometry().expect("painted geometry");
+        let style = ScrollbarStyle::default();
+        let metrics = scrollbar_metrics(
+            style.geometry,
+            geometry.bounds.size.height,
+            geometry.scroll_limits.max_y,
+            geometry.scroll_offset.y,
+        )
+        .expect("overflow should render scrollbar metrics");
+        let track = scrollbar_track_geometry(style.geometry, geometry.bounds.size.height, metrics)
+            .expect("metrics should produce track geometry");
+
+        (
+            geometry.bounds,
+            geometry.scroll_offset.y,
+            geometry.scroll_limits.max_y,
+            point(
+                geometry.bounds.right() - px(1.0),
+                track.thumb_start - px(1.0),
+            ),
+        )
+    });
+
+    assert!(before > px(0.0));
+    input.read_with(cx, |input, _| {
+        assert!(!input.vertical_scrollbar_active_for_test());
+    });
+
+    cx.simulate_mouse_move(click_position, None::<MouseButton>, Modifiers::none());
+    input.read_with(cx, |input, _| {
+        assert!(input.vertical_scrollbar_active_for_test());
+    });
+
+    cx.simulate_click(click_position, Modifiers::none());
+
+    input.read_with(cx, |input, _| {
+        let after = input.scroll_offset().y;
+        assert_eq!(after, (before - bounds.size.height).clamp(px(0.0), max_y));
+    });
+}
+
 fn input_bounds(width: f32, height: f32) -> Bounds<Pixels> {
     Bounds::new(point(px(0.0), px(0.0)), size(px(width), px(height)))
 }
@@ -380,22 +570,30 @@ fn capped_multiline_input(
     cx: &mut gpui::TestAppContext,
     text: impl Into<String>,
 ) -> (Entity<TextInput>, &mut gpui::VisualTestContext) {
-    let text = text.into();
+    fixed_multiline_input(cx, text, input_bounds(90.0, 48.0))
+}
+
+fn fixed_multiline_input(
+    cx: &mut gpui::TestAppContext,
+    text: impl Into<String>,
+    bounds: Bounds<Pixels>,
+) -> (Entity<TextInput>, &mut gpui::VisualTestContext) {
     let (view, cx) = cx.add_window_view(|window, cx| {
         let input = cx.new(|cx| {
-            let mut input = TextInput::multiline(text, "Body", cx);
+            let mut input = TextInput::multiline(text.into(), "Body", cx);
             input.focus(window, cx);
             input
         });
 
-        FixedInputView {
-            input,
-            bounds: input_bounds(90.0, 48.0),
-        }
+        FixedInputView { input, bounds }
     });
     let input = view.read_with(cx, |view, _| view.input.clone());
 
     (input, cx)
+}
+
+fn force_input_rerender(input: &Entity<TextInput>, cx: &mut gpui::VisualTestContext) {
+    input.update(cx, |_, cx| cx.notify());
 }
 
 fn assert_active_endpoint_visible(geometry: &TextInputGeometry) {
@@ -418,5 +616,29 @@ impl Render for FixedInputView {
             .w(self.bounds.size.width)
             .h(self.bounds.size.height)
             .child(self.input.clone())
+    }
+}
+
+struct PairInputView {
+    first: Entity<TextInput>,
+    second: Entity<TextInput>,
+    bounds: Bounds<Pixels>,
+}
+
+impl Render for PairInputView {
+    fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+        div()
+            .child(
+                div()
+                    .w(self.bounds.size.width)
+                    .h(self.bounds.size.height)
+                    .child(self.first.clone()),
+            )
+            .child(
+                div()
+                    .w(self.bounds.size.width)
+                    .h(self.bounds.size.height)
+                    .child(self.second.clone()),
+            )
     }
 }

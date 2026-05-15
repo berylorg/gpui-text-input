@@ -4,6 +4,7 @@ use gpui::{
     App, Bounds, Context, EntityInputHandler, EventEmitter, FocusHandle, Focusable, Pixels, Point,
     SharedString, UTF16Selection, Window, point, px,
 };
+use gpui_scrollbar::ScrollbarVisibilityState;
 
 use crate::{
     TextInputAtom, TextInputAtomError, TextInputChange, TextInputMode, TextInputOptions,
@@ -78,6 +79,7 @@ pub struct TextInput {
     last_geometry: Option<TextInputGeometry>,
     scroll_x: Pixels,
     scroll_y: Pixels,
+    vertical_scrollbar_visibility: Option<ScrollbarVisibilityState>,
     content_height: Pixels,
     visible_range: Range<usize>,
     reveal_cursor: bool,
@@ -122,6 +124,7 @@ impl TextInput {
     ) -> Self {
         let state = TextInputState::new(initial_value, options);
         let cursor = state.cursor_offset();
+        let mode = state.mode();
         Self {
             focus_handle: cx.focus_handle(),
             state,
@@ -137,6 +140,8 @@ impl TextInput {
             last_geometry: None,
             scroll_x: px(0.0),
             scroll_y: px(0.0),
+            vertical_scrollbar_visibility: (mode == TextInputMode::Multiline)
+                .then(ScrollbarVisibilityState::new),
             content_height: px(0.0),
             visible_range: cursor..cursor,
             reveal_cursor: true,
@@ -207,6 +212,33 @@ impl TextInput {
     /// Returns the current scroll offset from the last rendered layout.
     pub fn scroll_offset(&self) -> Point<Pixels> {
         point(self.scroll_x, self.scroll_y)
+    }
+
+    #[doc(hidden)]
+    pub fn has_vertical_scrollbar_visibility_state_for_test(&self) -> bool {
+        self.vertical_scrollbar_visibility.is_some()
+    }
+
+    #[doc(hidden)]
+    pub fn vertical_scrollbar_active_for_test(&self) -> bool {
+        self.vertical_scrollbar_visibility
+            .as_ref()
+            .is_some_and(|visibility| visibility.opacity() > 0.0 || visibility.is_animating())
+    }
+
+    #[doc(hidden)]
+    pub fn vertical_scrollbar_scroll_y_for_test(&self) -> Option<Pixels> {
+        self.vertical_scrollbar_state()
+            .map(|state| state.scroll_offset.y)
+    }
+
+    #[doc(hidden)]
+    pub fn record_vertical_scrollbar_activity_for_test(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.note_vertical_scrollbar_activity(window, cx);
     }
 
     /// Returns whether the widget accepts focus and text input.

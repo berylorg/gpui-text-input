@@ -341,9 +341,11 @@ impl TextInput {
     pub(super) fn on_mouse_move(
         &mut self,
         event: &gpui::MouseMoveEvent,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.note_vertical_scrollbar_activity(window, cx);
+
         if !self.is_selecting || !event.dragging() {
             return;
         }
@@ -378,6 +380,7 @@ impl TextInput {
 
         self.scroll_y = next;
         self.reveal_cursor = false;
+        self.note_vertical_scrollbar_activity(window, cx);
         cx.notify();
     }
 
