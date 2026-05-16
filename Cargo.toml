@@ -10,7 +10,7 @@ version = "0.1.0"
 
 [workspace.dependencies]
 gpui = { git = "https://github.com/berylorg/zed-fork.git", rev = "fabbb607f5aff9e69ef6f09d423c5264bee4c9a8", default-features = false, features = ["windows-manifest"] }
-gpui-scrollbar = { git = "https://github.com/berylorg/gpui-scrollbar.git", rev = "edd402c0cc62181bf0510fee9355b3a804bb399c" }
+gpui-scrollbar = { git = "https://github.com/berylorg/gpui-scrollbar.git", rev = "e5c46bacce26c86458f30e11d31b428282dad373" }
 unicode-segmentation = "1.12.0"
 
 [package]
