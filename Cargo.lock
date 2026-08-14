@@ -2067,7 +2067,7 @@ dependencies = [
 [[package]]
 name = "gpui-scrollbar"
 version = "0.1.0"
-source = "git+https://github.com/berylorg/gpui-scrollbar.git?rev=89ea0f7cc5b17fe49d1fe4f4f79396edd2362e19#89ea0f7cc5b17fe49d1fe4f4f79396edd2362e19"
+source = "git+https://github.com/berylorg/gpui-scrollbar.git?rev=ae6302fafa26e5ffea4604b66ff6758c7abf2e0f#ae6302fafa26e5ffea4604b66ff6758c7abf2e0f"
 dependencies = [
  "gpui",
 ]
