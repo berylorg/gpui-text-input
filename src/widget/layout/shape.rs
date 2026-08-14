@@ -2,10 +2,10 @@ use std::ops::Range;
 
 use gpui::{Font, Hsla, Pixels, SharedString, TextRun, UnderlineStyle, Window, WrappedLine, px};
 
-pub(super) struct ShapedLogicalLine {
-    pub(super) range: Range<usize>,
-    pub(super) line: WrappedLine,
-    pub(super) block_height: Pixels,
+pub(crate) struct ShapedLogicalLine {
+    pub(crate) range: Range<usize>,
+    pub(crate) line: WrappedLine,
+    pub(crate) block_height: Pixels,
 }
 
 pub fn wrapped_visual_line_count_for_width(
@@ -47,7 +47,7 @@ pub fn wrapped_visual_line_count_for_width(
         .unwrap_or(1)
 }
 
-pub(super) fn shape_logical_lines(
+pub(crate) fn shape_logical_lines(
     text: &str,
     placeholder: &SharedString,
     marked_range: Option<&Range<usize>>,

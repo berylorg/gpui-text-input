@@ -1,21 +1,25 @@
-use std::ops::Range;
+use std::{cell::Cell, ops::Range, rc::Rc};
 
 use gpui::{
     App, Bounds, Context, EntityInputHandler, EventEmitter, FocusHandle, Focusable, Pixels, Point,
     SharedString, UTF16Selection, Window, point, px,
 };
-use gpui_scrollbar::ScrollbarVisibilityState;
+use gpui_scrollbar::{
+    ScrollDirection, ScrollbarInteraction, ScrollbarMountGeneration, ScrollbarOwnerId,
+    ScrollbarOwnerKey, ScrollbarScrollState, ScrollbarState, ScrollbarVisibilityUpdateCallback,
+};
 
 use crate::{
     TextInputAtom, TextInputAtomError, TextInputChange, TextInputMode, TextInputOptions,
     TextInputRetainedCounts, TextInputSelectionAtom, TextInputSelectionExport, TextInputState,
 };
 
+mod construction;
 mod events;
 mod geometry_api;
 mod ime;
 mod keyboard;
-mod layout;
+pub(crate) mod layout;
 mod render;
 mod theme;
 mod utf16;
@@ -79,76 +83,28 @@ pub struct TextInput {
     last_geometry: Option<TextInputGeometry>,
     scroll_x: Pixels,
     scroll_y: Pixels,
-    vertical_scrollbar_visibility: Option<ScrollbarVisibilityState>,
+    vertical_scrollbar: Option<VerticalScrollbar>,
     content_height: Pixels,
     visible_range: Range<usize>,
     reveal_cursor: bool,
     is_selecting: bool,
 }
 
+struct VerticalScrollbar {
+    owner: ScrollbarOwnerKey,
+    state: ScrollbarState,
+    model: Rc<Cell<Option<ScrollbarScrollState>>>,
+    interaction: ScrollbarInteraction,
+    on_visibility_update: ScrollbarVisibilityUpdateCallback,
+}
+
+#[derive(Clone, Copy)]
+enum PendingScrollbarRequest {
+    Set(Pixels),
+    Page(ScrollDirection, Pixels),
+}
+
 impl TextInput {
-    /// Creates a single-line text input.
-    pub fn new(
-        initial_value: impl Into<String>,
-        placeholder: impl Into<SharedString>,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        Self::new_with_options(
-            initial_value,
-            placeholder,
-            TextInputOptions::single_line(),
-            cx,
-        )
-    }
-
-    /// Creates a multiline text input.
-    pub fn multiline(
-        initial_value: impl Into<String>,
-        placeholder: impl Into<SharedString>,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        Self::new_with_options(
-            initial_value,
-            placeholder,
-            TextInputOptions::multiline(),
-            cx,
-        )
-    }
-
-    /// Creates a text input with explicit model options.
-    pub fn new_with_options(
-        initial_value: impl Into<String>,
-        placeholder: impl Into<SharedString>,
-        options: TextInputOptions,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        let state = TextInputState::new(initial_value, options);
-        let cursor = state.cursor_offset();
-        let mode = state.mode();
-        Self {
-            focus_handle: cx.focus_handle(),
-            state,
-            placeholder: placeholder.into(),
-            theme: TextInputTheme::default(),
-            enabled: true,
-            enter_key: TextInputEnterKey::InsertNewline,
-            single_line_vertical_key: TextInputSingleLineVerticalKey::Handle,
-            atom_clipboard_policy: TextInputAtomClipboardPolicy::PlainText,
-            rich_paste_policy: TextInputRichPastePolicy::PlainText,
-            last_layout: Vec::new(),
-            last_bounds: None,
-            last_geometry: None,
-            scroll_x: px(0.0),
-            scroll_y: px(0.0),
-            vertical_scrollbar_visibility: (mode == TextInputMode::Multiline)
-                .then(ScrollbarVisibilityState::new),
-            content_height: px(0.0),
-            visible_range: cursor..cursor,
-            reveal_cursor: true,
-            is_selecting: false,
-        }
-    }
-
     /// Returns the current plain text.
     pub fn text(&self) -> &str {
         self.state.text()
@@ -216,14 +172,19 @@ impl TextInput {
 
     #[doc(hidden)]
     pub fn has_vertical_scrollbar_visibility_state_for_test(&self) -> bool {
-        self.vertical_scrollbar_visibility.is_some()
+        self.vertical_scrollbar.is_some()
     }
 
     #[doc(hidden)]
     pub fn vertical_scrollbar_active_for_test(&self) -> bool {
-        self.vertical_scrollbar_visibility
+        self.vertical_scrollbar
             .as_ref()
-            .is_some_and(|visibility| visibility.opacity() > 0.0 || visibility.is_animating())
+            .and_then(|scrollbar| {
+                scrollbar
+                    .state
+                    .opacity_at(scrollbar.owner, std::time::Instant::now())
+            })
+            .is_some_and(|opacity| opacity > 0.0)
     }
 
     #[doc(hidden)]

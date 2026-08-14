@@ -9,7 +9,7 @@ use crate::{TextInputAtom, TextInputMode, TextInputState};
 use super::{TextInputTheme, keyboard::VerticalDirection};
 
 mod geometry;
-mod shape;
+pub(crate) mod shape;
 
 pub use shape::wrapped_visual_line_count_for_width;
 

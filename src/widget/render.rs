@@ -1,13 +1,10 @@
-use std::{cell::Cell, rc::Rc};
-
 use gpui::{
     App, ContentMask, CursorStyle, Element, ElementId, ElementInputHandler, Entity,
     GlobalElementId, IntoElement, LayoutId, MouseButton, Style, Window, div, point, prelude::*,
     relative, size,
 };
 use gpui_scrollbar::{
-    Axis, ScrollDirection, ScrollbarInteraction, ScrollbarScrollState, ScrollbarStyle,
-    ScrollbarVisibilityPolicy, ScrollbarVisibilityUpdateCallback, render_scrollbar,
+    Axis, ScrollDirection, ScrollbarScrollState, ScrollbarStyle, render_scrollbar,
 };
 
 use crate::actions::TEXT_INPUT_KEY_CONTEXT;
@@ -78,70 +75,23 @@ impl Render for TextInput {
     }
 }
 
-#[derive(Clone, Copy)]
-enum PendingScrollbarRequest {
-    Set(Pixels),
-    Page(ScrollDirection, Pixels),
-}
-
 impl TextInput {
     fn render_vertical_scrollbar(&self, input: Entity<TextInput>) -> Option<gpui::AnyElement> {
         let state = self.vertical_scrollbar_state()?;
-        let visibility = self.vertical_scrollbar_visibility_policy(input.clone())?;
+        let scrollbar = self.vertical_scrollbar.as_ref()?;
+        scrollbar.model.set(Some(state));
+        let visibility = scrollbar
+            .state
+            .managed(scrollbar.on_visibility_update.clone());
         let input_id = input.entity_id();
-        let current_state = Rc::new(Cell::new(Some(state)));
-        let pending_request = Rc::new(Cell::new(None));
-        let interaction = ScrollbarInteraction::new(
-            {
-                let current_state = current_state.clone();
-                move || current_state.get()
-            },
-            {
-                let pending_request = pending_request.clone();
-                move |offset| pending_request.set(Some(PendingScrollbarRequest::Set(offset)))
-            },
-            {
-                let pending_request = pending_request.clone();
-                move |direction, distance| {
-                    pending_request.set(Some(PendingScrollbarRequest::Page(direction, distance)));
-                }
-            },
-            || {},
-            || {},
-            move |_, cx| {
-                let Some(request) = pending_request.take() else {
-                    return;
-                };
-                input.update(cx, |input, cx| {
-                    input.apply_scrollbar_request(request, cx);
-                });
-            },
-        );
-
         render_scrollbar(
             ("gpui-text-input-vertical-scrollbar", input_id),
+            scrollbar.state.clone(),
             Axis::Vertical,
             ScrollbarStyle::default(),
             visibility,
-            interaction,
+            scrollbar.interaction.clone(),
         )
-    }
-
-    fn vertical_scrollbar_visibility_policy(
-        &self,
-        input: Entity<TextInput>,
-    ) -> Option<ScrollbarVisibilityPolicy> {
-        self.vertical_scrollbar_visibility
-            .as_ref()
-            .map(|visibility| visibility.managed(Self::scrollbar_update_callback(input)))
-    }
-
-    fn scrollbar_update_callback(input: Entity<TextInput>) -> ScrollbarVisibilityUpdateCallback {
-        Rc::new(move |_: &mut Window, cx: &mut App| {
-            input.update(cx, |_, cx| {
-                cx.notify();
-            });
-        })
     }
 
     pub(super) fn note_vertical_scrollbar_activity(
@@ -153,11 +103,13 @@ impl TextInput {
             return;
         }
 
-        let Some(visibility) = &self.vertical_scrollbar_visibility else {
+        let Some(scrollbar) = &self.vertical_scrollbar else {
             return;
         };
-        let on_update = Self::scrollbar_update_callback(cx.entity());
-        visibility.record_viewport_activity(window, cx, on_update);
+        scrollbar
+            .state
+            .managed(scrollbar.on_visibility_update.clone())
+            .record_viewport_activity(scrollbar.owner, window, cx);
         cx.notify();
     }
 
@@ -172,13 +124,15 @@ impl TextInput {
         let scroll_y = self.scroll_y.clamp(px(0.0), geometry.scroll_limits.max_y);
 
         Some(ScrollbarScrollState {
+            owner: self.vertical_scrollbar.as_ref()?.owner,
             viewport_bounds: geometry.bounds,
-            max_offset: size(px(0.0), geometry.scroll_limits.max_y),
+            content_size: geometry.bounds.size + size(px(0.0), geometry.scroll_limits.max_y),
             scroll_offset: point(px(0.0), scroll_y),
+            page_distance: geometry.bounds.size,
         })
     }
 
-    fn apply_scrollbar_request(
+    pub(super) fn apply_scrollbar_request(
         &mut self,
         request: PendingScrollbarRequest,
         cx: &mut Context<Self>,

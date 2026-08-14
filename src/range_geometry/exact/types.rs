@@ -1,0 +1,474 @@
+use std::sync::Arc;
+
+use gpui::{
+    Hsla, Pixels, SharedString, StreamingLayoutCharge, StreamingLayoutContinuation,
+    StreamingLayoutError, StreamingLayoutFragment, StreamingLayoutItemCharge, TextRun,
+};
+use unicode_segmentation::GraphemeCursor;
+
+use crate::{ByteOffset, PageRequestKey};
+
+use super::super::{GeometryJobKey, GeometryQuality};
+
+mod counts;
+pub use counts::ExactGeometryCounts;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Independent byte and semantic-record limits for exact geometry ownership.
+pub struct ExactGeometryLimits {
+    pub(super) max_page_bytes: u64,
+    pub(super) max_checkpoints: usize,
+    pub(super) max_retained_bytes: usize,
+    pub(super) max_retained_items: usize,
+}
+
+impl ExactGeometryLimits {
+    pub fn new(
+        max_page_bytes: u64,
+        max_checkpoints: usize,
+        max_retained_bytes: usize,
+        max_retained_items: usize,
+    ) -> Result<Self, ExactGeometryError> {
+        if max_page_bytes < 4
+            || max_checkpoints < 2
+            || max_retained_bytes == 0
+            || max_retained_items == 0
+        {
+            return Err(ExactGeometryError::InvalidLimits);
+        }
+        Ok(Self {
+            max_page_bytes,
+            max_checkpoints,
+            max_retained_bytes,
+            max_retained_items,
+        })
+    }
+
+    pub const fn max_page_bytes(self) -> u64 {
+        self.max_page_bytes
+    }
+
+    pub const fn max_checkpoints(self) -> usize {
+        self.max_checkpoints
+    }
+
+    pub const fn max_retained_bytes(self) -> usize {
+        self.max_retained_bytes
+    }
+
+    /// Maximum semantic records live at any owner or admission peak.
+    pub const fn max_retained_items(self) -> usize {
+        self.max_retained_items
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct StreamingOversizePresentation {
+    pub(super) presentation: SharedString,
+    pub(super) runs: Vec<TextRun>,
+    pub(super) width: Pixels,
+    pub(super) height: Pixels,
+    pub(super) baseline: Pixels,
+    pub(super) background: Option<Hsla>,
+}
+
+impl StreamingOversizePresentation {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        presentation: SharedString,
+        runs: Vec<TextRun>,
+        width: Pixels,
+        height: Pixels,
+        baseline: Pixels,
+        background: Option<Hsla>,
+    ) -> Self {
+        Self {
+            presentation,
+            runs,
+            width,
+            height,
+            baseline,
+            background,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct StreamingGeometryStyle {
+    pub(super) text_run: TextRun,
+    pub(super) oversize: StreamingOversizePresentation,
+}
+
+impl StreamingGeometryStyle {
+    pub fn new(text_run: TextRun, oversize: StreamingOversizePresentation) -> Self {
+        Self { text_run, oversize }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ExactGeometryAggregate {
+    pub(super) visual_lines: u64,
+    pub(super) content_height: Pixels,
+}
+
+impl ExactGeometryAggregate {
+    pub const fn quality(self) -> GeometryQuality {
+        GeometryQuality::Exact
+    }
+
+    pub const fn visual_lines(self) -> u64 {
+        self.visual_lines
+    }
+
+    pub const fn content_height(self) -> Pixels {
+        self.content_height
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StreamingGeometryEstimate {
+    pub(super) scanned_source: ByteOffset,
+    pub(super) visual_lines_lower_bound: u64,
+    pub(super) content_height_lower_bound: Pixels,
+}
+
+impl StreamingGeometryEstimate {
+    pub const fn quality(self) -> GeometryQuality {
+        GeometryQuality::Estimated
+    }
+
+    pub const fn scanned_source(self) -> ByteOffset {
+        self.scanned_source
+    }
+
+    pub const fn visual_lines_lower_bound(self) -> u64 {
+        self.visual_lines_lower_bound
+    }
+
+    pub const fn content_height_lower_bound(self) -> Pixels {
+        self.content_height_lower_bound
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ExactGeometryCheckpoint {
+    pub(super) source: ByteOffset,
+    pub(super) block_offset: Pixels,
+    pub(super) visual_lines: u64,
+    pub(super) logical_line: u64,
+    pub(super) segment: u64,
+    pub(super) input_id: u64,
+    pub(super) segment_policy_id: u64,
+    pub(super) terminal: bool,
+    pub(super) continuation: StreamingLayoutContinuation,
+    pub(super) grapheme_origin: ByteOffset,
+    pub(super) grapheme: GraphemeCursor,
+}
+
+impl ExactGeometryCheckpoint {
+    pub const fn source(&self) -> ByteOffset {
+        self.source
+    }
+
+    pub const fn block_offset(&self) -> Pixels {
+        self.block_offset
+    }
+
+    /// First block position whose output can be reconstructed without prior fragments.
+    pub fn resume_block_offset(&self) -> Pixels {
+        self.continuation.block_offset + self.continuation.line_block_extent
+    }
+
+    pub const fn visual_lines(&self) -> u64 {
+        self.visual_lines
+    }
+
+    pub const fn logical_line(&self) -> u64 {
+        self.logical_line
+    }
+
+    pub const fn segment(&self) -> u64 {
+        self.segment
+    }
+
+    pub const fn input_id(&self) -> u64 {
+        self.input_id
+    }
+
+    pub const fn segment_policy_id(&self) -> u64 {
+        self.segment_policy_id
+    }
+
+    pub fn cursor_offset(&self) -> usize {
+        usize::try_from(self.grapheme_origin.get())
+            .unwrap_or(usize::MAX)
+            .saturating_add(self.grapheme.cur_cursor())
+    }
+
+    pub const fn is_terminal(&self) -> bool {
+        self.terminal
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ExactGeometryIndex {
+    pub(super) key: GeometryJobKey,
+    pub(super) checkpoints: Arc<[ExactGeometryCheckpoint]>,
+    pub(super) aggregate: ExactGeometryAggregate,
+}
+
+impl ExactGeometryIndex {
+    pub const fn key(&self) -> GeometryJobKey {
+        self.key
+    }
+
+    pub fn checkpoints(&self) -> &[ExactGeometryCheckpoint] {
+        &self.checkpoints
+    }
+
+    pub const fn aggregate(&self) -> ExactGeometryAggregate {
+        self.aggregate
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BlockTarget {
+    pub(super) block_offset: Pixels,
+    pub(super) viewport_extent: Pixels,
+    pub(super) overscan: Pixels,
+}
+
+impl BlockTarget {
+    pub const fn new(block_offset: Pixels, viewport_extent: Pixels, overscan: Pixels) -> Self {
+        Self {
+            block_offset,
+            viewport_extent,
+            overscan,
+        }
+    }
+
+    pub const fn block_offset(self) -> Pixels {
+        self.block_offset
+    }
+
+    pub const fn viewport_extent(self) -> Pixels {
+        self.viewport_extent
+    }
+
+    pub const fn overscan(self) -> Pixels {
+        self.overscan
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct BlockTargetPublication {
+    pub(super) key: GeometryJobKey,
+    pub(super) predecessor: ByteOffset,
+    pub(super) target_source: ByteOffset,
+    pub(super) source_end: ByteOffset,
+    pub(super) fragments: Arc<[StreamingLayoutFragment]>,
+    pub(super) charge: StreamingLayoutCharge,
+    pub(super) item_charge: StreamingLayoutItemCharge,
+}
+
+impl BlockTargetPublication {
+    pub const fn key(&self) -> GeometryJobKey {
+        self.key
+    }
+
+    pub const fn predecessor(&self) -> ByteOffset {
+        self.predecessor
+    }
+
+    pub const fn target_source(&self) -> ByteOffset {
+        self.target_source
+    }
+
+    pub const fn source_end(&self) -> ByteOffset {
+        self.source_end
+    }
+
+    pub fn fragments(&self) -> &[StreamingLayoutFragment] {
+        &self.fragments
+    }
+
+    /// Exact GPUI payload retained by the published fragments; continuation is always zero.
+    pub const fn charge(&self) -> StreamingLayoutCharge {
+        self.charge
+    }
+
+    /// Exact GPUI semantic records retained by the published fragments; continuation is zero.
+    pub const fn item_charge(&self) -> StreamingLayoutItemCharge {
+        self.item_charge
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExactGeometryProgress {
+    PendingIndex,
+    Scanning,
+    IndexComplete,
+    TargetComplete,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExactGeometryStart {
+    pub(super) key: GeometryJobKey,
+    pub(super) progress: ExactGeometryProgress,
+    pub(super) release: ExactGeometryRelease,
+    pub(super) admission_required_bytes: usize,
+    pub(super) admission_required_items: usize,
+}
+
+impl ExactGeometryStart {
+    pub const fn key(&self) -> GeometryJobKey {
+        self.key
+    }
+
+    pub const fn progress(&self) -> ExactGeometryProgress {
+        self.progress
+    }
+
+    pub const fn release(&self) -> &ExactGeometryRelease {
+        &self.release
+    }
+
+    /// Peak retained bytes required to admit this start operation.
+    pub const fn admission_required_bytes(&self) -> usize {
+        self.admission_required_bytes
+    }
+
+    pub const fn admission_required_items(&self) -> usize {
+        self.admission_required_items
+    }
+}
+
+/// One successfully admitted page step and its observable releases.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExactGeometryAdmission {
+    pub(super) progress: ExactGeometryProgress,
+    pub(super) release: ExactGeometryRelease,
+    pub(super) admission_required_bytes: usize,
+    pub(super) admission_required_items: usize,
+}
+
+impl ExactGeometryAdmission {
+    pub const fn progress(&self) -> ExactGeometryProgress {
+        self.progress
+    }
+
+    pub const fn release(&self) -> &ExactGeometryRelease {
+        &self.release
+    }
+
+    /// Peak live bytes required by this page admission.
+    pub const fn admission_required_bytes(&self) -> usize {
+        self.admission_required_bytes
+    }
+
+    pub const fn admission_required_items(&self) -> usize {
+        self.admission_required_items
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ExactGeometryRelease {
+    pub jobs: Vec<GeometryJobKey>,
+    pub pages: Vec<PageRequestKey>,
+    pub counts: ExactGeometryCounts,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub enum ExactGeometryError {
+    InvalidLimits,
+    InvalidMetric,
+    Disposed,
+    EpochExhausted,
+    IdNotMonotonic,
+    Busy,
+    IndexIncomplete,
+    NoActiveJob,
+    ObsoleteJob(GeometryJobKey),
+    PageAlreadyPending,
+    WrongPage(PageRequestKey),
+    NoncontiguousPage {
+        expected: ByteOffset,
+        actual: ByteOffset,
+    },
+    PageTooLarge,
+    SourceContract,
+    CapacityExceeded,
+    Layout(StreamingLayoutError),
+}
+
+/// A rejected page admission together with every owner-held resource it released.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExactGeometryFailure {
+    pub(super) error: ExactGeometryError,
+    pub(super) stage: ExactGeometryFailureStage,
+    pub(super) release: ExactGeometryRelease,
+    pub(super) admission_required_bytes: usize,
+    pub(super) admission_required_items: usize,
+}
+
+impl ExactGeometryFailure {
+    pub const fn error(&self) -> &ExactGeometryError {
+        &self.error
+    }
+
+    pub const fn stage(&self) -> ExactGeometryFailureStage {
+        self.stage
+    }
+
+    pub const fn release(&self) -> &ExactGeometryRelease {
+        &self.release
+    }
+
+    /// Peak live bytes observed or required by the rejected admission.
+    pub const fn admission_required_bytes(&self) -> usize {
+        self.admission_required_bytes
+    }
+
+    pub const fn admission_required_items(&self) -> usize {
+        self.admission_required_items
+    }
+}
+
+/// Owner boundary at which a page admission was rejected.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExactGeometryFailureStage {
+    Validation,
+    PageCoexistence,
+    WindowIdentity,
+    Scan,
+    Finalize,
+    Checkpoint,
+    Publication,
+}
+
+impl std::fmt::Display for ExactGeometryFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}", self.error)
+    }
+}
+
+impl std::error::Error for ExactGeometryFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
+}
+
+impl std::fmt::Display for ExactGeometryError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "exact streaming geometry rejected: {self:?}")
+    }
+}
+
+impl std::error::Error for ExactGeometryError {}
+
+impl From<StreamingLayoutError> for ExactGeometryError {
+    fn from(value: StreamingLayoutError) -> Self {
+        Self::Layout(value)
+    }
+}

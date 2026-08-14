@@ -1,0 +1,98 @@
+use gpui::{Pixels, StreamingLayoutContinuation, StreamingLayoutFragment};
+
+use super::{ActiveJob, ActiveKind, BlockTarget};
+
+pub(super) fn admission_intersects_target(
+    fragments: &[StreamingLayoutFragment],
+    prior: StreamingLayoutContinuation,
+    target: BlockTarget,
+    line_height: Pixels,
+) -> bool {
+    let window_start = target.block_offset;
+    let window_end = target.block_offset + target.viewport_extent + target.overscan;
+    fragments.iter().any(|fragment| {
+        let (start, end) = fragment_vertical_bounds(fragment, prior, line_height);
+        end > window_start && start < window_end
+    })
+}
+
+fn fragment_vertical_bounds(
+    fragment: &StreamingLayoutFragment,
+    prior: StreamingLayoutContinuation,
+    line_height: Pixels,
+) -> (Pixels, Pixels) {
+    match fragment {
+        StreamingLayoutFragment::Text(fragment) => {
+            let start = fragment
+                .maps()
+                .iter()
+                .map(|map| map.position.y)
+                .min_by(|left, right| left.partial_cmp(right).unwrap())
+                .unwrap_or(prior.block_offset);
+            let last = fragment
+                .maps()
+                .iter()
+                .map(|map| map.position.y)
+                .max_by(|left, right| left.partial_cmp(right).unwrap())
+                .unwrap_or(prior.block_offset);
+            let extent = if last == prior.block_offset {
+                prior.line_block_extent.max(line_height)
+            } else {
+                line_height
+            };
+            (start, last + extent)
+        }
+        StreamingLayoutFragment::OversizeAtom(fragment) => (
+            fragment.bounds.origin.y,
+            fragment.bounds.origin.y + fragment.bounds.size.height,
+        ),
+    }
+}
+
+pub(super) fn update_target_source(
+    job: &mut ActiveJob,
+    fragments: &[StreamingLayoutFragment],
+    continuation: StreamingLayoutContinuation,
+) {
+    let ActiveKind::Target { target, .. } = job.kind else {
+        return;
+    };
+    if job.scanner.target_source.is_some() {
+        return;
+    }
+    for fragment in fragments {
+        let maps: &[gpui::StreamingLayoutMap] = match fragment {
+            StreamingLayoutFragment::Text(fragment) => fragment.maps(),
+            StreamingLayoutFragment::OversizeAtom(fragment) => fragment.maps(),
+        };
+        for map in maps {
+            if map.position.y > job.scanner.target_line_block {
+                if target.block_offset < map.position.y {
+                    job.scanner.target_source = Some(job.scanner.target_line_source);
+                    return;
+                }
+                job.scanner.target_line_block = map.position.y;
+                job.scanner.target_line_source = map.logical_offset;
+            }
+        }
+    }
+    if continuation.block_offset > target.block_offset {
+        job.scanner.target_source = Some(job.scanner.target_line_source);
+    } else {
+        if continuation.block_offset > job.scanner.target_line_block {
+            job.scanner.target_line_block = continuation.block_offset;
+            job.scanner.target_line_source = continuation.next_logical_offset;
+        }
+        if target.block_offset >= job.scanner.target_line_block
+            && target.block_offset < continuation.block_offset + continuation.line_block_extent
+        {
+            job.scanner.target_source = Some(job.scanner.target_line_source);
+        }
+    }
+}
+
+pub(super) fn finish_target_source(job: &mut ActiveJob) {
+    if matches!(job.kind, ActiveKind::Target { .. }) && job.scanner.target_source.is_none() {
+        job.scanner.target_source = Some(job.scanner.target_line_source);
+    }
+}
