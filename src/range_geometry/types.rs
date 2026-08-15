@@ -1,4 +1,4 @@
-use crate::{BindingId, SourceRevision};
+use crate::{BindingId, PresentationGeneration, SourceRevision};
 
 macro_rules! opaque_id {
     ($name:ident, $doc:literal) => {
@@ -34,14 +34,21 @@ opaque_id!(
 pub struct GeometryKey {
     binding: BindingId,
     revision: SourceRevision,
+    presentation_generation: PresentationGeneration,
     epoch: LayoutEpoch,
 }
 
 impl GeometryKey {
-    pub const fn new(binding: BindingId, revision: SourceRevision, epoch: LayoutEpoch) -> Self {
+    pub const fn new(
+        binding: BindingId,
+        revision: SourceRevision,
+        presentation_generation: PresentationGeneration,
+        epoch: LayoutEpoch,
+    ) -> Self {
         Self {
             binding,
             revision,
+            presentation_generation,
             epoch,
         }
     }
@@ -52,6 +59,10 @@ impl GeometryKey {
 
     pub const fn revision(self) -> SourceRevision {
         self.revision
+    }
+
+    pub const fn presentation_generation(self) -> PresentationGeneration {
+        self.presentation_generation
     }
 
     pub const fn epoch(self) -> LayoutEpoch {

@@ -122,18 +122,26 @@ fn one_atom_reconciles_across_two_exact_pages_without_a_registry() {
 }
 
 #[test]
-fn residency_rejects_global_ranges_outside_the_revision_and_releases_pending() {
+fn residency_rejects_global_ranges_outside_the_revision_without_consuming_pending() {
     let mut residency = residency();
     let key = demand(&mut residency, 1, 5, 10);
     let outside = page(1, key, "fghij", vec![atom(7, (8, 12), (8, 10), "asset")]).unwrap();
+    let before = format!("{residency:?}");
+    let before_counts = residency.counts();
     assert!(matches!(
         residency.admit(outside),
         Err(PageAdmissionError::Malformed(
             RangeContractError::MalformedAtomRange { .. }
         ))
     ));
+    assert_eq!(format!("{residency:?}"), before);
+    assert_eq!(residency.counts(), before_counts);
+    assert!(
+        residency
+            .admit(page(2, key, "fghij", vec![]).unwrap())
+            .is_ok()
+    );
     assert_eq!(residency.counts().pending_requests, 0);
-    assert_eq!(residency.counts().pending_bytes, 0);
 }
 
 #[test]
@@ -159,6 +167,8 @@ fn residency_rejects_conflicting_stable_facts_across_adjacent_pages() {
         vec![atom(7, (2, 9), (5, 9), "asset")],
     )
     .unwrap();
+    let before = format!("{residency:?}");
+    let before_counts = residency.counts();
     assert_eq!(
         residency.admit(conflict),
         Err(PageAdmissionError::Malformed(
@@ -167,8 +177,17 @@ fn residency_rejects_conflicting_stable_facts_across_adjacent_pages() {
             }
         ))
     );
-    assert_eq!(residency.counts().pending_requests, 0);
-    assert_eq!(residency.counts().resident_pages, 1);
+    assert_eq!(format!("{residency:?}"), before);
+    assert_eq!(residency.counts(), before_counts);
+    let retry = page(
+        3,
+        second_key,
+        "fghij",
+        vec![atom(7, (2, 8), (5, 8), "asset")],
+    )
+    .unwrap();
+    assert!(residency.admit(retry).is_ok());
+    assert_eq!(residency.counts().resident_pages, 2);
 }
 
 #[test]
@@ -194,6 +213,8 @@ fn residency_rejects_different_ids_with_overlapping_global_ranges() {
         vec![atom(8, (4, 9), (5, 9), "other")],
     )
     .unwrap();
+    let before = format!("{residency:?}");
+    let before_counts = residency.counts();
     assert_eq!(
         residency.admit(overlap),
         Err(PageAdmissionError::Malformed(
@@ -203,8 +224,14 @@ fn residency_rejects_different_ids_with_overlapping_global_ranges() {
             }
         ))
     );
-    assert_eq!(residency.counts().pending_requests, 0);
-    assert_eq!(residency.counts().resident_pages, 1);
+    assert_eq!(format!("{residency:?}"), before);
+    assert_eq!(residency.counts(), before_counts);
+    assert!(
+        residency
+            .admit(page(3, second_key, "fghij", vec![]).unwrap())
+            .is_ok()
+    );
+    assert_eq!(residency.counts().resident_pages, 2);
 }
 
 #[test]

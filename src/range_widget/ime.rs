@@ -2,7 +2,10 @@ use std::ops::Range;
 
 use gpui::{Bounds, Context, EntityInputHandler, Pixels, Point, UTF16Selection, Window};
 
-use crate::{ByteOffset, ByteRange, RangeSelection, RangeTextInput};
+use crate::{
+    ByteOffset, ByteRange, InlineObjectGap, RangeSelection, RangeSourceSelection, RangeSurfaceHit,
+    RangeTextInput, SourcePosition,
+};
 
 impl EntityInputHandler for RangeTextInput {
     fn text_for_range(
@@ -30,7 +33,7 @@ impl EntityInputHandler for RangeTextInput {
         if !self.enabled && !ignore_disabled_input {
             return None;
         }
-        let selection = self.interactive_surface()?.selection();
+        let selection = self.interactive_surface()?.platform_selection()?;
         let anchor = self.resident_utf16_offset(selection.anchor)?;
         let head = self.resident_utf16_offset(selection.head)?;
         Some(UTF16Selection {
@@ -48,10 +51,7 @@ impl EntityInputHandler for RangeTextInput {
     }
 
     fn unmark_text(&mut self, _: &mut Window, cx: &mut Context<Self>) {
-        if self.desired.composition.take().is_some() && self.geometry.index().is_some() {
-            let _ = self.start_target();
-        }
-        cx.notify();
+        let _ = self.clear_composition(cx);
     }
 
     fn replace_text_in_range(
@@ -84,7 +84,7 @@ impl EntityInputHandler for RangeTextInput {
         };
         let replacement = match range.as_ref() {
             Some(range) => self.resident_byte_range(range.clone()),
-            None => Some(surface.selection().range()),
+            None => surface.platform_selection().map(RangeSelection::range),
         };
         let Some(replacement) = replacement else {
             if let Some(range) = range {
@@ -104,13 +104,11 @@ impl EntityInputHandler for RangeTextInput {
     ) -> Option<Bounds<Pixels>> {
         let range = self.resident_byte_range(range)?;
         let surface = self.interactive_surface()?;
-        let bounds = surface.bounds_for_range(
+        let (first, last) = surface.first_last_bounds_for_range(
             range,
             self.config.layout.line_height,
             self.config.layout.wrap_width,
-        );
-        let first = bounds.first()?;
-        let last = bounds.last()?;
+        )?;
         Some(Bounds::from_corners(first.origin, last.bottom_right()))
     }
 
@@ -122,11 +120,31 @@ impl EntityInputHandler for RangeTextInput {
     ) -> Option<usize> {
         let surface = self.interactive_surface()?;
         let local = point - self.last_origin() + gpui::point(Pixels::ZERO, surface.scroll_block());
-        self.resident_utf16_offset(surface.hit_test(local)?)
+        let RangeSurfaceHit::Gap(position) = surface.hit_test_composite(local)? else {
+            return None;
+        };
+        if !matches!(position.gap, InlineObjectGap::NoObjects) {
+            return None;
+        }
+        self.resident_utf16_offset(position.byte_offset)
     }
 }
 
 impl RangeTextInput {
+    pub(super) fn clear_composition(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Result<bool, crate::RangeTextInputError> {
+        if self.desired.composition.is_none() || self.geometry.index().is_none() {
+            return Ok(false);
+        }
+        let mut desired = self.desired;
+        desired.composition = None;
+        let candidate = self.prepare_target_transition(desired, None)?;
+        self.commit_widget_transition(candidate, Some(cx));
+        Ok(true)
+    }
+
     pub(super) fn record_marked_mutation(
         &mut self,
         key: crate::MutationKey,
@@ -141,11 +159,22 @@ impl RangeTextInput {
         .expect("inserted range is ordered");
         let selected = selected
             .and_then(|range| utf16_range_in_text(text, range))
-            .map(|range| RangeSelection {
-                anchor: ByteOffset::new(composition.start().get() + range.start as u64),
-                head: ByteOffset::new(composition.start().get() + range.end as u64),
+            .map(|range| RangeSourceSelection {
+                anchor: SourcePosition::new(
+                    ByteOffset::new(composition.start().get() + range.start as u64),
+                    InlineObjectGap::NoObjects,
+                ),
+                head: SourcePosition::new(
+                    ByteOffset::new(composition.start().get() + range.end as u64),
+                    InlineObjectGap::NoObjects,
+                ),
             })
-            .unwrap_or_else(|| RangeSelection::caret(composition.end()));
+            .unwrap_or_else(|| {
+                RangeSourceSelection::caret(SourcePosition::new(
+                    composition.end(),
+                    InlineObjectGap::NoObjects,
+                ))
+            });
         self.mutation_composition = Some((key, composition, selected));
     }
 
@@ -154,13 +183,11 @@ impl RangeTextInput {
             return Some(0);
         }
         let surface = self.interactive_surface()?;
-        let mut pages: Vec<_> = surface.pages().iter().collect();
-        pages.sort_by_key(|page| page.range().start());
         let mut cursor = ByteOffset::new(0);
         let mut utf16 = 0usize;
-        for page in pages {
+        for page in surface.pages_in_source_order() {
             if page.range().start() != cursor {
-                continue;
+                return None;
             }
             let end = page.range().end().min(offset);
             let local_end = usize::try_from(end.get() - page.range().start().get()).ok()?;
@@ -177,13 +204,18 @@ impl RangeTextInput {
     }
 
     fn resident_byte_range(&self, range: Range<usize>) -> Option<ByteRange> {
+        if range.start > range.end {
+            return None;
+        }
         let surface = self.interactive_surface()?;
-        let mut pages: Vec<_> = surface.pages().iter().collect();
-        pages.sort_by_key(|page| page.range().start());
         let mut utf16 = 0usize;
+        let mut cursor = ByteOffset::new(0);
         let mut start = None;
         let mut end = None;
-        for page in pages {
+        for page in surface.pages_in_source_order() {
+            if page.range().start() != cursor {
+                return None;
+            }
             for (local, ch) in page.text().char_indices() {
                 let global = page.range().start().get() + local as u64;
                 if utf16 == range.start {
@@ -194,11 +226,12 @@ impl RangeTextInput {
                 }
                 utf16 = utf16.checked_add(ch.len_utf16())?;
             }
+            cursor = page.range().end();
             if utf16 == range.start {
-                start = Some(page.range().end());
+                start = Some(cursor);
             }
             if utf16 == range.end {
-                end = Some(page.range().end());
+                end = Some(cursor);
             }
             if start.is_some() && end.is_some() {
                 break;

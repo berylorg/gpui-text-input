@@ -8,8 +8,9 @@ use gpui::{
 use crate::PageRequestKey;
 
 use super::{
-    ActiveJob, BlockTargetPublication, DesiredTarget, ExactGeometryCheckpoint, ExactGeometryCounts,
-    ExactGeometryError, ExactGeometryIndex, ExactGeometryOwner, OwnerInputs,
+    ActiveJob, BlockTargetPublication, DeferredObject, DesiredTarget, ExactGeometryCheckpoint,
+    ExactGeometryCounts, ExactGeometryError, ExactGeometryIndex, ExactGeometryOwner, OwnerInputs,
+    PendingInput,
 };
 
 pub(super) fn add_fragment_charge(
@@ -31,6 +32,7 @@ pub(super) fn add_fragment_charge(
         glyphs: add!(glyphs),
         wrap_facts: add!(wrap_facts),
         maps: add!(maps),
+        objects: add!(objects),
         fragments: add!(fragments),
         continuation: 0,
     })
@@ -56,9 +58,18 @@ pub(super) fn add_fragment_item_charge(
         decorations: add!(decorations),
         wrap_facts: add!(wrap_facts),
         maps: add!(maps),
+        positions: add!(positions),
+        gap_witnesses: add!(gap_witnesses),
+        object_ids: add!(object_ids),
+        object_orders: add!(object_orders),
         fragments: add!(fragments),
         continuations: 0,
     })
+}
+
+pub(super) const fn ordinary_continuation_items() -> usize {
+    // One continuation retains its record, next composite position, and no-object gap witness.
+    3
 }
 
 pub(super) fn owner_counts(owner: &ExactGeometryOwner) -> ExactGeometryCounts {
@@ -123,13 +134,7 @@ pub(super) fn counts_with_input_candidate(
     owner: &ExactGeometryOwner,
     candidate: &OwnerInputs,
 ) -> ExactGeometryCounts {
-    let mut result = owner_counts(owner);
-    result.input_bytes = result
-        .input_bytes
-        .saturating_add(size_of::<OwnerInputs>())
-        .saturating_add(style_payload_bytes(candidate));
-    result.input_items = result.input_items.saturating_add(input_items(candidate));
-    result
+    add_counts(owner_counts(owner), input_counts(candidate))
 }
 
 pub(super) fn active_bytes(active: &ActiveJob) -> usize {
@@ -162,7 +167,7 @@ pub(super) fn ensure_owner(owner: &ExactGeometryOwner) -> Result<(), ExactGeomet
     }
 }
 
-fn counts(
+pub(super) fn counts(
     inputs: Option<&OwnerInputs>,
     active: Option<&ActiveJob>,
     desired: Option<&DesiredTarget>,
@@ -192,6 +197,77 @@ fn counts(
         add_target(&mut counts, target);
     }
     counts
+}
+
+pub(super) fn input_counts(inputs: &OwnerInputs) -> ExactGeometryCounts {
+    ExactGeometryCounts {
+        input_bytes: size_of::<OwnerInputs>().saturating_add(style_payload_bytes(inputs)),
+        input_items: input_items(inputs),
+        ..Default::default()
+    }
+}
+
+pub(super) fn desired_counts() -> ExactGeometryCounts {
+    ExactGeometryCounts {
+        desired_target_items: 1,
+        desired_target_bytes: size_of::<DesiredTarget>(),
+        ..Default::default()
+    }
+}
+
+pub(super) fn target_counts(target: &BlockTargetPublication) -> ExactGeometryCounts {
+    let mut result = ExactGeometryCounts::default();
+    add_target(&mut result, target);
+    result
+}
+
+pub(super) fn post_target_retirement_counts(owner: &ExactGeometryOwner) -> ExactGeometryCounts {
+    counts(
+        owner.inputs.as_deref(),
+        None,
+        None,
+        owner.index.as_deref(),
+        None,
+    )
+}
+
+pub(super) fn add_counts(
+    mut left: ExactGeometryCounts,
+    right: ExactGeometryCounts,
+) -> ExactGeometryCounts {
+    macro_rules! add {
+        ($field:ident) => {
+            left.$field = left.$field.saturating_add(right.$field)
+        };
+    }
+    add!(owner_items);
+    add!(owner_bytes);
+    add!(input_items);
+    add!(input_bytes);
+    add!(desired_target_items);
+    add!(desired_target_bytes);
+    add!(active_job_items);
+    add!(active_job_bytes);
+    add!(pending_page_items);
+    add!(pending_page_bytes);
+    add!(pending_object_page_items);
+    add!(pending_object_page_bytes);
+    add!(scan_buffer_items);
+    add!(scan_buffer_bytes);
+    add!(active_atom_items);
+    add!(active_atom_bytes);
+    add!(deferred_object_items);
+    add!(deferred_object_bytes);
+    add!(checkpoints);
+    add!(checkpoint_bytes);
+    add!(continuation_items);
+    add!(continuation_bytes);
+    add!(output_items);
+    add!(output_record_bytes);
+    add!(output_payload_bytes);
+    add!(publication_items);
+    add!(publication_bytes);
+    left
 }
 
 fn add_index(counts: &mut ExactGeometryCounts, index: &ExactGeometryIndex) {
@@ -229,16 +305,31 @@ fn add_active(counts: &mut ExactGeometryCounts, active: &ActiveJob) {
     counts.continuation_bytes = counts
         .continuation_bytes
         .saturating_add(size_of::<StreamingLayoutContinuation>());
-    if active.pending.is_some() {
-        counts.pending_page_items = counts.pending_page_items.saturating_add(1);
-        counts.pending_page_bytes = counts
-            .pending_page_bytes
-            .saturating_add(size_of::<PageRequestKey>());
+    match active.pending.as_deref() {
+        Some(PendingInput::Text(_)) => {
+            counts.pending_page_items = counts.pending_page_items.saturating_add(1);
+            counts.pending_page_bytes = counts
+                .pending_page_bytes
+                .saturating_add(size_of::<PageRequestKey>());
+        }
+        Some(PendingInput::Object(_)) => {
+            counts.pending_object_page_items = counts.pending_object_page_items.saturating_add(1);
+            counts.pending_object_page_bytes = counts
+                .pending_object_page_bytes
+                .saturating_add(size_of::<crate::ObjectRequestKey>());
+        }
+        None => {}
     }
     counts.scan_buffer_bytes = counts
         .scan_buffer_bytes
-        .saturating_add(active.scanner.segment_text.len())
-        .saturating_add(active.scanner.grapheme_text.as_ref().map_or(0, String::len));
+        .saturating_add(active.scanner.segment_text.capacity())
+        .saturating_add(
+            active
+                .scanner
+                .grapheme_text
+                .as_ref()
+                .map_or(0, String::capacity),
+        );
     counts.scan_buffer_items = counts
         .scan_buffer_items
         .saturating_add(1)
@@ -247,14 +338,22 @@ fn add_active(counts: &mut ExactGeometryCounts, active: &ActiveJob) {
         counts.active_atom_items = counts.active_atom_items.saturating_add(1);
         counts.active_atom_bytes = counts.active_atom_bytes.saturating_add(size_of_val(atom));
     }
+    if let Some(object) = active.scanner.deferred_object.as_deref() {
+        counts.deferred_object_items = counts.deferred_object_items.saturating_add(4);
+        counts.deferred_object_bytes = counts.deferred_object_bytes.saturating_add(
+            size_of::<DeferredObject>()
+                .saturating_sub(size_of::<crate::InlineObjectFact>())
+                .saturating_add(object.fact.retained_bytes().unwrap_or(usize::MAX)),
+        );
+    }
     counts.checkpoints = counts
         .checkpoints
-        .saturating_add(active.scanner.checkpoints.len());
+        .saturating_add(active.scanner.checkpoints.capacity());
     counts.checkpoint_bytes = counts.checkpoint_bytes.saturating_add(
         active
             .scanner
             .checkpoints
-            .len()
+            .capacity()
             .saturating_mul(size_of::<ExactGeometryCheckpoint>()),
     );
     counts.continuation_items = counts
@@ -267,7 +366,7 @@ fn add_active(counts: &mut ExactGeometryCounts, active: &ActiveJob) {
             .output_item_charge
             .total()
             .unwrap_or(usize::MAX),
-        active.scanner.fragments.len(),
+        active.scanner.fragments.capacity(),
         active.scanner.output_charge.total().unwrap_or(usize::MAX),
     );
 }
@@ -321,7 +420,7 @@ fn style_payload_bytes(inputs: &OwnerInputs) -> usize {
         style
             .oversize
             .runs
-            .len()
+            .capacity()
             .saturating_mul(size_of::<TextRun>()),
     );
     for run in &style.oversize.runs {

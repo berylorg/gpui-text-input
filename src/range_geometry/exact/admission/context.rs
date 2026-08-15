@@ -1,4 +1,4 @@
-use crate::{ByteOffset, PageRequestKey, RangePage};
+use crate::{ByteOffset, ObjectRequestKey, PageRequestKey, RangePage};
 
 use super::*;
 
@@ -52,13 +52,13 @@ pub(super) fn admit(
         .cursor
         .provide_context(&page.text()[local_start..], chunk_start);
     active.page_use = ActivePageUse::Traverse { anchor: replay };
-    finish(owner, active, expected, &mut budget)
+    finish(owner, active, consumed_page_release(expected), &mut budget)
 }
 
 pub(super) fn defer(
     owner: &mut ExactGeometryOwner,
     mut active: Box<ActiveJob>,
-    expected: PageRequestKey,
+    expected: ObjectRequestKey,
     required_end: ByteOffset,
     replay: ByteOffset,
     mut budget: AdmissionBudget,
@@ -67,16 +67,22 @@ pub(super) fn defer(
         required_end,
         replay,
     };
-    finish(owner, active, expected, &mut budget)
+    finish(
+        owner,
+        active,
+        consumed_object_release(expected),
+        &mut budget,
+    )
 }
 
 fn finish(
     owner: &mut ExactGeometryOwner,
     mut active: Box<ActiveJob>,
-    expected: PageRequestKey,
+    release: ExactGeometryRelease,
     budget: &mut AdmissionBudget,
 ) -> Result<ExactGeometryAdmission, ExactGeometryFailure> {
     active.pending = None;
+    active.text_page = None;
     if let Err(error) = budget.observe(&active, 0, 0) {
         return Err(owner.terminal_failure(
             error,
@@ -88,9 +94,5 @@ fn finish(
     owner.high_water_bytes = owner.high_water_bytes.max(budget.peak_bytes);
     owner.high_water_items = owner.high_water_items.max(budget.peak_items);
     owner.active = Some(active);
-    Ok(owner.page_admission(
-        ExactGeometryProgress::Scanning,
-        consumed_page_release(expected),
-        budget,
-    ))
+    Ok(owner.page_admission(ExactGeometryProgress::Scanning, release, budget))
 }

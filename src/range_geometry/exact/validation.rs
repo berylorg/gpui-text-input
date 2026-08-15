@@ -7,13 +7,16 @@ pub(super) fn validate_inputs(
     style: &StreamingGeometryStyle,
 ) -> Result<(), ExactGeometryError> {
     let limits = layout.limits;
-    if limits.segment_bytes == 0
+    if layout.start_position.byte_offset != 0
+        || crate::SourcePosition::try_from(layout.start_position).is_err()
+        || limits.segment_bytes == 0
         || limits.runs == 0
         || limits.decorations == 0
         || limits.glyphs == 0
         || limits.wraps == 0
         || limits.maps == 0
         || limits.fragments == 0
+        || limits.retained_items == 0
         || limits.retained_bytes == 0
     {
         return Err(ExactGeometryError::InvalidLimits);

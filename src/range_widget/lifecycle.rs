@@ -1,82 +1,26 @@
 use gpui::{Context, Pixels, Window};
 
 use crate::{
-    ByteOffset, RangeEditCoordinator, RangeHistoryFrontier, RangeRestorationSeed,
-    RangeScrollAnchor, RangeSelection, RangeTextInputError, RangeTextInputEvent,
-    RangeTextInputRequest,
+    RangeEditCoordinator, RangeHistoryFrontier, RangeRestorationScrollAnchor, RangeRestorationSeed,
+    RangeSourceSelection, RangeTextInputError, RangeTextInputEvent, RangeTextInputRequest,
 };
 
 use super::RangeTextInput;
 
 impl RangeTextInput {
-    /// Rebinds this instance while retaining the prior publication until a successor is coherent.
-    pub fn rebind(
+    pub(super) fn settle_committed_rebind(
         &mut self,
+        key: crate::MutationKey,
+        outcome: crate::MutationOutcome,
         binding: crate::RangeBinding,
-        selection: Option<RangeSelection>,
+        selection: RangeSourceSelection,
+        positions: crate::MutationPositions,
+        proofs: Vec<crate::range_edit::SourcePositionProof>,
+        composition: Option<crate::ByteRange>,
+        active_loss_reason: crate::InlineObjectRealizationLossReason,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Result<(), RangeTextInputError> {
-        if !self.mounted {
-            return Err(RangeTextInputError::NotMounted);
-        }
-        if self.detached_edits.len() >= self.config.limits.max_detached_edits
-            && matches!(
-                self.edits.state(),
-                crate::MutationState::CommitPending | crate::MutationState::DetachedCommit
-            )
-        {
-            return Err(RangeTextInputError::Busy);
-        }
-        let mut prior_edits = std::mem::replace(
-            &mut self.edits,
-            RangeEditCoordinator::new(binding, self.config.mutation_limits),
-        );
-        if let Some(disposal) = prior_edits.dispose() {
-            match disposal {
-                crate::MutationDisposal::Cancelled(key) => {
-                    self.cancel_mutation_dispatch(key, false)
-                }
-                crate::MutationDisposal::Detached(key) => {
-                    self.cancel_mutation_dispatch(key, true);
-                    self.detached_edits.push(prior_edits);
-                }
-            }
-        }
-        self.pending_insert = None;
-        self.mutation_selection = None;
-        self.mutation_composition = None;
-        self.cancel_history_dispatch();
-        for key in self.residency.rebind(binding) {
-            self.cancel_page_dispatch(key);
-        }
-        self.pending_page_aliases.clear();
-        if let Some(cancellation) = self.clipboard.rebind(binding)
-            && let Some(page) = cancellation.pending_page()
-        {
-            self.cancel_page_dispatch(page);
-        }
-        self.pending_clipboard_page = None;
-        let release = self.geometry.rebind(binding)?;
-        self.release_geometry(&release, None, Some(cx));
-        self.surface_candidate = None;
-        self.config.binding = binding;
-        self.active_geometry = None;
-        self.surface_candidate = None;
-        self.segmentation = None;
-        self.segmentation_action = None;
-        self.platform = None;
-        self.restoration = None;
-        self.replacement = None;
-        self.platform_ready = None;
-        self.desired.selection =
-            selection.unwrap_or_else(|| RangeSelection::caret(ByteOffset::new(0)));
-        self.desired.composition = None;
-        self.desired.scroll.source = self.desired.selection.head;
-        self.desired.scroll.intra_anchor = Pixels::ZERO;
-        self.desired.target_block = Pixels::ZERO;
-        self.desired.preserve_scroll_anchor = false;
-        self.desired.reveal_caret = true;
+    ) -> Result<crate::MutationSettlement, RangeTextInputError> {
         let prior_scrollbar_owner = self.scrollbar.owner;
         let next_mount = prior_scrollbar_owner
             .mount_generation
@@ -87,18 +31,97 @@ impl RangeTextInput {
             prior_scrollbar_owner.owner_id,
             gpui_scrollbar::ScrollbarMountGeneration::new(next_mount),
         );
-        if !self.scrollbar.state.replace_owner(
+        let candidate = self.prepare_rebind_transition(
+            binding,
+            Some(selection),
+            prior_scrollbar_owner,
+            replacement_scrollbar_owner,
+            active_loss_reason,
+            Some((key, outcome)),
+            composition,
+            Some((positions, proofs)),
+        )?;
+        if self.scrollbar.state.current_owner() != Some(prior_scrollbar_owner) {
+            return Err(RangeTextInputError::Stale);
+        }
+        let settlement = self.edits.settle(key, outcome)?;
+        let committed = self.commit_widget_transition_internal(candidate);
+        assert!(self.scrollbar.state.replace_owner(
             prior_scrollbar_owner,
             replacement_scrollbar_owner,
             window,
             cx,
-        ) {
+        ));
+        self.flush_widget_transition(committed, Some(cx));
+        Ok(settlement)
+    }
+
+    /// Rebinds this instance while retaining the prior publication until a successor is coherent.
+    pub fn rebind(
+        &mut self,
+        binding: crate::RangeBinding,
+        selection: Option<RangeSourceSelection>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), RangeTextInputError> {
+        if !self.mounted {
+            return Err(RangeTextInputError::NotMounted);
+        }
+        if binding == self.config.binding && selection == self.desired.source_selection {
+            return Ok(());
+        }
+        if binding == self.config.binding {
+            let selected_object = match selection {
+                Some(selection) => self
+                    .interactive_surface()
+                    .ok_or(RangeTextInputError::Busy)?
+                    .object_selected_by(selection),
+                None => None,
+            };
+            return self.publish_optional_source_selection(selection, selected_object, None, cx);
+        }
+        if self.detached_edits.len() >= self.config.limits.max_detached_edits
+            && matches!(
+                self.edits.state(),
+                crate::MutationState::CommitPending | crate::MutationState::DetachedCommit
+            )
+        {
+            return Err(RangeTextInputError::Busy);
+        }
+        let prior_scrollbar_owner = self.scrollbar.owner;
+        let next_mount = prior_scrollbar_owner
+            .mount_generation
+            .get()
+            .checked_add(1)
+            .ok_or(RangeTextInputError::Stale)?;
+        let replacement_scrollbar_owner = gpui_scrollbar::ScrollbarOwnerKey::new(
+            prior_scrollbar_owner.owner_id,
+            gpui_scrollbar::ScrollbarMountGeneration::new(next_mount),
+        );
+        let candidate = self.prepare_rebind_transition(
+            binding,
+            selection,
+            prior_scrollbar_owner,
+            replacement_scrollbar_owner,
+            crate::InlineObjectRealizationLossReason::Superseded,
+            None,
+            None,
+            None,
+        )?;
+        // This is deliberately the final fallible/no-change gate. The prepared commit below only
+        // moves bounded deltas and publishes effects after the widget is coherent.
+        if self.scrollbar.state.current_owner() != Some(prior_scrollbar_owner) {
             return Err(RangeTextInputError::Stale);
         }
-        self.scrollbar.owner = replacement_scrollbar_owner;
-        self.scrollbar.model.set(None);
-        self.start_index()?;
-        cx.notify();
+        let committed = self.commit_widget_transition_internal(candidate);
+        assert!(self.scrollbar.state.replace_owner(
+            prior_scrollbar_owner,
+            replacement_scrollbar_owner,
+            window,
+            cx,
+        ));
+        let progress = self.flush_widget_transition(committed, Some(cx));
+        debug_assert_eq!(progress, crate::ExactGeometryProgress::Scanning);
         Ok(())
     }
 
@@ -107,6 +130,9 @@ impl RangeTextInput {
         &self,
         history: Option<RangeHistoryFrontier>,
     ) -> Result<RangeRestorationSeed, RangeTextInputError> {
+        if !self.mounted {
+            return Err(RangeTextInputError::NotMounted);
+        }
         if !self.is_quiescent() {
             return Err(RangeTextInputError::NotQuiescent);
         }
@@ -117,16 +143,61 @@ impl RangeTextInput {
         if surface.composition().is_some() {
             return Err(RangeTextInputError::NotQuiescent);
         }
+        if let Some(mut seed) = self.published_restoration
+            && seed.binding == surface.binding()
+            && seed.caret == surface.caret()
+            && seed.selection == surface.selection()
+            && seed.scroll.position == surface.scroll_position()
+        {
+            seed.history = history;
+            return Ok(seed);
+        }
+        let positions = self
+            .adopted_positions
+            .filter(|positions| {
+                positions.caret() == surface.caret()
+                    && positions.selection_anchor() == surface.selection().anchor
+                    && positions.selection_head() == surface.selection().head
+            })
+            .or_else(|| {
+                let proof_at = |position| {
+                    self.admitted_edit_proofs
+                        .iter()
+                        .find(|proof| {
+                            proof.binding() == surface.binding() && proof.position() == position
+                        })
+                        .map(|proof| proof.position())
+                };
+                Some(crate::MutationPositions::new(
+                    proof_at(surface.caret())?,
+                    proof_at(surface.selection().anchor)?,
+                    proof_at(surface.selection().head)?,
+                ))
+            })
+            .ok_or(RangeTextInputError::IncompleteSurface)?;
+        let scroll = self
+            .admitted_edit_proofs
+            .iter()
+            .find(|proof| {
+                proof.binding() == surface.binding()
+                    && proof.position() == surface.scroll_position()
+            })
+            .map(|proof| proof.position())
+            .or_else(|| {
+                (positions.caret() == surface.scroll_position()).then_some(positions.caret())
+            })
+            .ok_or(RangeTextInputError::IncompleteSurface)?;
         Ok(RangeRestorationSeed {
             binding: surface.binding(),
-            caret: surface.caret(),
-            selection: surface.selection(),
-            scroll: RangeScrollAnchor {
-                source: surface.scroll_source(),
+            caret: positions.caret(),
+            selection: RangeSourceSelection {
+                anchor: positions.selection_anchor(),
+                head: positions.selection_head(),
+            },
+            scroll: RangeRestorationScrollAnchor {
+                position: scroll,
                 intra_anchor: surface.scroll_intra_anchor(),
             },
-            viewport: surface.viewport(),
-            overscan: surface.overscan(),
             history,
         })
     }
@@ -147,33 +218,41 @@ impl RangeTextInput {
             || seed.caret != seed.selection.head
             || seed.scroll.intra_anchor < Pixels::ZERO
             || seed.scroll.intra_anchor > self.config.limits.max_intra_anchor
-            || !seed.overscan.contains(seed.viewport)
+            || seed.selection.range().is_err()
         {
             cx.emit(RangeTextInputEvent::RestorationRejected);
             return Err(RangeTextInputError::MalformedSeed);
         }
         let extent = seed.binding.extent();
-        for range in [seed.selection.range(), seed.viewport, seed.overscan] {
-            if extent.check_byte_range(range).is_err() {
-                cx.emit(RangeTextInputEvent::RestorationRejected);
-                return Err(RangeTextInputError::MalformedSeed);
-            }
-        }
-        for offset in [
+        for position in [
             seed.caret,
             seed.selection.anchor,
             seed.selection.head,
-            seed.scroll.source,
-            seed.viewport.start(),
-            seed.viewport.end(),
-            seed.overscan.start(),
-            seed.overscan.end(),
+            seed.scroll.position,
         ] {
-            if offset.get() > extent.byte_len() {
+            if position.byte_offset.get() > extent.byte_len() {
                 cx.emit(RangeTextInputEvent::RestorationRejected);
                 return Err(RangeTextInputError::MalformedSeed);
             }
         }
+        for key in self.residency.rebind(self.config.binding) {
+            self.cancel_page_dispatch(key);
+        }
+        for key in self
+            .object_residency
+            .rebind(self.config.binding, self.config.presentation_generation)
+        {
+            self.cancel_object_page_dispatch(key);
+        }
+        self.pending_geometry_object = None;
+        let release = self
+            .geometry
+            .rebind(self.config.binding, self.config.presentation_generation)?;
+        self.release_geometry(&release, None, None, Some(cx));
+        self.active_geometry = None;
+        self.surface_candidate = None;
+        self.surface = None;
+        self.published_restoration = None;
         self.restoration = Some(super::restoration::RestorationValidation::new(seed));
         self.request_next_restoration_validation(cx)
     }
@@ -187,6 +266,13 @@ impl RangeTextInput {
         if !self.mounted {
             return Vec::new();
         }
+        let active_loss =
+            self.active_object
+                .take()
+                .map(|active| crate::InlineObjectRealizationLoss {
+                    anchor: active.anchor,
+                    reason: crate::InlineObjectRealizationLossReason::Disposed,
+                });
         self.mounted = false;
         let mut edits = std::mem::replace(
             &mut self.edits,
@@ -206,24 +292,46 @@ impl RangeTextInput {
         for key in self.residency.dispose() {
             self.cancel_page_dispatch(key);
         }
+        for key in self.object_residency.dispose() {
+            self.cancel_object_page_dispatch(key);
+        }
+        self.pending_geometry_object = None;
         self.pending_page_aliases.clear();
-        if let Some(cancel) = self.clipboard.dispose()
-            && let Some(page) = cancel.pending_page()
-        {
-            self.cancel_page_dispatch(page);
+        if let Some(cancel) = self.clipboard.dispose() {
+            if let Some(page) = cancel.pending_text_page() {
+                self.cancel_page_dispatch(page);
+            }
+            if let Some(page) = cancel.pending_object_page() {
+                self.cancel_object_page_dispatch(page);
+            }
+            if cancel.awaiting_write() {
+                self.cancel_clipboard_write_dispatch(cancel.key());
+            }
         }
         self.pending_clipboard_page = None;
+        self.clipboard_cut_proofs = None;
+        let rejected_restoration_validation = self.reject_restoration_validation(cx);
+        let rejected_restoration_geometry = self.restoration_seed.is_some();
         let release = self.geometry.dispose();
-        self.release_geometry(&release, None, Some(cx));
+        self.release_geometry(&release, None, None, Some(cx));
         self.active_geometry = None;
         self.segmentation = None;
         self.segmentation_action = None;
         self.platform = None;
         self.restoration = None;
+        self.restoration_seed = None;
+        self.published_restoration = None;
+        if rejected_restoration_geometry && !rejected_restoration_validation {
+            cx.emit(RangeTextInputEvent::RestorationRejected);
+        }
         self.replacement = None;
         self.platform_ready = None;
-        self.mutation_selection = None;
+        self.mutation_positions = None;
+        self.adopted_positions = None;
+        self.admitted_edit_proofs.clear();
         self.mutation_composition = None;
+        self.pending_object_remove = None;
+        self.pending_select_all = false;
         self.cancel_history_dispatch();
         self.surface = None;
         self.pointer_anchor = None;
@@ -232,10 +340,15 @@ impl RangeTextInput {
             .scrollbar
             .state
             .unmount_viewport(self.scrollbar.owner, window, cx);
-        self.requests.drain(..).collect()
+        let requests = self.requests.drain(..).collect();
+        if let Some(loss) = active_loss {
+            cx.emit(RangeTextInputEvent::InlineObjectRealizationLost(loss));
+            cx.notify();
+        }
+        requests
     }
 
-    fn cancel_mutation_dispatch(&mut self, key: crate::MutationKey, detached: bool) {
+    pub(super) fn cancel_mutation_dispatch(&mut self, key: crate::MutationKey, detached: bool) {
         self.requests.retain(|request| {
             !matches!(request,
                 RangeTextInputRequest::MutationPreflight(proposal) if proposal.key() == key
@@ -250,6 +363,29 @@ impl RangeTextInput {
             } else {
                 RangeTextInputRequest::CancelMutation(key)
             });
+        }
+    }
+
+    pub(super) fn cancel_object_page_dispatch(&mut self, key: crate::ObjectRequestKey) {
+        if let Some(index) = self.requests.iter().position(|request| {
+            matches!(request, RangeTextInputRequest::ObjectPage(request) if request.key() == key)
+        }) {
+            self.requests.remove(index);
+        } else if self.dispatched_object_pages.remove(&key) {
+            self.requests
+                .push_back(RangeTextInputRequest::CancelObjectPage(key));
+        }
+    }
+
+    pub(super) fn cancel_clipboard_write_dispatch(&mut self, key: crate::ClipboardKey) {
+        if let Some(index) = self.requests.iter().position(|request| {
+            matches!(request, RangeTextInputRequest::ClipboardWrite(write) if write.key() == key)
+        }) {
+            self.requests.remove(index);
+        } else if self.dispatched_clipboard_write == Some(key) {
+            self.dispatched_clipboard_write = None;
+            self.requests
+                .push_back(RangeTextInputRequest::CancelClipboardWrite(key));
         }
     }
 

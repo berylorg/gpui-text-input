@@ -20,7 +20,7 @@ fn drive_atom_job(
         }
         let page = response_with_atoms(source, id, request, forward_cap, atoms);
         id += 1;
-        let admission = owner.admit_page(job, &page, text_system).unwrap();
+        let admission = admit_page_with_empty_objects(owner, job, &page, text_system).unwrap();
         if admission.progress() != ExactGeometryProgress::Scanning {
             return (admission.progress(), contexts);
         }
@@ -42,8 +42,7 @@ fn reach_atom_context(
             return (request, page);
         }
         assert_eq!(
-            owner
-                .admit_page(job, &page, text_system)
+            admit_page_with_empty_objects(owner, job, &page, text_system)
                 .unwrap()
                 .progress(),
             ExactGeometryProgress::Scanning
@@ -63,6 +62,7 @@ fn opaque_ri_atom_is_an_independent_context_origin_across_replay_and_target(
         let build = |index_cap, target_cap| {
             let mut owner = ExactGeometryOwner::new(
                 binding(&source, 1),
+                PresentationGeneration::new(1),
                 layout(8, 24.),
                 style(),
                 ExactGeometryLimits::new(64, 16, 512 * 1024, 16 * 1024).unwrap(),
@@ -196,8 +196,7 @@ fn atom_context_suffix_rejects_intersection_and_obsolete_failure_preserves_newer
             .unwrap();
         let current_page = response_with_atoms(&source, 502, current_request, 4, &[real_atom]);
         assert_eq!(
-            owner
-                .admit_page(current_job, &current_page, text_system)
+            admit_page_with_empty_objects(&mut owner, current_job, &current_page, text_system)
                 .unwrap()
                 .progress(),
             ExactGeometryProgress::Scanning

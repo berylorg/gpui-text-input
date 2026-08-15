@@ -3,21 +3,25 @@ use std::mem::size_of;
 use super::*;
 
 #[gpui::test]
-fn empty_source_completes_origin_and_terminal_without_page(cx: &mut TestAppContext) {
-    with_text_system(cx, |_| {
+fn empty_source_is_finalized_through_the_canonical_end_boundary(cx: &mut TestAppContext) {
+    with_text_system(cx, |text_system| {
         let mut owner = owner("", 8, 4, 256 * 1024, 8);
         let start = owner.start_index(GeometryJobId::new(1)).unwrap();
-        assert_eq!(start.progress(), ExactGeometryProgress::IndexComplete);
+        assert_eq!(start.progress(), ExactGeometryProgress::Scanning);
+        let page = page(&mut owner, start.key(), "", 0, 0, 1);
+        let admission =
+            admit_page_with_empty_objects(&mut owner, start.key(), &page, text_system).unwrap();
+        assert_eq!(admission.progress(), ExactGeometryProgress::IndexComplete);
         let index = owner.index().unwrap();
-        assert_eq!(index.aggregate().visual_lines(), 0);
-        assert_eq!(index.aggregate().content_height(), px(0.));
+        assert_eq!(index.aggregate().visual_lines(), 1);
+        assert_eq!(index.aggregate().content_height(), px(14.));
         assert_eq!(index.checkpoints().len(), 2);
-        assert_eq!(index.checkpoints()[0].source().get(), 0);
+        assert_eq!(index.checkpoints()[0].source().byte_offset.get(), 0);
         assert!(!index.checkpoints()[0].is_terminal());
         assert!(index.checkpoints()[1].is_terminal());
         assert_eq!(index.checkpoints()[1].cursor_offset(), 0);
         assert_eq!(
-            owner.request_page(start.key(), PageRequestId::new(1)),
+            owner.request_page(start.key(), PageRequestId::new(2)),
             Err(ExactGeometryError::ObsoleteJob(start.key()))
         );
     });
@@ -137,6 +141,38 @@ fn layout_replacement_accounts_old_and_candidate_inputs_concurrently(cx: &mut Te
 }
 
 #[gpui::test]
+fn pending_text_requests_enforce_exact_item_caps_atomically(cx: &mut TestAppContext) {
+    with_text_system(cx, |_| {
+        let mut text_probe =
+            owner_with_retained_items("a", 8, 64., 4, 256 * 1024, usize::MAX, style()).unwrap();
+        let text_job = start_index(&mut text_probe, 1);
+        text_probe
+            .request_page(text_job, PageRequestId::new(1))
+            .unwrap();
+        let text_required = text_probe.counts().total_items();
+
+        let mut text_exact =
+            owner_with_retained_items("a", 8, 64., 4, 256 * 1024, text_required, style()).unwrap();
+        let exact_job = start_index(&mut text_exact, 1);
+        text_exact
+            .request_page(exact_job, PageRequestId::new(1))
+            .unwrap();
+        assert_eq!(text_exact.counts().total_items(), text_required);
+
+        let mut text_under =
+            owner_with_retained_items("a", 8, 64., 4, 256 * 1024, text_required - 1, style())
+                .unwrap();
+        let under_job = start_index(&mut text_under, 1);
+        let before = text_under.counts();
+        assert_eq!(
+            text_under.request_page(under_job, PageRequestId::new(1)),
+            Err(ExactGeometryError::CapacityExceeded)
+        );
+        assert_eq!(text_under.counts(), before);
+    });
+}
+
+#[gpui::test]
 fn desired_target_identity_replacement_cancel_epoch_and_dispose_are_observable(
     cx: &mut TestAppContext,
 ) {
@@ -192,7 +228,7 @@ fn desired_target_identity_replacement_cancel_epoch_and_dispose_are_observable(
 
         let old_key = owner.key();
         let release = owner
-            .rebind(binding(source.as_str(), 2))
+            .rebind(binding(source.as_str(), 2), PresentationGeneration::new(1))
             .expect("rebind releases old publications");
         assert!(release.jobs.contains(&index.key()));
         assert_ne!(owner.key(), old_key);
@@ -204,15 +240,43 @@ fn desired_target_identity_replacement_cancel_epoch_and_dispose_are_observable(
                 BlockTarget::new(px(14.), px(28.), px(14.)),
             )
             .unwrap();
+        let rebound_key = owner.key();
+        let release = owner
+            .set_presentation_generation(PresentationGeneration::new(2))
+            .expect("presentation replacement releases desired target");
+        assert!(release.jobs.contains(&pending_after_rebind.key()));
+        assert_eq!(owner.key().epoch(), rebound_key.epoch());
+        assert_eq!(
+            owner.key().presentation_generation(),
+            PresentationGeneration::new(2)
+        );
+        assert_eq!(
+            owner
+                .set_presentation_generation(PresentationGeneration::new(2))
+                .unwrap(),
+            ExactGeometryRelease::default()
+        );
+
+        let pending_after_presentation = owner
+            .request_block_target(
+                GeometryJobId::new(7),
+                BlockTarget::new(px(14.), px(28.), px(14.)),
+            )
+            .unwrap();
         let release = owner
             .set_layout(layout(6, 32.), style())
             .expect("epoch replacement releases desired target");
-        assert!(release.jobs.contains(&pending_after_rebind.key()));
+        assert!(release.jobs.contains(&pending_after_presentation.key()));
         assert_eq!(owner.desired_target_key(), None);
+        assert_eq!(owner.key().epoch().get(), rebound_key.epoch().get() + 1);
+        assert_eq!(
+            owner.key().presentation_generation(),
+            PresentationGeneration::new(2)
+        );
 
         let pending_before_dispose = owner
             .request_block_target(
-                GeometryJobId::new(7),
+                GeometryJobId::new(8),
                 BlockTarget::new(px(14.), px(28.), px(14.)),
             )
             .unwrap();
@@ -222,9 +286,13 @@ fn desired_target_identity_replacement_cancel_epoch_and_dispose_are_observable(
         assert_eq!(owner.counts().input_bytes, 0);
         assert_eq!(owner.counts().total_bytes(), owner.counts().owner_bytes);
         assert!(matches!(
-            owner.start_index(GeometryJobId::new(8)),
+            owner.start_index(GeometryJobId::new(9)),
             Err(ExactGeometryError::Disposed)
         ));
+        assert_eq!(
+            owner.set_presentation_generation(PresentationGeneration::new(2)),
+            Err(ExactGeometryError::Disposed)
+        );
     });
 }
 

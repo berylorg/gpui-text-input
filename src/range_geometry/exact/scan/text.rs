@@ -1,7 +1,7 @@
 use gpui::{StreamingLayoutBinding, WindowTextSystem};
 use unicode_segmentation::{GraphemeCursor, GraphemeIncomplete};
 
-use crate::{ByteOffset, RangePage};
+use crate::{ByteOffset, InlineObjectGap, RangePage, SourcePosition};
 
 use super::super::{
     ActiveJob, AdmissionBudget, ExactGeometryError, ExactGeometryLimits, Scanner,
@@ -15,6 +15,7 @@ pub(super) fn process_text_region(
     page: &RangePage,
     start: u64,
     end: u64,
+    end_position: SourcePosition,
     forced_boundary: bool,
     text_system: &WindowTextSystem,
     binding: &StreamingLayoutBinding,
@@ -57,6 +58,14 @@ pub(super) fn process_text_region(
                     cursor_origin
                         .checked_add(boundary as u64)
                         .ok_or(ExactGeometryError::SourceContract)?,
+                    if cursor_origin.saturating_add(boundary as u64) == end {
+                        end_position
+                    } else {
+                        SourcePosition::new(
+                            ByteOffset::new(cursor_origin.saturating_add(boundary as u64)),
+                            InlineObjectGap::NoObjects,
+                        )
+                    },
                     text_system,
                     binding,
                     style,
@@ -111,7 +120,16 @@ pub(super) fn process_text_region(
                 .map_err(|_| ExactGeometryError::SourceContract)?,
             true,
         );
-        complete_grapheme(job, end, text_system, binding, style, limits, budget)?;
+        complete_grapheme(
+            job,
+            end,
+            end_position,
+            text_system,
+            binding,
+            style,
+            limits,
+            budget,
+        )?;
     }
     Ok(None)
 }

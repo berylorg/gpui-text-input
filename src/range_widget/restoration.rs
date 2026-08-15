@@ -1,40 +1,62 @@
 use crate::{
-    ByteOffset, PageDemandEnvelope, PageFailure, PagePurpose, PageRequestId, RangePage,
-    RangeRestorationSeed, RangeTextInput, RangeTextInputError, RangeTextInputEvent,
+    ByteOffset, ObjectCursor, ObjectDemandEnvelope, ObjectDirection, ObjectPage,
+    ObjectPageEdgeFact, ObjectPurpose, ObjectRequest, ObjectRequestId, ObjectRequestKey,
+    PagePurpose, PageRequest, PageRequestId, PageRequestKey, RangeRestorationSeed, RangeTextInput,
+    RangeTextInputError, RangeTextInputEvent, RangeTextInputRequest, SourcePosition,
 };
 
 #[derive(Debug)]
 pub(super) struct RestorationValidation {
     seed: RangeRestorationSeed,
-    offsets: Vec<ByteOffset>,
-    next: usize,
-    pending: Option<crate::PageRequestKey>,
+    text_offsets: Vec<ByteOffset>,
+    text_next: usize,
+    object_positions: Vec<SourcePosition>,
+    object_next: usize,
+    pending_text: Option<PageRequestKey>,
+    pending_object: Option<ObjectRequestKey>,
+    object_cursor: Option<ObjectCursor>,
+    prior_object: Option<ObjectCursor>,
+    object_seen: bool,
+    gap_proven: bool,
 }
 
 impl RestorationValidation {
     pub fn new(seed: RangeRestorationSeed) -> Self {
-        let mut offsets = vec![
+        let positions = [
             seed.caret,
             seed.selection.anchor,
             seed.selection.head,
-            seed.scroll.source,
-            seed.viewport.start(),
-            seed.viewport.end(),
-            seed.overscan.start(),
-            seed.overscan.end(),
+            seed.scroll.position,
         ];
-        offsets.sort();
-        offsets.dedup();
+        let mut text_offsets = positions.map(|position| position.byte_offset).to_vec();
+        text_offsets.sort();
+        text_offsets.dedup();
+        let mut object_positions = Vec::with_capacity(positions.len());
+        for position in positions {
+            if !object_positions.contains(&position) {
+                object_positions.push(position);
+            }
+        }
         Self {
             seed,
-            offsets,
-            next: 0,
-            pending: None,
+            text_offsets,
+            text_next: 0,
+            object_positions,
+            object_next: 0,
+            pending_text: None,
+            pending_object: None,
+            object_cursor: None,
+            prior_object: None,
+            object_seen: false,
+            gap_proven: false,
         }
     }
 
-    pub const fn pending(&self) -> Option<crate::PageRequestKey> {
-        self.pending
+    pub const fn pending_text(&self) -> Option<PageRequestKey> {
+        self.pending_text
+    }
+    pub const fn pending_object(&self) -> Option<ObjectRequestKey> {
+        self.pending_object
     }
 }
 
@@ -46,87 +68,200 @@ impl RangeTextInput {
         let Some(mut validation) = self.restoration.take() else {
             return Err(RangeTextInputError::Stale);
         };
-        if validation.next == validation.offsets.len() {
-            let seed = validation.seed;
-            self.desired.selection = seed.selection;
-            self.desired.composition = None;
-            self.desired.scroll = seed.scroll;
-            self.desired.viewport_extent = self.config.viewport_extent;
-            self.desired.overscan = self.config.overscan;
-            self.desired.preserve_scroll_anchor = true;
-            self.desired.reveal_caret = false;
-            let checkpoint = self
-                .geometry
-                .index()
-                .and_then(|index| {
-                    index
-                        .checkpoints()
-                        .iter()
-                        .rev()
-                        .find(|checkpoint| checkpoint.source() <= seed.scroll.source)
-                })
-                .ok_or(RangeTextInputError::Stale)?;
-            self.desired.target_block = checkpoint.block_offset();
-            self.start_restoration_target(seed)?;
-            cx.notify();
+        if validation.text_next < validation.text_offsets.len() {
+            let candidate = validation.text_offsets[validation.text_next];
+            let id = PageRequestId::new(self.next_id());
+            let key = PageRequestKey::validation(
+                id,
+                self.config.binding.binding(),
+                self.config.binding.revision(),
+                PagePurpose::Restoration,
+                candidate,
+                self.config.limits.page_bytes,
+            )?;
+            validation.pending_text = Some(key);
+            self.restoration = Some(validation);
+            self.push_request(RangeTextInputRequest::Page(PageRequest::new(key)), cx);
             return Ok(());
         }
-        let candidate = validation.offsets[validation.next];
-        let id = PageRequestId::new(self.next_id());
-        let demand = PageDemandEnvelope::Validation {
-            candidate,
-            max_payload_bytes: self.config.limits.page_bytes,
-        };
-        let demand_result = self
-            .residency
-            .demand(id, PagePurpose::Restoration, demand)
-            .map_err(|_| RangeTextInputError::Busy)?;
-        let key = crate::PageRequestKey::validation(
-            id,
-            self.config.binding.binding(),
-            self.config.binding.revision(),
-            PagePurpose::Restoration,
-            candidate,
-            self.config.limits.page_bytes,
-        )?;
-        validation.pending = Some(key);
-        self.restoration = Some(validation);
-        let resident = self.accept_page_demand(crate::PageRequest::new(key), demand_result, cx)?;
-        cx.notify();
-        if let Some(page) = resident {
-            self.deliver_restoration_page(page, cx)?;
+        if validation.object_next < validation.object_positions.len() {
+            let position = validation.object_positions[validation.object_next];
+            let id = ObjectRequestId::new(self.next_id());
+            let demand = ObjectDemandEnvelope::anchor(
+                position.byte_offset,
+                validation.object_cursor,
+                ObjectDirection::Forward,
+                self.config.clipboard_limits.max_object_page_objects(),
+                self.config
+                    .clipboard_limits
+                    .max_object_page_retained_bytes(),
+            )
+            .map_err(|_| RangeTextInputError::InvalidLimits)?;
+            let key = ObjectRequestKey::new(
+                id,
+                self.config.binding.binding(),
+                self.config.binding.revision(),
+                self.config.presentation_generation,
+                ObjectPurpose::Restoration,
+                demand,
+            )
+            .map_err(|_| RangeTextInputError::InvalidLimits)?;
+            validation.pending_object = Some(key);
+            self.restoration = Some(validation);
+            self.push_request(
+                RangeTextInputRequest::ObjectPage(ObjectRequest::new(key)),
+                cx,
+            );
+            return Ok(());
         }
-        Ok(())
+        let seed = validation.seed;
+        self.finish_restoration_validation(seed, cx)
     }
 
     pub(super) fn deliver_restoration_page(
         &mut self,
-        page: RangePage,
+        page: crate::RangePage,
         cx: &mut gpui::Context<Self>,
     ) -> Result<(), RangeTextInputError> {
-        if !self
-            .restoration
-            .as_ref()
-            .is_some_and(|validation| validation.pending() == Some(page.key()))
-        {
+        let mut validation = self.restoration.take().ok_or(RangeTextInputError::Stale)?;
+        if validation.pending_text != Some(page.key()) {
+            self.restoration = Some(validation);
             return Err(RangeTextInputError::Stale);
         }
-        let mut validation = self.restoration.take().ok_or(RangeTextInputError::Stale)?;
-        if validation.pending != Some(page.key()) || page.candidate_is_boundary() != Some(true) {
-            let _ = self.residency.settle(page.key(), PageFailure::Malformed);
+        if page.retained_bytes() > self.config.residency_limits.max_resident_bytes() {
+            cx.emit(RangeTextInputEvent::RestorationRejected);
+            cx.notify();
+            return Err(RangeTextInputError::SurfaceCapacity);
+        }
+        if page.candidate_is_boundary() != Some(true) {
+            self.restoration = None;
             cx.emit(RangeTextInputEvent::RestorationRejected);
             return Err(RangeTextInputError::MalformedSeed);
         }
-        let _ = self.residency.settle(page.key(), PageFailure::Cancelled);
-        validation.pending = None;
-        validation.next += 1;
+        validation.pending_text = None;
+        validation.text_next += 1;
         self.restoration = Some(validation);
         self.request_next_restoration_validation(cx)
     }
 
-    pub(super) fn reject_restoration(&mut self, cx: &mut gpui::Context<Self>) {
+    pub(super) fn deliver_restoration_object_page(
+        &mut self,
+        page: ObjectPage,
+        cx: &mut gpui::Context<Self>,
+    ) -> Result<(), RangeTextInputError> {
+        let mut validation = self.restoration.take().ok_or(RangeTextInputError::Stale)?;
+        if validation.pending_object != Some(page.key()) {
+            self.restoration = Some(validation);
+            return Err(RangeTextInputError::Stale);
+        }
+        let position = validation.object_positions[validation.object_next];
+        for object in page.objects() {
+            validation.object_seen = true;
+            let cursor = object.cursor();
+            let leading = validation.prior_object.map_or_else(
+                || crate::InlineObjectGap::before(cursor.neighbor()),
+                |prior| {
+                    crate::InlineObjectGap::between(prior.neighbor(), cursor.neighbor())
+                        .expect("strict page order creates a valid gap")
+                },
+            );
+            validation.gap_proven |= position.gap == leading;
+            validation.prior_object = Some(cursor);
+        }
+        if page.complete() {
+            if let Some(last) = validation.prior_object {
+                validation.gap_proven |=
+                    position.gap == crate::InlineObjectGap::after(last.neighbor());
+            } else if position.gap == crate::InlineObjectGap::NoObjects {
+                validation.gap_proven = true;
+            }
+            if !validation.gap_proven
+                || (position.gap == crate::InlineObjectGap::NoObjects && validation.object_seen)
+            {
+                self.restoration = None;
+                cx.emit(RangeTextInputEvent::RestorationRejected);
+                return Err(RangeTextInputError::MalformedSeed);
+            }
+            validation.object_next += 1;
+            validation.object_cursor = None;
+            validation.prior_object = None;
+            validation.object_seen = false;
+            validation.gap_proven = false;
+        } else {
+            let Some(cursor) = page.continuation() else {
+                self.restoration = None;
+                cx.emit(RangeTextInputEvent::RestorationRejected);
+                return Err(RangeTextInputError::MalformedSeed);
+            };
+            if page.following() != ObjectPageEdgeFact::Continues(cursor) {
+                self.restoration = None;
+                cx.emit(RangeTextInputEvent::RestorationRejected);
+                return Err(RangeTextInputError::MalformedSeed);
+            }
+            validation.object_cursor = Some(cursor);
+        }
+        validation.pending_object = None;
+        self.restoration = Some(validation);
+        self.request_next_restoration_validation(cx)
+    }
+
+    fn finish_restoration_validation(
+        &mut self,
+        seed: RangeRestorationSeed,
+        cx: &mut gpui::Context<Self>,
+    ) -> Result<(), RangeTextInputError> {
+        self.desired.source_selection = Some(seed.selection);
+        self.desired.composition = None;
+        self.desired.scroll = super::RangeScrollAnchor {
+            source: seed.scroll.position.byte_offset,
+            intra_anchor: seed.scroll.intra_anchor,
+        };
+        self.desired.viewport_extent = self.config.viewport_extent;
+        self.desired.overscan = self.config.overscan;
+        self.desired.target_block = gpui::Pixels::ZERO;
+        self.desired.preserve_scroll_anchor = true;
+        self.desired.reveal_caret = false;
         self.restoration = None;
+        self.restoration_seed = Some(seed);
+        if let Err(error) = self.start_index() {
+            self.reject_restoration_geometry(cx)?;
+            return Err(error);
+        }
+        cx.notify();
+        Ok(())
+    }
+
+    pub(super) fn reject_restoration_task(
+        &mut self,
+        cx: &mut gpui::Context<Self>,
+    ) -> Result<bool, RangeTextInputError> {
+        if self.reject_restoration_validation(cx) {
+            return Ok(true);
+        }
+        self.reject_restoration_geometry(cx)
+    }
+
+    pub(super) fn reject_restoration_validation(&mut self, cx: &mut gpui::Context<Self>) -> bool {
+        let Some(validation) = self.restoration.take() else {
+            return false;
+        };
+        if let Some(key) = validation.pending_text() {
+            let _ = self.residency.cancel(key);
+            self.cancel_page_dispatch(key);
+        }
+        if let Some(key) = validation.pending_object() {
+            self.cancel_object_page_dispatch(key);
+        }
+        self.retire_surface_candidate();
+        self.restoration_seed = None;
+        self.published_restoration = None;
         cx.emit(RangeTextInputEvent::RestorationRejected);
         cx.notify();
+        true
+    }
+
+    pub(super) fn reject_restoration(&mut self, cx: &mut gpui::Context<Self>) {
+        let rejected = self.reject_restoration_validation(cx);
+        debug_assert!(rejected);
     }
 }

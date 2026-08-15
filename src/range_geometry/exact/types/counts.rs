@@ -11,10 +11,14 @@ pub struct ExactGeometryCounts {
     pub active_job_bytes: usize,
     pub pending_page_items: usize,
     pub pending_page_bytes: usize,
+    pub pending_object_page_items: usize,
+    pub pending_object_page_bytes: usize,
     pub scan_buffer_items: usize,
     pub scan_buffer_bytes: usize,
     pub active_atom_items: usize,
     pub active_atom_bytes: usize,
+    pub deferred_object_items: usize,
+    pub deferred_object_bytes: usize,
     pub checkpoints: usize,
     pub checkpoint_bytes: usize,
     pub continuation_items: usize,
@@ -34,8 +38,10 @@ impl ExactGeometryCounts {
             .saturating_add(self.desired_target_bytes)
             .saturating_add(self.active_job_bytes)
             .saturating_add(self.pending_page_bytes)
+            .saturating_add(self.pending_object_page_bytes)
             .saturating_add(self.scan_buffer_bytes)
             .saturating_add(self.active_atom_bytes)
+            .saturating_add(self.deferred_object_bytes)
             .saturating_add(self.checkpoint_bytes)
             .saturating_add(self.continuation_bytes)
             .saturating_add(self.output_record_bytes)
@@ -50,8 +56,10 @@ impl ExactGeometryCounts {
             .saturating_add(self.desired_target_items)
             .saturating_add(self.active_job_items)
             .saturating_add(self.pending_page_items)
+            .saturating_add(self.pending_object_page_items)
             .saturating_add(self.scan_buffer_items)
             .saturating_add(self.active_atom_items)
+            .saturating_add(self.deferred_object_items)
             .saturating_add(self.checkpoints)
             .saturating_add(self.continuation_items)
             .saturating_add(self.output_items)

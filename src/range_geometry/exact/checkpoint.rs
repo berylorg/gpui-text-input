@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use gpui::{StreamingLayoutBinding, StreamingLayoutContinuation};
 use unicode_segmentation::GraphemeCursor;
 
-use crate::ByteOffset;
+use crate::{ByteOffset, ObjectCursor, SourcePosition};
 
 use super::{BlockTarget, ExactGeometryCheckpoint, ExactGeometryError, Scanner};
 
@@ -13,17 +13,27 @@ pub(super) fn checkpoint(
     logical_line: u64,
     grapheme_origin: ByteOffset,
     grapheme: GraphemeCursor,
+    object_cursor: Option<ObjectCursor>,
     terminal: bool,
 ) -> Result<ExactGeometryCheckpoint, ExactGeometryError> {
     if grapheme_origin
         .get()
         .checked_add(grapheme.cur_cursor() as u64)
-        != Some(continuation.next_logical_offset)
+        != Some(continuation.next_position.byte_offset)
+        || continuation.input_id != binding.input_id
+        || continuation.segment_policy_id != binding.segment_policy_id
+        || continuation.ended != terminal
     {
         return Err(ExactGeometryError::SourceContract);
     }
+    let source = SourcePosition::try_from(continuation.next_position)
+        .map_err(|_| ExactGeometryError::SourceContract)?;
+    if object_cursor.is_some_and(|cursor| cursor.anchor() > source.byte_offset) {
+        return Err(ExactGeometryError::SourceContract);
+    }
     Ok(ExactGeometryCheckpoint {
-        source: ByteOffset::new(continuation.next_logical_offset),
+        source,
+        object_cursor,
         block_offset: continuation.block_offset,
         visual_lines: continuation.visual_lines,
         logical_line,
@@ -48,6 +58,7 @@ pub(super) fn make_checkpoint(
         scanner.logical_line,
         scanner.cursor_origin,
         scanner.cursor.clone(),
+        scanner.object_cursor,
         terminal,
     )
 }
@@ -58,9 +69,9 @@ pub(super) fn retain_checkpoint(
     capacity: usize,
 ) {
     if checkpoints.len() > 1
-        && checkpoints
-            .back()
-            .is_some_and(|prior| prior.source == checkpoint.source)
+        && checkpoints.back().is_some_and(|prior| {
+            prior.source == checkpoint.source && prior.object_cursor == checkpoint.object_cursor
+        })
     {
         checkpoints.pop_back();
     }

@@ -39,6 +39,7 @@ pub(in crate::range_geometry::exact) fn merge_release(
 ) -> ExactGeometryRelease {
     left.jobs.extend(right.jobs);
     left.pages.extend(right.pages);
+    left.object_pages.extend(right.object_pages);
     left.jobs.sort();
     left.jobs.dedup();
     add_counts(&mut left.counts, right.counts);
@@ -61,10 +62,14 @@ fn add_counts(left: &mut ExactGeometryCounts, right: ExactGeometryCounts) {
     add!(active_job_items);
     add!(pending_page_bytes);
     add!(pending_page_items);
+    add!(pending_object_page_bytes);
+    add!(pending_object_page_items);
     add!(scan_buffer_bytes);
     add!(scan_buffer_items);
     add!(active_atom_bytes);
     add!(active_atom_items);
+    add!(deferred_object_bytes);
+    add!(deferred_object_items);
     add!(checkpoints);
     add!(checkpoint_bytes);
     add!(continuation_bytes);

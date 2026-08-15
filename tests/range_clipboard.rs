@@ -1,264 +1,429 @@
+use std::sync::Arc;
+
+use gpui::{SharedString, px};
 use gpui_text_input::{
-    AtomFact, AtomId, BindingId, ByteRange, ClipboardCompletion, ClipboardError, ClipboardId,
-    ClipboardKind, ClipboardLimits, ClipboardProgress, ClipboardState, ClipboardWriteOutcome,
-    LogicalExtent, MutationFragment, MutationFragmentPayload, MutationLimits, MutationOutcome,
-    PageDemandEnvelope, PageDirection, PageEdgeFact, PageFailure, PageId, PageRequest,
-    PageRequestId, RangeBinding, RangeClipboardCoordinator, RangeEditCoordinator, RangePage,
-    SourceRevision,
+    BindingId, ByteOffset, ByteRange, ClipboardCompletion, ClipboardId, ClipboardKind,
+    ClipboardLimits, ClipboardProgress, ClipboardWriteOutcome, InlineObjectFact, InlineObjectGap,
+    InlineObjectId, InlineObjectNeighbor, InlineObjectOrder, InlineObjectPresentation,
+    LogicalExtent, ObjectPage, ObjectPageEdgeFact, ObjectPageId, ObjectRequestId, PageDirection,
+    PageEdgeFact, PageId, PageRequestId, PresentationGeneration, RangeBinding,
+    RangeClipboardCoordinator, RangePage, SourcePosition, SourceRange, SourceRevision,
 };
 
-fn binding(revision: u64, bytes: u64) -> RangeBinding {
+fn binding(source: &str) -> RangeBinding {
     RangeBinding::new(
-        BindingId::new(4),
-        SourceRevision::new(revision),
-        LogicalExtent::new(bytes, u64::from(bytes != 0)),
+        BindingId::new(7),
+        SourceRevision::new(3),
+        LogicalExtent::new(
+            source.len() as u64,
+            source.bytes().filter(|b| *b == b'\n').count() as u64,
+        ),
     )
 }
 
-fn clipboard(bytes: u64, cap: usize, page: u64) -> RangeClipboardCoordinator {
-    RangeClipboardCoordinator::new(binding(1, bytes), ClipboardLimits::new(cap, page).unwrap())
+fn neighbor(id: u128, order: u128) -> InlineObjectNeighbor {
+    InlineObjectNeighbor::new(InlineObjectId::new(id), InlineObjectOrder::new(order))
 }
 
-fn need_page(progress: ClipboardProgress) -> gpui_text_input::ClipboardKey {
-    let ClipboardProgress::NeedPage { key, .. } = progress else {
-        panic!("expected page demand")
-    };
-    key
+fn position(offset: u64) -> SourcePosition {
+    SourcePosition::new(ByteOffset::new(offset), InlineObjectGap::NoObjects)
 }
 
-fn request(
-    collector: &mut RangeClipboardCoordinator,
-    key: gpui_text_input::ClipboardKey,
+fn object(id: u128, anchor: u64, order: u128, fallback: &str) -> InlineObjectFact {
+    InlineObjectFact::new(
+        InlineObjectId::new(id),
+        ByteOffset::new(anchor),
+        InlineObjectOrder::new(order),
+        fallback,
+        InlineObjectPresentation::new(
+            id as u64,
+            SharedString::new(Arc::<str>::from(fallback)),
+            px(10.),
+            px(10.),
+            px(8.),
+            None,
+            0,
+            true,
+        )
+        .unwrap(),
+    )
+}
+
+fn coordinator(source: &str, cap: usize, object_count: usize) -> RangeClipboardCoordinator {
+    RangeClipboardCoordinator::new_composite(
+        binding(source),
+        PresentationGeneration::new(9),
+        ClipboardLimits::new_composite(cap, 4, object_count, 64 * 1024).unwrap(),
+    )
+}
+
+fn object_page(
+    request: gpui_text_input::ObjectRequest,
+    all: &[InlineObjectFact],
     id: u64,
-    _start: u64,
-    _end: u64,
-) -> PageRequest {
-    collector.request_page(key, PageRequestId::new(id)).unwrap()
-}
-
-fn page(
-    request: PageRequest,
-    id: u64,
-    text: &str,
-    atoms: Vec<AtomFact>,
-    document_len: u64,
-) -> RangePage {
-    let PageDemandEnvelope::Adjacent {
-        anchor, direction, ..
-    } = request.key().demand()
-    else {
-        panic!("clipboard requires adjacent demand")
-    };
-    let text_len = u64::try_from(text.len()).unwrap();
-    let range = match direction {
-        PageDirection::Forward => ByteRange::from_u64(anchor.get(), anchor.get() + text_len),
-        PageDirection::Backward => ByteRange::from_u64(anchor.get() - text_len, anchor.get()),
+) -> ObjectPage {
+    let demand = request.key().demand();
+    let cursor = demand.cursor();
+    let mut eligible = all
+        .iter()
+        .filter(|object| demand.contains_anchor(object.anchor()))
+        .filter(|object| cursor.is_none_or(|cursor| object.cursor() > cursor))
+        .take(demand.max_objects() + 1)
+        .cloned()
+        .collect::<Vec<_>>();
+    let complete = eligible.len() <= demand.max_objects();
+    if !complete {
+        eligible.pop();
     }
-    .unwrap();
-    RangePage::new(
-        PageId::new(id),
+    let continuation = (!complete).then(|| eligible.last().expect("progressing page").cursor());
+    ObjectPage::new(
+        ObjectPageId::new(id),
         request.key(),
-        range,
-        text.into(),
-        atoms,
-        if range.start().get() == 0 {
-            PageEdgeFact::DocumentBoundary
-        } else {
-            PageEdgeFact::Continues
-        },
-        if range.end().get() == document_len {
-            PageEdgeFact::DocumentBoundary
-        } else {
-            PageEdgeFact::Continues
-        },
-        range.end().get() == document_len,
+        eligible,
+        cursor.map_or(
+            ObjectPageEdgeFact::EnvelopeBoundary,
+            ObjectPageEdgeFact::Continues,
+        ),
+        continuation.map_or(
+            ObjectPageEdgeFact::EnvelopeBoundary,
+            ObjectPageEdgeFact::Continues,
+        ),
+        complete,
+        continuation,
     )
     .unwrap()
 }
 
-#[test]
-fn copy_collects_complete_selection_at_the_exact_cap() {
-    let mut collector = clipboard(6, 6, 4);
-    let key = need_page(
-        collector
-            .begin(
-                ClipboardId::new(1),
-                ClipboardKind::Copy,
-                ByteRange::from_u64(0, 6).unwrap(),
-            )
-            .unwrap(),
-    );
-    let first = request(&mut collector, key, 1, 0, 3);
-    assert!(
-        matches!(collector.admit_page(page(first, 1, "abc", vec![], 6)).unwrap(), ClipboardProgress::NeedPage { next_offset, .. } if next_offset.get() == 3)
-    );
-    let second = request(&mut collector, key, 2, 3, 6);
-    let ClipboardProgress::Write(write) = collector
-        .admit_page(page(second, 2, "def", vec![], 6))
-        .unwrap()
+fn text_page(source: &str, request: gpui_text_input::PageRequest, id: u64) -> RangePage {
+    let key = request.key();
+    let gpui_text_input::PageDemandEnvelope::Adjacent {
+        anchor,
+        direction: PageDirection::Forward,
+        max_payload_bytes,
+    } = key.demand()
     else {
-        panic!("expected write")
+        panic!("clipboard uses forward adjacent text pages")
     };
-    assert_eq!(write.text(), "abcdef");
-    assert_eq!(collector.counts().staged_bytes, 0);
-    assert_eq!(
-        collector
-            .acknowledge_write(write.key(), ClipboardWriteOutcome::Written)
-            .unwrap(),
-        ClipboardCompletion::Copied
-    );
+    let start = anchor.get() as usize;
+    let mut end = start
+        .saturating_add(max_payload_bytes as usize)
+        .min(source.len());
+    while end > start && !source.is_char_boundary(end) {
+        end -= 1;
+    }
+    RangePage::new(
+        PageId::new(id),
+        key,
+        ByteRange::from_u64(start as u64, end as u64).unwrap(),
+        source[start..end].to_owned(),
+        vec![],
+        if start == 0 {
+            PageEdgeFact::DocumentBoundary
+        } else {
+            PageEdgeFact::Continues
+        },
+        if end == source.len() {
+            PageEdgeFact::DocumentBoundary
+        } else {
+            PageEdgeFact::Continues
+        },
+        end == source.len(),
+    )
+    .unwrap()
 }
 
-#[test]
-fn representation_over_cap_is_terminal_and_publishes_no_value() {
-    let mut collector = clipboard(4, 3, 4);
-    let key = need_page(
-        collector
-            .begin(
-                ClipboardId::new(1),
-                ClipboardKind::Copy,
-                ByteRange::from_u64(0, 4).unwrap(),
-            )
-            .unwrap(),
-    );
-    let request = request(&mut collector, key, 1, 0, 4);
-    assert_eq!(
-        collector
-            .admit_page(page(request, 1, "four", vec![], 4))
-            .unwrap(),
-        ClipboardProgress::Terminal(ClipboardCompletion::TooLarge)
-    );
-    assert_eq!(collector.state(), ClipboardState::Idle);
-    assert_eq!(collector.counts().staged_bytes, 0);
-}
-
-#[test]
-fn atom_fallback_replaces_cross_page_visible_bytes_once_in_logical_order() {
-    let mut collector = clipboard(6, 16, 9);
-    let key = need_page(
-        collector
-            .begin(
-                ClipboardId::new(7),
-                ClipboardKind::Copy,
-                ByteRange::from_u64(0, 6).unwrap(),
-            )
-            .unwrap(),
-    );
-    let global = ByteRange::from_u64(1, 5).unwrap();
-    let first_request = request(&mut collector, key, 1, 0, 3);
-    let first_atom = AtomFact::new(
-        AtomId::new(9),
-        global,
-        ByteRange::from_u64(1, 3).unwrap(),
-        "[atom]",
-    );
-    assert!(matches!(
-        collector
-            .admit_page(page(first_request, 1, "abc", vec![first_atom], 6))
-            .unwrap(),
-        ClipboardProgress::NeedPage { .. }
-    ));
-    let second_request = request(&mut collector, key, 2, 3, 6);
-    let second_atom = AtomFact::new(
-        AtomId::new(9),
-        global,
-        ByteRange::from_u64(3, 5).unwrap(),
-        "[atom]",
-    );
-    let ClipboardProgress::Write(write) = collector
-        .admit_page(page(second_request, 2, "def", vec![second_atom], 6))
-        .unwrap()
-    else {
-        panic!("expected write")
-    };
-    assert_eq!(write.text(), "a[atom]f");
-}
-
-#[test]
-fn malformed_cross_page_atom_facts_publish_no_result() {
-    let mut collector = clipboard(6, 16, 6);
-    let key = need_page(
-        collector
-            .begin(
-                ClipboardId::new(8),
-                ClipboardKind::Copy,
-                ByteRange::from_u64(0, 6).unwrap(),
-            )
-            .unwrap(),
-    );
-    let global = ByteRange::from_u64(1, 5).unwrap();
-    let first_request = request(&mut collector, key, 1, 0, 3);
-    let first_atom = AtomFact::new(
-        AtomId::new(9),
-        global,
-        ByteRange::from_u64(1, 3).unwrap(),
-        "one",
-    );
-    collector
-        .admit_page(page(first_request, 1, "abc", vec![first_atom], 6))
-        .unwrap();
-    let second_request = request(&mut collector, key, 2, 3, 6);
-    let second_atom = AtomFact::new(
-        AtomId::new(9),
-        global,
-        ByteRange::from_u64(3, 5).unwrap(),
-        "two",
-    );
-    assert_eq!(
-        collector
-            .admit_page(page(second_request, 2, "def", vec![second_atom], 6))
-            .unwrap(),
-        ClipboardProgress::Terminal(ClipboardCompletion::Malformed)
-    );
-}
-
-#[test]
-fn page_failure_and_page_cancellation_are_distinct_terminal_outcomes() {
-    for (id, failure, expected) in [
-        (
-            1,
-            PageFailure::Unavailable,
-            ClipboardCompletion::PageFailed(PageFailure::Unavailable),
-        ),
-        (
-            2,
-            PageFailure::Malformed,
-            ClipboardCompletion::PageFailed(PageFailure::Malformed),
-        ),
-        (3, PageFailure::Cancelled, ClipboardCompletion::Cancelled),
-    ] {
-        let mut collector = clipboard(2, 8, 4);
-        let key = need_page(
-            collector
-                .begin(
-                    ClipboardId::new(id),
-                    ClipboardKind::Copy,
-                    ByteRange::from_u64(0, 2).unwrap(),
-                )
-                .unwrap(),
-        );
-        let request = request(&mut collector, key, id, 0, 2);
-        assert_eq!(
-            collector.settle_page(request.key(), failure).unwrap(),
-            ClipboardProgress::Terminal(expected)
-        );
-        assert_eq!(collector.counts(), Default::default());
+fn collect(
+    collector: &mut RangeClipboardCoordinator,
+    source: &str,
+    objects: &[InlineObjectFact],
+    progress: ClipboardProgress,
+) -> gpui_text_input::ClipboardWriteRequest {
+    let mut progress = progress;
+    let mut request_id = 1u64;
+    loop {
+        progress = match progress {
+            ClipboardProgress::NeedObjectPage { key, .. } => {
+                let request = collector
+                    .request_object_page(key, ObjectRequestId::new(request_id))
+                    .unwrap();
+                request_id += 1;
+                collector
+                    .admit_object_page(object_page(request, objects, request_id))
+                    .unwrap()
+            }
+            ClipboardProgress::NeedTextPage { key, .. } => {
+                let request = collector
+                    .request_text_page(key, PageRequestId::new(request_id))
+                    .unwrap();
+                request_id += 1;
+                collector
+                    .admit_text_page(text_page(source, request, request_id))
+                    .unwrap()
+            }
+            ClipboardProgress::Write(write) => return write,
+            ClipboardProgress::Terminal(outcome) => panic!("unexpected terminal: {outcome:?}"),
+        };
     }
 }
 
 #[test]
-fn cut_requires_successful_write_before_it_can_open_exact_deletion() {
-    let mut failed = clipboard(0, 8, 4);
-    let ClipboardProgress::Write(write) = failed
-        .begin(
+fn empty_text_only_and_reversed_selections_are_exact() {
+    let source = "aéz";
+    let mut empty = coordinator(source, 16, 2);
+    let progress = empty
+        .begin_selection(
             ClipboardId::new(1),
-            ClipboardKind::Cut,
-            ByteRange::from_u64(0, 0).unwrap(),
+            ClipboardKind::Copy,
+            position(1),
+            position(1),
         )
+        .unwrap();
+    let write = collect(&mut empty, source, &[], progress);
+    assert_eq!(write.text(), "");
+
+    let mut reversed = coordinator(source, source.len(), 2);
+    let progress = reversed
+        .begin_selection(
+            ClipboardId::new(2),
+            ClipboardKind::Copy,
+            position(source.len() as u64),
+            position(0),
+        )
+        .unwrap();
+    let write = collect(&mut reversed, source, &[], progress);
+    assert_eq!(write.text(), source);
+}
+
+#[test]
+fn one_object_object_only_and_same_anchor_selection_follow_gap_order() {
+    let source = "ab";
+    let first = neighbor(1, 10);
+    let second = neighbor(2, 20);
+    let objects = [object(1, 1, 10, "[one]"), object(2, 1, 20, "[two]")];
+
+    let only_second = SourceRange::new(
+        SourcePosition::new(
+            ByteOffset::new(1),
+            InlineObjectGap::between(first, second).unwrap(),
+        ),
+        SourcePosition::new(ByteOffset::new(1), InlineObjectGap::after(second)),
+    )
+    .unwrap();
+    let mut collector = coordinator(source, 16, 1);
+    let progress = collector
+        .begin(ClipboardId::new(3), ClipboardKind::Copy, only_second)
+        .unwrap();
+    let write = collect(&mut collector, source, &objects, progress);
+    assert_eq!(write.text(), "[two]");
+    assert_eq!(collector.counts().retained_object_facts, 0);
+
+    let one = [object(8, 0, 1, "object")];
+    let range = SourceRange::new(
+        SourcePosition::new(ByteOffset::new(0), InlineObjectGap::before(neighbor(8, 1))),
+        SourcePosition::new(ByteOffset::new(0), InlineObjectGap::after(neighbor(8, 1))),
+    )
+    .unwrap();
+    let mut collector = coordinator("", 6, 1);
+    let progress = collector
+        .begin(ClipboardId::new(4), ClipboardKind::Copy, range)
+        .unwrap();
+    assert_eq!(collect(&mut collector, "", &one, progress).text(), "object");
+}
+
+#[test]
+fn mixed_and_exact_boundary_selection_emit_only_selected_objects() {
+    let source = "abc";
+    let at_start = neighbor(10, 1);
+    let middle = neighbor(11, 1);
+    let at_end = neighbor(12, 1);
+    let objects = [
+        object(10, 0, 1, "S"),
+        object(11, 1, 1, "M"),
+        object(12, 3, 1, "E"),
+    ];
+    let range = SourceRange::new(
+        SourcePosition::new(ByteOffset::new(0), InlineObjectGap::after(at_start)),
+        SourcePosition::new(ByteOffset::new(3), InlineObjectGap::before(at_end)),
+    )
+    .unwrap();
+    let mut collector = coordinator(source, 8, 2);
+    let progress = collector
+        .begin(ClipboardId::new(5), ClipboardKind::Copy, range)
+        .unwrap();
+    assert_eq!(
+        collect(&mut collector, source, &objects, progress).text(),
+        "aMbc"
+    );
+    assert_eq!(source, "abc", "fallback never becomes source bytes");
+    let _ = middle;
+}
+
+#[test]
+fn exact_cap_is_accepted_and_one_byte_over_is_terminal_before_write() {
+    let source = "ab";
+    let object = object(1, 1, 1, "XY");
+    let selection = SourceRange::new(position(0), position(2)).unwrap();
+    let mut exact = coordinator(source, 4, 1);
+    let progress = exact
+        .begin(ClipboardId::new(6), ClipboardKind::Copy, selection)
+        .unwrap();
+    assert_eq!(
+        collect(&mut exact, source, &[object.clone()], progress).text(),
+        "aXYb"
+    );
+
+    let mut over = coordinator(source, 3, 1);
+    let mut progress = over
+        .begin(ClipboardId::new(7), ClipboardKind::Copy, selection)
+        .unwrap();
+    let mut id = 1;
+    loop {
+        progress = match progress {
+            ClipboardProgress::NeedObjectPage { key, .. } => {
+                let request = over
+                    .request_object_page(key, ObjectRequestId::new(id))
+                    .unwrap();
+                id += 1;
+                over.admit_object_page(object_page(request, &[object.clone()], id))
+                    .unwrap()
+            }
+            ClipboardProgress::NeedTextPage { key, .. } => {
+                let request = over.request_text_page(key, PageRequestId::new(id)).unwrap();
+                id += 1;
+                over.admit_text_page(text_page(source, request, id))
+                    .unwrap()
+            }
+            ClipboardProgress::Terminal(outcome) => {
+                assert_eq!(outcome, ClipboardCompletion::TooLarge);
+                break;
+            }
+            ClipboardProgress::Write(_) => panic!("over-cap value reached platform write"),
+        };
+    }
+    assert_eq!(over.counts(), Default::default());
+}
+
+#[test]
+fn object_failure_cancellation_rebind_and_dispose_release_once() {
+    let selection = SourceRange::new(position(0), position(1)).unwrap();
+    for (failure, expected) in [
+        (
+            gpui_text_input::ObjectPageFailure::Unavailable,
+            ClipboardCompletion::ObjectPageFailed(gpui_text_input::ObjectPageFailure::Unavailable),
+        ),
+        (
+            gpui_text_input::ObjectPageFailure::Cancelled,
+            ClipboardCompletion::Cancelled,
+        ),
+    ] {
+        let mut collector = coordinator("a", 8, 1);
+        let ClipboardProgress::NeedObjectPage { key, .. } = collector
+            .begin(ClipboardId::new(8), ClipboardKind::Copy, selection)
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        let request = collector
+            .request_object_page(key, ObjectRequestId::new(1))
+            .unwrap();
+        assert_eq!(
+            collector
+                .settle_object_page(request.key(), failure)
+                .unwrap(),
+            ClipboardProgress::Terminal(expected)
+        );
+        assert_eq!(collector.counts(), Default::default());
+    }
+
+    let mut rebound = coordinator("a", 8, 1);
+    let ClipboardProgress::NeedObjectPage { key, .. } = rebound
+        .begin(ClipboardId::new(9), ClipboardKind::Copy, selection)
         .unwrap()
     else {
-        panic!()
+        unreachable!()
     };
+    let request = rebound
+        .request_object_page(key, ObjectRequestId::new(1))
+        .unwrap();
+    let cancellation = rebound.rebind(binding("other")).unwrap();
+    assert_eq!(cancellation.pending_object_page(), Some(request.key()));
+    assert_eq!(rebound.counts(), Default::default());
+
+    let mut disposed = coordinator("a", 8, 1);
+    let ClipboardProgress::NeedObjectPage { key, .. } = disposed
+        .begin(ClipboardId::new(10), ClipboardKind::Copy, selection)
+        .unwrap()
+    else {
+        unreachable!()
+    };
+    let _ = disposed
+        .request_object_page(key, ObjectRequestId::new(1))
+        .unwrap();
+    assert!(disposed.dispose().is_some());
+    assert!(disposed.dispose().is_none());
+}
+
+#[test]
+fn text_failure_and_explicit_cancellation_publish_no_write_or_delete() {
+    let selection = SourceRange::new(position(0), position(1)).unwrap();
+    let mut failed = coordinator("a", 8, 1);
+    let ClipboardProgress::NeedObjectPage { key, .. } = failed
+        .begin(ClipboardId::new(20), ClipboardKind::Cut, selection)
+        .unwrap()
+    else {
+        unreachable!()
+    };
+    let object_request = failed
+        .request_object_page(key, ObjectRequestId::new(1))
+        .unwrap();
+    let progress = failed
+        .admit_object_page(object_page(object_request, &[], 1))
+        .unwrap();
+    let ClipboardProgress::NeedTextPage { key, .. } = progress else {
+        unreachable!()
+    };
+    let text_request = failed
+        .request_text_page(key, PageRequestId::new(2))
+        .unwrap();
+    assert_eq!(
+        failed
+            .settle_text_page(
+                text_request.key(),
+                gpui_text_input::PageFailure::Unavailable
+            )
+            .unwrap(),
+        ClipboardProgress::Terminal(ClipboardCompletion::TextPageFailed(
+            gpui_text_input::PageFailure::Unavailable,
+        ))
+    );
+    assert_eq!(failed.counts(), Default::default());
+
+    let mut cancelled = coordinator("a", 8, 1);
+    let ClipboardProgress::NeedObjectPage { key, .. } = cancelled
+        .begin(ClipboardId::new(21), ClipboardKind::Copy, selection)
+        .unwrap()
+    else {
+        unreachable!()
+    };
+    let _ = cancelled
+        .request_object_page(key, ObjectRequestId::new(1))
+        .unwrap();
+    assert_eq!(
+        cancelled.cancel(key).unwrap(),
+        ClipboardCompletion::Cancelled
+    );
+    assert_eq!(cancelled.counts(), Default::default());
+}
+
+#[test]
+fn cut_authorizes_exact_deletion_only_after_successful_write() {
+    let source = "abc";
+    let selection = SourceRange::new(position(0), position(3)).unwrap();
+    let mut failed = coordinator(source, 3, 1);
+    let progress = failed
+        .begin(ClipboardId::new(11), ClipboardKind::Cut, selection)
+        .unwrap();
+    let write = collect(&mut failed, source, &[], progress);
     assert_eq!(
         failed
             .acknowledge_write(write.key(), ClipboardWriteOutcome::Failed)
@@ -266,271 +431,21 @@ fn cut_requires_successful_write_before_it_can_open_exact_deletion() {
         ClipboardCompletion::WriteFailed
     );
 
-    let mut successful = clipboard(3, 8, 4);
-    let key = need_page(
-        successful
-            .begin(
-                ClipboardId::new(2),
-                ClipboardKind::Cut,
-                ByteRange::from_u64(0, 3).unwrap(),
-            )
-            .unwrap(),
-    );
-    let request = request(&mut successful, key, 1, 0, 3);
-    let ClipboardProgress::Write(write) = successful
-        .admit_page(page(request, 1, "abc", vec![], 3))
-        .unwrap()
-    else {
-        panic!()
-    };
-    let ClipboardCompletion::Delete(deletion) = successful
+    let mut written = coordinator(source, 3, 1);
+    let progress = written
+        .begin(ClipboardId::new(12), ClipboardKind::Cut, selection)
+        .unwrap();
+    let write = collect(&mut written, source, &[], progress);
+    let ClipboardCompletion::Delete(deletion) = written
         .acknowledge_write(write.key(), ClipboardWriteOutcome::Written)
         .unwrap()
     else {
-        panic!()
+        panic!("successful cut write must authorize deletion")
     };
-    assert_eq!(deletion.binding(), binding(1, 3));
-    assert_eq!(deletion.selection(), ByteRange::from_u64(0, 3).unwrap());
-
-    let proposal = deletion.proposal(gpui_text_input::OperationId::new(5));
-    let mut editor = RangeEditCoordinator::new(binding(1, 3), MutationLimits::new(2, 0).unwrap());
-    editor.begin(proposal).unwrap();
-    editor.accept_preflight(proposal.key()).unwrap();
-    editor
-        .stage(MutationFragment::new(
-            proposal.key(),
-            0,
-            MutationFragmentPayload::Terminal,
-        ))
+    assert_eq!(deletion.binding(), binding(source));
+    assert_eq!(deletion.selection(), selection);
+    let proposal = deletion
+        .proposal(gpui_text_input::OperationId::new(99), selection)
         .unwrap();
-    editor.admit_commit(proposal.key()).unwrap();
-    assert_eq!(
-        editor
-            .settle(proposal.key(), MutationOutcome::Conflict)
-            .unwrap(),
-        gpui_text_input::MutationSettlement::Current(MutationOutcome::Conflict)
-    );
-}
-
-#[test]
-fn exact_page_keys_are_enforced_without_losing_active_work() {
-    let mut collector = clipboard(6, 8, 4);
-    let key = need_page(
-        collector
-            .begin(
-                ClipboardId::new(1),
-                ClipboardKind::Copy,
-                ByteRange::from_u64(0, 6).unwrap(),
-            )
-            .unwrap(),
-    );
-    let expected = request(&mut collector, key, 1, 0, 3);
-    let wrong_key = gpui_text_input::PageRequestKey::adjacent(
-        PageRequestId::new(2),
-        key.binding(),
-        key.revision(),
-        gpui_text_input::PagePurpose::Clipboard,
-        gpui_text_input::ByteOffset::new(0),
-        PageDirection::Forward,
-        4,
-    )
-    .unwrap();
-    let wrong = RangePage::new(
-        PageId::new(2),
-        wrong_key,
-        ByteRange::from_u64(0, 3).unwrap(),
-        "abc".into(),
-        vec![],
-        PageEdgeFact::DocumentBoundary,
-        PageEdgeFact::Continues,
-        false,
-    )
-    .unwrap();
-    assert!(matches!(
-        collector.admit_page(wrong),
-        Err(ClipboardError::WrongPageKey { .. })
-    ));
-    assert!(matches!(
-        collector
-            .admit_page(page(expected, 1, "abc", vec![], 6))
-            .unwrap(),
-        ClipboardProgress::NeedPage { .. }
-    ));
-}
-
-#[test]
-fn cancel_rebind_and_dispose_release_all_owned_capacity() {
-    let mut cancelled = clipboard(3, 8, 4);
-    let key = need_page(
-        cancelled
-            .begin(
-                ClipboardId::new(1),
-                ClipboardKind::Copy,
-                ByteRange::from_u64(0, 3).unwrap(),
-            )
-            .unwrap(),
-    );
-    let pending_request = request(&mut cancelled, key, 1, 0, 3);
-    assert_eq!(cancelled.counts().pending_pages, 1);
-    assert_eq!(
-        cancelled.cancel(key).unwrap(),
-        ClipboardCompletion::Cancelled
-    );
-    assert_eq!(cancelled.counts(), Default::default());
-    assert_eq!(
-        cancelled.settle_page(pending_request.key(), PageFailure::Cancelled),
-        Err(ClipboardError::ObsoletePage(pending_request.key()))
-    );
-
-    let mut rebound = clipboard(3, 8, 4);
-    let rebound_key = need_page(
-        rebound
-            .begin(
-                ClipboardId::new(2),
-                ClipboardKind::Copy,
-                ByteRange::from_u64(0, 3).unwrap(),
-            )
-            .unwrap(),
-    );
-    request(&mut rebound, rebound_key, 2, 0, 3);
-    let rebound_cancellation = rebound.rebind(binding(2, 4)).unwrap();
-    assert_eq!(rebound_cancellation.key(), rebound_key);
-    assert!(rebound_cancellation.pending_page().is_some());
-    assert_eq!(rebound.binding(), binding(2, 4));
-    assert_eq!(rebound.counts(), Default::default());
-
-    let mut disposed = clipboard(3, 8, 4);
-    let disposed_key = need_page(
-        disposed
-            .begin(
-                ClipboardId::new(3),
-                ClipboardKind::Copy,
-                ByteRange::from_u64(0, 3).unwrap(),
-            )
-            .unwrap(),
-    );
-    assert_eq!(disposed.dispose().unwrap().key(), disposed_key);
-    assert_eq!(disposed.state(), ClipboardState::Idle);
-}
-
-#[test]
-fn empty_selection_produces_an_exact_empty_write() {
-    let mut collector = clipboard(0, 0, 4);
-    let ClipboardProgress::Write(write) = collector
-        .begin(
-            ClipboardId::new(1),
-            ClipboardKind::Copy,
-            ByteRange::from_u64(0, 0).unwrap(),
-        )
-        .unwrap()
-    else {
-        panic!()
-    };
-    assert!(write.text().is_empty());
-    assert_eq!(
-        collector
-            .acknowledge_write(write.key(), ClipboardWriteOutcome::Written)
-            .unwrap(),
-        ClipboardCompletion::Copied
-    );
-}
-
-#[test]
-fn malformed_source_extent_and_edge_facts_are_terminal_without_write_or_delete() {
-    for (range, text, preceding, following, end_of_source) in [
-        (
-            (0, 5),
-            "abcde",
-            PageEdgeFact::DocumentBoundary,
-            PageEdgeFact::Continues,
-            false,
-        ),
-        (
-            (0, 4),
-            "abcd",
-            PageEdgeFact::Continues,
-            PageEdgeFact::DocumentBoundary,
-            true,
-        ),
-        (
-            (0, 4),
-            "abcd",
-            PageEdgeFact::DocumentBoundary,
-            PageEdgeFact::Continues,
-            false,
-        ),
-    ] {
-        let mut collector = clipboard(4, 8, 8);
-        let key = need_page(
-            collector
-                .begin(
-                    ClipboardId::new(20),
-                    ClipboardKind::Cut,
-                    ByteRange::from_u64(0, 4).unwrap(),
-                )
-                .unwrap(),
-        );
-        let request = collector.request_page(key, PageRequestId::new(1)).unwrap();
-        let malformed = RangePage::new(
-            PageId::new(1),
-            request.key(),
-            ByteRange::from_u64(range.0, range.1).unwrap(),
-            text.into(),
-            vec![],
-            preceding,
-            following,
-            end_of_source,
-        );
-        match malformed {
-            Ok(page) => assert_eq!(
-                collector.admit_page(page).unwrap(),
-                ClipboardProgress::Terminal(ClipboardCompletion::Malformed)
-            ),
-            Err(_) => {
-                // Constructor-level malformed facts release when the host settles malformed.
-                assert_eq!(
-                    collector
-                        .settle_page(request.key(), PageFailure::Malformed)
-                        .unwrap(),
-                    ClipboardProgress::Terminal(ClipboardCompletion::PageFailed(
-                        PageFailure::Malformed
-                    ))
-                );
-            }
-        }
-        assert_eq!(collector.counts(), Default::default());
-        assert_eq!(collector.state(), ClipboardState::Idle);
-    }
-}
-
-#[test]
-fn clipboard_page_request_ids_are_monotonic_across_terminal_operations() {
-    let mut collector = clipboard(4, 8, 4);
-    let key = need_page(
-        collector
-            .begin(
-                ClipboardId::new(30),
-                ClipboardKind::Copy,
-                ByteRange::from_u64(0, 4).unwrap(),
-            )
-            .unwrap(),
-    );
-    let request = collector.request_page(key, PageRequestId::new(2)).unwrap();
-    collector
-        .settle_page(request.key(), PageFailure::Cancelled)
-        .unwrap();
-    let key = need_page(
-        collector
-            .begin(
-                ClipboardId::new(31),
-                ClipboardKind::Copy,
-                ByteRange::from_u64(0, 4).unwrap(),
-            )
-            .unwrap(),
-    );
-    assert_eq!(
-        collector.request_page(key, PageRequestId::new(2)),
-        Err(ClipboardError::RequestIdInUse(PageRequestId::new(2)))
-    );
-    assert!(collector.request_page(key, PageRequestId::new(3)).is_ok());
+    assert_eq!(proposal.replacement(), selection);
 }

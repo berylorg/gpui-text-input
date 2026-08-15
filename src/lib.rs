@@ -113,6 +113,63 @@
 //! assert_eq!(residency.counts().resident_pages, 0);
 //! ```
 //!
+//! Source-zero-width objects use a separate bounded source and residency domain. Their positions
+//! name an exact adjacent-object gap and map directly to GPUI's canonical composite coordinates:
+//!
+//! ```
+//! use gpui::{SharedString, StreamingLayoutPosition, px};
+//! use gpui_text_input::{
+//!     BindingId, ByteOffset, InlineObjectFact, InlineObjectGap,
+//!     InlineObjectId, InlineObjectNeighbor, InlineObjectOrder, InlineObjectPresentation,
+//!     LogicalExtent, ObjectDemand, ObjectDemandEnvelope, ObjectDirection, ObjectPage,
+//!     ObjectPageEdgeFact, ObjectPageId, ObjectPurpose, ObjectRequestId, ObjectResidency,
+//!     ObjectResidencyLimits, PresentationGeneration, RangeBinding, RangeResidency,
+//!     ResidencyLimits, SourcePosition, SourceRevision,
+//! };
+//!
+//! let binding = RangeBinding::new(
+//!     BindingId::new(7),
+//!     SourceRevision::new(3),
+//!     LogicalExtent::new(1_000_000, 50_000),
+//! );
+//! let generation = PresentationGeneration::new(4);
+//! let text_limits = ResidencyLimits::new(2, 64 * 1024, 2, 32 * 1024).expect("finite limits");
+//! let text = RangeResidency::new(binding, text_limits);
+//! let limits = ObjectResidencyLimits::new(4, 16, 64 * 1024, 16 * 1024, 2, 8, 32 * 1024)
+//!     .expect("finite limits");
+//! let mut objects = ObjectResidency::new(binding, generation, limits);
+//! let demand = ObjectDemandEnvelope::anchor(
+//!     ByteOffset::new(0), None, ObjectDirection::Forward, 4, 4096,
+//! ).expect("bounded demand");
+//! let ObjectDemand::Requested(request) = objects.demand(
+//!     ObjectRequestId::new(1), ObjectPurpose::Viewport, demand,
+//! ).expect("current demand") else { unreachable!() };
+//!
+//! let id = InlineObjectId::new(9);
+//! let order = InlineObjectOrder::new(20);
+//! let presentation = InlineObjectPresentation::new(
+//!     5, SharedString::new_static("[object]"), px(64.), px(20.), px(15.), None,
+//!     0, true,
+//! ).expect("finite presentation");
+//! let page = ObjectPage::new(
+//!     ObjectPageId::new(1), request.key(),
+//!     vec![InlineObjectFact::new(id, ByteOffset::new(0), order, "attachment", presentation)],
+//!     ObjectPageEdgeFact::EnvelopeBoundary, ObjectPageEdgeFact::EnvelopeBoundary, true, None,
+//! ).expect("coherent object page");
+//! let proofs = text
+//!     .prove_object_page_anchors(objects.binding(), &page)
+//!     .expect("origin is a proven edge");
+//! objects.admit(page, proofs).expect("admitted exact page");
+//!
+//! let before = SourcePosition::new(
+//!     ByteOffset::new(0),
+//!     InlineObjectGap::before(InlineObjectNeighbor::new(id, order)),
+//! );
+//! let gpui_position = StreamingLayoutPosition::from(before);
+//! assert_eq!(gpui_position.byte_offset, 0);
+//! assert_eq!(objects.counts().resident_objects, 1);
+//! ```
+//!
 //! [`RangeTextInput`] mounts that contract as a GPUI entity. The widget emits
 //! typed host work; the host fetches exact pages, stages mutations, performs
 //! clipboard writes, and returns keyed terminal results without giving the
@@ -173,52 +230,56 @@
 //! assert!(left.reconciles_with(&right));
 //! ```
 //!
-//! Range-backed edits stage one checked replacement and publish only the host's
-//! exact terminal result:
-//!
-//! ```
-//! use gpui_text_input::{
-//!     BindingId, ByteRange, LogicalExtent, MutationFragment, MutationFragmentPayload,
-//!     MutationKey, MutationKind, MutationLimits, MutationOutcome, MutationProposal,
-//!     OperationId, RangeBinding, RangeEditCoordinator, SourceRevision,
-//! };
-//!
-//! let binding = RangeBinding::new(BindingId::new(1), SourceRevision::new(4), LogicalExtent::new(5, 1));
-//! let limits = MutationLimits::new(4, 32).expect("finite limits");
-//! let mut edits = RangeEditCoordinator::new(binding, limits);
-//! let key = MutationKey::new(binding.binding(), binding.revision(), OperationId::new(8));
-//! // The fourth argument is the exact normalized `\n` count removed by the replacement.
-//! edits.begin(MutationProposal::new(key, MutationKind::Edit, ByteRange::from_u64(5, 5)?, 0))?;
-//! edits.accept_preflight(key)?;
-//! edits.stage(MutationFragment::new(key, 0, MutationFragmentPayload::Utf8 {
-//!     inserted_offset: 0,
-//!     text: "!".into(),
-//! }))?;
-//! edits.stage(MutationFragment::new(key, 1, MutationFragmentPayload::Terminal))?;
-//! edits.admit_commit(key)?;
-//! let successor = RangeBinding::new(binding.binding(), SourceRevision::new(5), LogicalExtent::new(6, 1));
-//! edits.settle(key, MutationOutcome::Committed(successor))?;
-//! # Ok::<(), Box<dyn std::error::Error>>(())
-//! ```
+//! Range-backed edits stage one checked replacement and publish only the host's exact terminal
+//! result. A composite position remains a host claim until mutation preflight reserves it against
+//! normally admitted [`RangeResidency`] and [`ObjectResidency`] state. Committed successor
+//! positions follow the same rule through [`RangeEditCoordinator::settle_committed`]; callers
+//! cannot construct a [`MutationCommit`] or its proofs directly.
 //!
 //! Clipboard collection returns a value for a platform write boundary; a cut
 //! deletion token is produced only after that write is acknowledged:
 //!
 //! ```
 //! use gpui_text_input::{
-//!     BindingId, ByteRange, ClipboardId, ClipboardKind, ClipboardLimits, ClipboardProgress,
-//!     ClipboardWriteOutcome, LogicalExtent, RangeBinding, RangeClipboardCoordinator,
-//!     SourceRevision,
+//!     BindingId, ByteOffset, ClipboardId, ClipboardKind, ClipboardLimits, ClipboardProgress,
+//!     ClipboardWriteOutcome, InlineObjectGap, LogicalExtent, RangeBinding,
+//!     RangeClipboardCoordinator, SourcePosition, SourceRange, SourceRevision,
 //! };
 //!
 //! let binding = RangeBinding::new(BindingId::new(2), SourceRevision::new(1), LogicalExtent::new(0, 0));
 //! let mut clipboard = RangeClipboardCoordinator::new(binding, ClipboardLimits::new(64, 16)?);
-//! let progress = clipboard.begin(ClipboardId::new(3), ClipboardKind::Cut, ByteRange::from_u64(0, 0)?)?;
+//! let origin = SourcePosition::new(ByteOffset::new(0), InlineObjectGap::NoObjects);
+//! let selection = SourceRange::new(origin, origin)?;
+//! let progress = clipboard.begin(ClipboardId::new(3), ClipboardKind::Cut, selection)?;
 //! let ClipboardProgress::Write(write) = progress else { unreachable!() };
 //! assert_eq!(write.text(), "");
 //! let deletion = clipboard.acknowledge_write(write.key(), ClipboardWriteOutcome::Written)?;
 //! assert!(matches!(deletion, gpui_text_input::ClipboardCompletion::Delete(_)));
 //! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
+//! A restoration seed retains only exact fixed-size logical facts; importing it validates fresh
+//! text and object pages before publishing a new surface:
+//!
+//! ```
+//! use gpui::px;
+//! use gpui_text_input::{
+//!     BindingId, ByteOffset, InlineObjectGap, LogicalExtent, RangeBinding,
+//!     RangeRestorationScrollAnchor, RangeRestorationSeed, RangeSourceSelection,
+//!     SourcePosition, SourceRevision,
+//! };
+//! let binding = RangeBinding::new(
+//!     BindingId::new(4), SourceRevision::new(8), LogicalExtent::new(12, 0),
+//! );
+//! let position = SourcePosition::new(ByteOffset::new(0), InlineObjectGap::NoObjects);
+//! let seed = RangeRestorationSeed {
+//!     binding,
+//!     caret: position,
+//!     selection: RangeSourceSelection::caret(position),
+//!     scroll: RangeRestorationScrollAnchor { position, intra_anchor: px(0.) },
+//!     history: None,
+//! };
+//! assert_eq!(seed.binding, binding);
 //! ```
 //!
 //! Exact range-backed geometry owns canonical segmentation and consumes GPUI's window-affine
@@ -229,16 +290,19 @@
 //! together with the crate-owned owner, input, job, page, cursor, checkpoint, and publication facts:
 //!
 //! ```no_run
-//! use gpui::{SharedString, StreamingLayoutBinding, StreamingLayoutLimits, TextRun, black, font, px};
+//! use gpui::{SharedString, StreamingLayoutBinding, StreamingLayoutLimits,
+//!     StreamingLayoutPosition, TextRun, black, font, px};
 //! use gpui_text_input::{BindingId, ExactGeometryLimits, ExactGeometryOwner, GeometryJobId,
 //!     LogicalExtent, RangeBinding, SourceRevision, StreamingGeometryStyle,
 //!     StreamingOversizePresentation};
 //! let source = RangeBinding::new(BindingId::new(4), SourceRevision::new(2), LogicalExtent::new(1024, 8));
 //! let layout = StreamingLayoutBinding {
-//!     input_id: 7, segment_policy_id: 11, wrap_width: px(640.), font_size: px(14.),
+//!     input_id: 7, segment_policy_id: 11, start_position: StreamingLayoutPosition::at(0),
+//!     wrap_width: px(640.), font_size: px(14.),
 //!     line_height: px(20.), limits: StreamingLayoutLimits {
 //!         segment_bytes: 4096, runs: 16, decorations: 16, glyphs: 8192,
-//!         wraps: 1024, maps: 8193, fragments: 1, retained_bytes: 512 * 1024,
+//!         wraps: 1024, maps: 8193, fragments: 1, retained_items: 32 * 1024,
+//!         retained_bytes: 512 * 1024,
 //!     },
 //! };
 //! let run = TextRun { len: 0, font: font(".SystemUIFont"), color: black(),
@@ -261,6 +325,7 @@ mod change;
 mod editing;
 mod movement;
 mod newline;
+mod object_residency;
 mod options;
 mod range_clipboard;
 mod range_edit;
@@ -283,6 +348,11 @@ pub use atom::{
     TextInputAtom, TextInputAtomError, TextInputSelectionAtom, TextInputSelectionExport,
 };
 pub use change::TextInputChange;
+pub use object_residency::{
+    ObjectDemand, ObjectDemandError, ObjectPageAdmission, ObjectPageAdmissionError,
+    ObjectPageSettlement, ObjectResidency, ObjectResidencyCounts, ObjectResidencyLimitError,
+    ObjectResidencyLimitKind, ObjectResidencyLimits,
+};
 pub use options::{TextInputMode, TextInputOptions};
 pub use range_clipboard::{
     ClipboardCancellation, ClipboardCompletion, ClipboardCounts, ClipboardError, ClipboardId,
@@ -290,10 +360,10 @@ pub use range_clipboard::{
     ClipboardWriteOutcome, ClipboardWriteRequest, CutDeletion, RangeClipboardCoordinator,
 };
 pub use range_edit::{
-    AtomChange, MutationCancellation, MutationCounts, MutationDisposal, MutationError,
-    MutationFragment, MutationFragmentPayload, MutationKey, MutationKind, MutationLimits,
-    MutationOutcome, MutationProposal, MutationSettlement, MutationState, OperationId,
-    RangeEditCoordinator,
+    AtomChange, MutationCancellation, MutationCommit, MutationCounts, MutationDisposal,
+    MutationError, MutationFragment, MutationFragmentPayload, MutationKey, MutationKind,
+    MutationLimits, MutationOutcome, MutationPositions, MutationProposal, MutationSettlement,
+    MutationState, ObjectChange, ObjectTarget, OperationId, RangeEditCoordinator, SuccessorObject,
 };
 pub use range_geometry::{
     BlockTarget, BlockTargetPublication, ExactGeometryAdmission, ExactGeometryAggregate,
@@ -309,21 +379,30 @@ pub use range_segmentation::{
     SegmentationKind, SegmentationLimits, SegmentationProgress, SegmentationResume,
 };
 pub use range_source::{
-    AtomFact, AtomId, BindingId, ByteOffset, ByteRange, LineOffset, LineRange, LogicalExtent,
-    PageDemandEnvelope, PageDirection, PageEdgeFact, PageFailure, PageId, PagePurpose, PageRequest,
-    PageRequestId, PageRequestKey, RangeBinding, RangeContractError, RangePage, RangePageCharge,
-    SourceRevision,
+    AtomFact, AtomId, BindingId, ByteOffset, ByteRange, InlineObjectFact, InlineObjectGap,
+    InlineObjectGapError, InlineObjectId, InlineObjectNeighbor, InlineObjectOrder,
+    InlineObjectPresentation, LineOffset, LineRange, LogicalExtent, ObjectContractError,
+    ObjectCursor, ObjectDemandEnvelope, ObjectDirection, ObjectPage, ObjectPageCharge,
+    ObjectPageEdgeFact, ObjectPageFailure, ObjectPageId, ObjectPurpose, ObjectRequest,
+    ObjectRequestId, ObjectRequestKey, PageDemandEnvelope, PageDirection, PageEdgeFact,
+    PageFailure, PageId, PagePurpose, PageRequest, PageRequestId, PageRequestKey,
+    PresentationGeneration, RangeBinding, RangeContractError, RangePage, RangePageCharge,
+    SourcePosition, SourceRange, SourceRangeError, SourceRevision,
 };
 pub use range_widget::{
-    CoherentRangeSurface, PlatformRangeResult, RangeClipboardKey, RangeHistoryFrontier,
-    RangeHistoryIntent, RangeHistoryPlan, RangeMutationResult, RangePageFailure,
-    RangeRestorationSeed, RangeScrollAnchor, RangeSelection, RangeSurfaceCharge, RangeTextInput,
+    CoherentRangeSurface, InlineObjectActivation, InlineObjectActivationKey,
+    InlineObjectInputOrigin, InlineObjectRealizationLoss, InlineObjectRealizationLossReason,
+    PlatformRangeResult, RangeHistoryFrontier, RangeHistoryIntent, RangeHistoryPlan,
+    RangeRestorationScrollAnchor, RangeRestorationSeed, RangeSelection,
+    RangeSourceSelection, RangeSurfaceCharge, RangeSurfaceHit, RangeTextInput,
     RangeTextInputConfig, RangeTextInputError, RangeTextInputEvent, RangeTextInputLimits,
-    RangeTextInputRequest,
+    RangeTextInputRequest, RealizedInlineObjectAnchor, RealizedInlineObjectGeometry,
+    RealizedInlineObjectPresentation, RealizedObjectGapGeometry,
 };
 pub use residency::{
-    PageAdmission, PageAdmissionError, PageDemand, PageDemandError, PageSettlement, RangeResidency,
-    ResidencyCounts, ResidencyLimitError, ResidencyLimitKind, ResidencyLimits,
+    ObjectAnchorProofError, ObjectAnchorProofs, PageAdmission, PageAdmissionError, PageDemand,
+    PageDemandError, PageSettlement, RangeResidency, ResidencyCounts, ResidencyLimitError,
+    ResidencyLimitKind, ResidencyLimits, ScalarBoundaryProof, ScalarBoundaryProofError,
 };
 pub use state::{TextInputRetainedCounts, TextInputState};
 pub use widget::{

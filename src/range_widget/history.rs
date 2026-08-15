@@ -2,14 +2,15 @@ use gpui::Context;
 
 use crate::{
     LogicalExtent, MutationError, MutationFragment, MutationFragmentPayload, MutationKey,
-    MutationKind, MutationProposal, OperationId, RangeHistoryIntent, RangeHistoryPlan,
-    RangeSelection, RangeTextInput, RangeTextInputError, RangeTextInputRequest,
+    MutationKind, MutationPositions, MutationProposal, ObjectResidency, OperationId,
+    RangeHistoryIntent, RangeHistoryPlan, RangeResidency, RangeTextInput, RangeTextInputError,
+    RangeTextInputRequest, SourcePosition,
 };
 
 #[derive(Clone, Copy, Debug)]
 struct PlannedHistory {
     proposal: MutationProposal,
-    selection: RangeSelection,
+    positions: MutationPositions,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -51,6 +52,9 @@ impl RangeTextInput {
     pub fn submit_history_plan(
         &mut self,
         plan: RangeHistoryPlan,
+        base_positions: &[SourcePosition],
+        text: &RangeResidency,
+        objects: &ObjectResidency,
         cx: &mut Context<Self>,
     ) -> Result<MutationKey, RangeTextInputError> {
         if !self.mounted {
@@ -72,12 +76,18 @@ impl RangeTextInput {
         {
             return Err(RangeTextInputError::Stale);
         }
+        for position in crate::range_edit::required_base_positions(proposal, &[]) {
+            if !base_positions.contains(&position) {
+                return Err(MutationError::MissingPositionProof(position).into());
+            }
+        }
+        self.admit_edit_positions(base_positions, text, objects)?;
         self.edits.begin(proposal)?;
         self.pending_history = Some(PendingHistory {
             intent,
             plan: Some(PlannedHistory {
                 proposal,
-                selection: plan.selection(),
+                positions: plan.positions(),
             }),
         });
         self.push_request(RangeTextInputRequest::MutationPreflight(proposal), cx);
@@ -94,20 +104,41 @@ impl RangeTextInput {
         let plan = pending.plan.ok_or(RangeTextInputError::Stale)?;
         let key = pending.intent().key();
         if fragment.key() != key {
-            return Err(RangeTextInputError::Stale);
+            return Err(MutationError::WrongKey {
+                expected: key,
+                actual: fragment.key(),
+            }
+            .into());
         }
-        let terminal = matches!(fragment.payload(), MutationFragmentPayload::Terminal);
-        self.edits.stage(fragment.clone())?;
-        if terminal {
+        let terminal_positions = match fragment.payload() {
+            MutationFragmentPayload::Terminal { intended } => Some(*intended),
+            _ => None,
+        };
+        if let Err(error) = self.edits.stage(fragment.clone()) {
+            self.fail_invalid_staging(key, cx);
+            return Err(error.into());
+        }
+        if let Some(positions) = terminal_positions {
             let validation = self
                 .expected_history_successor_extent(plan)
                 .and_then(|expected| {
-                    expected
-                        .check_byte_range(plan.selection.range())
-                        .map_err(Into::into)
+                    if positions != plan.positions {
+                        return Err(MutationError::WrongSuccessorPositions.into());
+                    }
+                    for position in [
+                        positions.caret(),
+                        positions.selection_anchor(),
+                        positions.selection_head(),
+                    ] {
+                        expected.check_byte_range(crate::ByteRange::new(
+                            position.byte_offset,
+                            position.byte_offset,
+                        )?)?;
+                    }
+                    Ok(())
                 });
             if let Err(error) = validation {
-                self.reject_mutation_staging(key, cx)?;
+                self.fail_invalid_staging(key, cx);
                 return Err(error);
             }
         }
@@ -115,8 +146,8 @@ impl RangeTextInput {
             RangeTextInputRequest::MutationFragment { key, fragment },
             cx,
         );
-        if terminal {
-            self.mutation_selection = Some((key, plan.selection));
+        if let Some(positions) = terminal_positions {
+            self.mutation_positions = Some((key, positions));
             self.push_request(RangeTextInputRequest::MutationCommit(key), cx);
         }
         Ok(())
@@ -139,15 +170,15 @@ impl RangeTextInput {
                             .checked_add(text.bytes().filter(|byte| *byte == b'\n').count() as u64)
                             .ok_or(MutationError::IncoherentSuccessor)?,
                     )),
-                    MutationFragmentPayload::Atom(_) | MutationFragmentPayload::Terminal => {
-                        Ok((bytes, breaks))
-                    }
+                    MutationFragmentPayload::Atom(_)
+                    | MutationFragmentPayload::Object(_)
+                    | MutationFragmentPayload::Terminal { .. } => Ok((bytes, breaks)),
                 }
             },
         )?;
         let expected_bytes = base
             .byte_len()
-            .checked_sub(plan.proposal.replacement().len())
+            .checked_sub(plan.proposal.replacement_bytes().len())
             .and_then(|bytes| bytes.checked_add(inserted_bytes))
             .ok_or(MutationError::IncoherentSuccessor)?;
         let expected_breaks = base

@@ -3,7 +3,8 @@ use std::{mem::size_of, sync::Arc};
 use gpui::WindowTextSystem;
 
 use crate::{
-    ByteOffset, PageDemandEnvelope, PageDirection, PageEdgeFact, PageRequestKey, RangePage,
+    ByteOffset, InlineObjectGap, ObjectPage, ObjectRequestKey, PageDemandEnvelope, PageDirection,
+    PageEdgeFact, PageRequestKey, RangePage, RangeSourceSelection, SourcePosition,
 };
 
 use super::*;
@@ -46,7 +47,7 @@ impl ExactGeometryOwner {
             self.active = Some(active);
             return Err(self.nonterminal_failure(ExactGeometryError::ObsoleteJob(key)));
         }
-        let Some(expected) = active.pending.as_deref().copied() else {
+        let Some(PendingInput::Text(expected)) = active.pending.as_deref().copied() else {
             self.active = Some(active);
             return Err(self.nonterminal_failure(ExactGeometryError::NoActiveJob));
         };
@@ -122,12 +123,95 @@ impl ExactGeometryOwner {
         if let ActivePageUse::Context { replay, .. } = active.page_use {
             return context::admit(self, active, page, expected, replay, budget);
         }
-        let page_scan = match scan::process_page(
+        active.pending = None;
+        active.text_page = Some(ActiveTextPage {
+            id: page.id(),
+            range: page.range(),
+        });
+        if let Err(error) = budget.observe(&active, 0, 0) {
+            return Err(self.terminal_failure(
+                error,
+                ExactGeometryFailureStage::PageCoexistence,
+                active,
+                &budget,
+            ));
+        }
+        self.high_water_bytes = self.high_water_bytes.max(budget.peak_bytes);
+        self.high_water_items = self.high_water_items.max(budget.peak_items);
+        self.active = Some(active);
+        return Ok(self.page_admission(
+            ExactGeometryProgress::NeedObjects,
+            consumed_page_release(expected),
+            &budget,
+        ));
+    }
+
+    pub fn admit_object_page(
+        &mut self,
+        key: GeometryJobKey,
+        text_page: &RangePage,
+        object_page: &ObjectPage,
+        text_system: &WindowTextSystem,
+    ) -> Result<ExactGeometryAdmission, ExactGeometryFailure> {
+        let Some(mut active) = self.active.take() else {
+            return Err(self.nonterminal_failure(ExactGeometryError::ObsoleteJob(key)));
+        };
+        if active.key != key {
+            self.active = Some(active);
+            return Err(self.nonterminal_failure(ExactGeometryError::ObsoleteJob(key)));
+        }
+        let Some(PendingInput::Object(expected)) = active.pending.as_deref().copied() else {
+            self.active = Some(active);
+            return Err(self.nonterminal_failure(ExactGeometryError::WrongInputKind));
+        };
+        let Some(active_page) = active.text_page else {
+            self.active = Some(active);
+            return Err(self.nonterminal_failure(ExactGeometryError::WrongInputKind));
+        };
+        if text_page.id() != active_page.id
+            || text_page.range() != active_page.range
+            || !resident_object_page_satisfies(object_page, expected)
+        {
+            self.active = Some(active);
+            return Err(
+                self.nonterminal_failure(ExactGeometryError::WrongObjectPage(object_page.key()))
+            );
+        }
+        let fixed = accounting::fixed_counts_without_active(self);
+        let mut budget = AdmissionBudget {
+            fixed_bytes: fixed.total_bytes(),
+            fixed_items: fixed.total_items(),
+            page_payload_bytes: text_page
+                .retained_charge()
+                .bytes()
+                .saturating_add(object_page.retained_charge().bytes()),
+            page_items: text_page
+                .retained_charge()
+                .items()
+                .saturating_add(object_page.objects().len())
+                .saturating_add(1),
+            max_bytes: self.limits.max_retained_bytes,
+            max_items: self.limits.max_retained_items,
+            peak_bytes: 0,
+            peak_items: 0,
+            failure_stage: None,
+        };
+        if let Err(error) = budget.observe(&active, 0, 0) {
+            return Err(self.terminal_failure(
+                error,
+                ExactGeometryFailureStage::PageCoexistence,
+                active,
+                &budget,
+            ));
+        }
+        let inputs = self.inputs.as_deref().expect("active owner retains inputs");
+        let source_end = inputs.binding.extent().byte_len();
+        let scan = match scan::process_object_page(
             &mut active,
-            page,
+            text_page,
+            object_page,
             text_system,
-            &inputs.layout,
-            &inputs.style,
+            inputs,
             self.limits,
             source_end,
             &mut budget,
@@ -140,14 +224,42 @@ impl ExactGeometryOwner {
                 return Err(self.terminal_failure(error, stage, active, &budget));
             }
         };
+        active.pending = None;
         if let scan::PageScan::NeedContext {
             required_end,
             replay,
-        } = page_scan
+        } = scan
         {
             return context::defer(self, active, expected, required_end, replay, budget);
         }
-        let reached_source_end = page.range().end().get() == source_end;
+        let release = consumed_object_release(expected);
+        if !object_page.complete() {
+            self.high_water_bytes = self.high_water_bytes.max(budget.peak_bytes);
+            self.high_water_items = self.high_water_items.max(budget.peak_items);
+            self.active = Some(active);
+            return Ok(self.page_admission(ExactGeometryProgress::NeedObjects, release, &budget));
+        }
+        active.text_page = None;
+        self.finish_text_page(
+            active,
+            active_page.range.end(),
+            release,
+            text_system,
+            budget,
+        )
+    }
+
+    fn finish_text_page(
+        &mut self,
+        mut active: Box<ActiveJob>,
+        page_end: ByteOffset,
+        release: ExactGeometryRelease,
+        text_system: &WindowTextSystem,
+        mut budget: AdmissionBudget,
+    ) -> Result<ExactGeometryAdmission, ExactGeometryFailure> {
+        let inputs = self.inputs.as_deref().expect("active owner retains inputs");
+        let source_end = inputs.binding.extent().byte_len();
+        let reached_source_end = page_end.get() == source_end;
         let target_ready = match active.kind {
             ActiveKind::Target { target, .. } => {
                 checkpoint::target_scan_ready(&active.scanner, target)
@@ -167,29 +279,35 @@ impl ExactGeometryOwner {
                 let stage = budget
                     .failure_stage
                     .unwrap_or(ExactGeometryFailureStage::Finalize);
-                return Err(self.terminal_failure(error, stage, active, &budget));
+                let mut failure = self.terminal_failure(error, stage, active, &budget);
+                failure.release = merge_release(release, failure.release);
+                return Err(failure);
             }
             if matches!(active.kind, ActiveKind::Index) {
                 let terminal =
                     match checkpoint::make_checkpoint(&active.scanner, &inputs.layout, true) {
                         Ok(terminal) => terminal,
                         Err(error) => {
-                            return Err(self.terminal_failure(
+                            let mut failure = self.terminal_failure(
                                 error,
                                 ExactGeometryFailureStage::Checkpoint,
                                 active,
                                 &budget,
-                            ));
+                            );
+                            failure.release = merge_release(release, failure.release);
+                            return Err(failure);
                         }
                     };
-                if let Err(error) = budget.observe(&active, size_of::<ExactGeometryCheckpoint>(), 0)
+                if let Err(error) = budget.observe(&active, size_of::<ExactGeometryCheckpoint>(), 1)
                 {
-                    return Err(self.terminal_failure(
+                    let mut failure = self.terminal_failure(
                         error,
                         ExactGeometryFailureStage::Checkpoint,
                         active,
                         &budget,
-                    ));
+                    );
+                    failure.release = merge_release(release, failure.release);
+                    return Err(failure);
                 }
                 checkpoint::retain_checkpoint(
                     &mut active.scanner.checkpoints,
@@ -198,35 +316,30 @@ impl ExactGeometryOwner {
                 );
             }
         }
-        active.page_use = ActivePageUse::Traverse {
-            anchor: page.range().end(),
-        };
+        active.page_use = ActivePageUse::Traverse { anchor: page_end };
         if !reached_source_end && !target_ready {
-            active.pending = None;
             if let Err(error) = budget.observe(&active, 0, 0) {
-                return Err(self.terminal_failure(
+                let mut failure = self.terminal_failure(
                     error,
                     ExactGeometryFailureStage::PageCoexistence,
                     active,
                     &budget,
-                ));
+                );
+                failure.release = merge_release(release, failure.release);
+                return Err(failure);
             }
             self.high_water_bytes = self.high_water_bytes.max(budget.peak_bytes);
             self.high_water_items = self.high_water_items.max(budget.peak_items);
             self.active = Some(active);
-            return Ok(self.page_admission(
-                ExactGeometryProgress::Scanning,
-                consumed_page_release(expected),
-                &budget,
-            ));
+            return Ok(self.page_admission(ExactGeometryProgress::Scanning, release, &budget));
         }
-        self.publish_candidate(active, expected, budget)
+        self.publish_candidate(active, release, budget)
     }
 
     fn publish_candidate(
         &mut self,
         active: Box<ActiveJob>,
-        page: PageRequestKey,
+        completion_release: ExactGeometryRelease,
         mut budget: AdmissionBudget,
     ) -> Result<ExactGeometryAdmission, ExactGeometryFailure> {
         let (conversion_bytes, conversion_items) = match active.kind {
@@ -242,12 +355,14 @@ impl ExactGeometryOwner {
         // Vec/VecDeque storage remains live while Arc publication records are initialized, so the
         // conversion peak includes both record sets. Payload behind fragment Arcs is not cloned.
         if let Err(error) = budget.observe(&active, conversion_bytes, conversion_items) {
-            return Err(self.terminal_failure(
+            let mut failure = self.terminal_failure(
                 error,
                 ExactGeometryFailureStage::Publication,
                 active,
                 &budget,
-            ));
+            );
+            failure.release = merge_release(completion_release, failure.release);
+            return Err(failure);
         }
         let active_release_counts = accounting::active_counts(&active);
         let completion_counts = completion_release_counts(&active);
@@ -256,6 +371,14 @@ impl ExactGeometryOwner {
         } = *active;
         match kind {
             ActiveKind::Index => {
+                let extent = self
+                    .inputs
+                    .as_deref()
+                    .expect("active owner retains inputs")
+                    .binding
+                    .extent()
+                    .byte_len();
+                let document_selection = exact_document_selection(&scanner, extent);
                 let candidate = ExactGeometryIndex {
                     key,
                     aggregate: ExactGeometryAggregate {
@@ -263,6 +386,7 @@ impl ExactGeometryOwner {
                         content_height: scanner.continuation.block_offset,
                     },
                     checkpoints: Arc::from(scanner.checkpoints.into_iter().collect::<Vec<_>>()),
+                    document_selection,
                 };
                 let retained = accounting::counts_with_index_candidate(self, &candidate);
                 if retained.total_bytes() > self.limits.max_retained_bytes
@@ -271,7 +395,7 @@ impl ExactGeometryOwner {
                     return Err(candidate_failure(
                         ExactGeometryError::CapacityExceeded,
                         key,
-                        page,
+                        completion_release,
                         active_release_counts,
                         &budget,
                     ));
@@ -279,7 +403,7 @@ impl ExactGeometryOwner {
                 let prior = self.index.replace(Box::new(candidate));
                 let release = merge_release(
                     merge_release(
-                        consumed_page_release(page),
+                        completion_release,
                         ExactGeometryRelease {
                             counts: completion_counts,
                             ..Default::default()
@@ -293,12 +417,18 @@ impl ExactGeometryOwner {
                 Ok(self.page_admission(ExactGeometryProgress::IndexComplete, release, &budget))
             }
             ActiveKind::Target { predecessor, .. } => {
-                let target_source = scanner.target_source.unwrap_or(scanner.target_line_source);
+                let target_source = scanner
+                    .target_source
+                    .unwrap_or(scanner.target_line_position);
                 let candidate = BlockTargetPublication {
                     key,
                     predecessor,
-                    target_source: ByteOffset::new(target_source),
-                    source_end: ByteOffset::new(scanner.continuation.next_logical_offset),
+                    target_source,
+                    source_end: scanner
+                        .continuation
+                        .next_position
+                        .try_into()
+                        .expect("accepted GPUI position is source-compatible"),
                     fragments: Arc::from(scanner.fragments),
                     charge: scanner.output_charge,
                     item_charge: scanner.output_item_charge,
@@ -310,7 +440,7 @@ impl ExactGeometryOwner {
                     return Err(candidate_failure(
                         ExactGeometryError::CapacityExceeded,
                         key,
-                        page,
+                        completion_release,
                         active_release_counts,
                         &budget,
                     ));
@@ -318,7 +448,7 @@ impl ExactGeometryOwner {
                 let prior = self.target.replace(Box::new(candidate));
                 let release = merge_release(
                     merge_release(
-                        consumed_page_release(page),
+                        completion_release,
                         ExactGeometryRelease {
                             counts: completion_counts,
                             ..Default::default()
@@ -374,13 +504,20 @@ impl ExactGeometryOwner {
             .fixed_items
             .saturating_add(budget.page_items)
             .saturating_add(counts.total_items());
-        let page = active.pending.as_deref().copied().into_iter().collect();
+        let mut pages = Vec::new();
+        let mut object_pages = Vec::new();
+        match active.pending.as_deref().copied() {
+            Some(PendingInput::Text(page)) => pages.push(page),
+            Some(PendingInput::Object(page)) => object_pages.push(page),
+            None => {}
+        }
         ExactGeometryFailure {
             error,
             stage,
             release: ExactGeometryRelease {
                 jobs: vec![active.key],
-                pages: page,
+                pages,
+                object_pages,
                 counts,
             },
             admission_required_bytes: budget.peak_bytes.max(required_bytes),
@@ -401,6 +538,28 @@ fn consumed_page_release(page: PageRequestKey) -> ExactGeometryRelease {
         },
         ..Default::default()
     }
+}
+
+fn consumed_object_release(page: ObjectRequestKey) -> ExactGeometryRelease {
+    ExactGeometryRelease {
+        object_pages: vec![page],
+        counts: ExactGeometryCounts {
+            pending_object_page_items: 1,
+            pending_object_page_bytes: size_of::<ObjectRequestKey>(),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+fn resident_object_page_satisfies(page: &ObjectPage, expected: ObjectRequestKey) -> bool {
+    let actual = page.key();
+    actual.id() == expected.id()
+        && actual.binding() == expected.binding()
+        && actual.revision() == expected.revision()
+        && actual.presentation_generation() == expected.presentation_generation()
+        && actual.purpose() == expected.purpose()
+        && actual.demand() == expected.demand()
 }
 
 fn resident_page_satisfies(page: &RangePage, expected: PageRequestKey) -> bool {
@@ -446,20 +605,48 @@ fn completion_release_counts(active: &ActiveJob) -> ExactGeometryCounts {
     counts
 }
 
+fn exact_document_selection(scanner: &Scanner, extent: u64) -> RangeSourceSelection {
+    let anchor = scanner
+        .first_object_cursor
+        .filter(|cursor| cursor.anchor().get() == 0)
+        .map_or_else(
+            || SourcePosition::new(ByteOffset::new(0), InlineObjectGap::NoObjects),
+            |cursor| {
+                SourcePosition::new(
+                    ByteOffset::new(0),
+                    InlineObjectGap::before(cursor.neighbor()),
+                )
+            },
+        );
+    let head = scanner
+        .object_cursor
+        .filter(|cursor| cursor.anchor().get() == extent)
+        .map_or_else(
+            || SourcePosition::new(ByteOffset::new(extent), InlineObjectGap::NoObjects),
+            |cursor| {
+                SourcePosition::new(
+                    ByteOffset::new(extent),
+                    InlineObjectGap::after(cursor.neighbor()),
+                )
+            },
+        );
+    RangeSourceSelection { anchor, head }
+}
+
 fn candidate_failure(
     error: ExactGeometryError,
     key: GeometryJobKey,
-    page: PageRequestKey,
+    mut release: ExactGeometryRelease,
     counts: ExactGeometryCounts,
     budget: &AdmissionBudget,
 ) -> ExactGeometryFailure {
     ExactGeometryFailure {
         error,
         stage: ExactGeometryFailureStage::Publication,
-        release: ExactGeometryRelease {
-            jobs: vec![key],
-            pages: vec![page],
-            counts,
+        release: {
+            release.jobs.push(key);
+            release.counts = counts;
+            release
         },
         admission_required_bytes: budget.peak_bytes,
         admission_required_items: budget.peak_items,

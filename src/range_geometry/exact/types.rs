@@ -6,7 +6,10 @@ use gpui::{
 };
 use unicode_segmentation::GraphemeCursor;
 
-use crate::{ByteOffset, PageRequestKey};
+use crate::{
+    ByteOffset, ObjectCursor, ObjectRequestKey, PageRequestKey, RangeSourceSelection,
+    SourcePosition,
+};
 
 use super::super::{GeometryJobKey, GeometryQuality};
 
@@ -127,7 +130,7 @@ impl ExactGeometryAggregate {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct StreamingGeometryEstimate {
-    pub(super) scanned_source: ByteOffset,
+    pub(super) scanned_source: SourcePosition,
     pub(super) visual_lines_lower_bound: u64,
     pub(super) content_height_lower_bound: Pixels,
 }
@@ -137,7 +140,7 @@ impl StreamingGeometryEstimate {
         GeometryQuality::Estimated
     }
 
-    pub const fn scanned_source(self) -> ByteOffset {
+    pub const fn scanned_source(self) -> SourcePosition {
         self.scanned_source
     }
 
@@ -152,7 +155,8 @@ impl StreamingGeometryEstimate {
 
 #[derive(Clone, Debug)]
 pub struct ExactGeometryCheckpoint {
-    pub(super) source: ByteOffset,
+    pub(super) source: SourcePosition,
+    pub(super) object_cursor: Option<ObjectCursor>,
     pub(super) block_offset: Pixels,
     pub(super) visual_lines: u64,
     pub(super) logical_line: u64,
@@ -166,8 +170,12 @@ pub struct ExactGeometryCheckpoint {
 }
 
 impl ExactGeometryCheckpoint {
-    pub const fn source(&self) -> ByteOffset {
+    pub const fn source(&self) -> SourcePosition {
         self.source
+    }
+
+    pub const fn object_cursor(&self) -> Option<ObjectCursor> {
+        self.object_cursor
     }
 
     pub const fn block_offset(&self) -> Pixels {
@@ -215,6 +223,7 @@ pub struct ExactGeometryIndex {
     pub(super) key: GeometryJobKey,
     pub(super) checkpoints: Arc<[ExactGeometryCheckpoint]>,
     pub(super) aggregate: ExactGeometryAggregate,
+    pub(super) document_selection: RangeSourceSelection,
 }
 
 impl ExactGeometryIndex {
@@ -228,6 +237,10 @@ impl ExactGeometryIndex {
 
     pub const fn aggregate(&self) -> ExactGeometryAggregate {
         self.aggregate
+    }
+
+    pub(crate) const fn document_selection(&self) -> RangeSourceSelection {
+        self.document_selection
     }
 }
 
@@ -263,9 +276,9 @@ impl BlockTarget {
 #[derive(Clone, Debug)]
 pub struct BlockTargetPublication {
     pub(super) key: GeometryJobKey,
-    pub(super) predecessor: ByteOffset,
-    pub(super) target_source: ByteOffset,
-    pub(super) source_end: ByteOffset,
+    pub(super) predecessor: SourcePosition,
+    pub(super) target_source: SourcePosition,
+    pub(super) source_end: SourcePosition,
     pub(super) fragments: Arc<[StreamingLayoutFragment]>,
     pub(super) charge: StreamingLayoutCharge,
     pub(super) item_charge: StreamingLayoutItemCharge,
@@ -276,15 +289,15 @@ impl BlockTargetPublication {
         self.key
     }
 
-    pub const fn predecessor(&self) -> ByteOffset {
+    pub const fn predecessor(&self) -> SourcePosition {
         self.predecessor
     }
 
-    pub const fn target_source(&self) -> ByteOffset {
+    pub const fn target_source(&self) -> SourcePosition {
         self.target_source
     }
 
-    pub const fn source_end(&self) -> ByteOffset {
+    pub const fn source_end(&self) -> SourcePosition {
         self.source_end
     }
 
@@ -307,6 +320,7 @@ impl BlockTargetPublication {
 pub enum ExactGeometryProgress {
     PendingIndex,
     Scanning,
+    NeedObjects,
     IndexComplete,
     TargetComplete,
 }
@@ -375,6 +389,7 @@ impl ExactGeometryAdmission {
 pub struct ExactGeometryRelease {
     pub jobs: Vec<GeometryJobKey>,
     pub pages: Vec<PageRequestKey>,
+    pub object_pages: Vec<ObjectRequestKey>,
     pub counts: ExactGeometryCounts,
 }
 
@@ -392,6 +407,8 @@ pub enum ExactGeometryError {
     ObsoleteJob(GeometryJobKey),
     PageAlreadyPending,
     WrongPage(PageRequestKey),
+    WrongObjectPage(ObjectRequestKey),
+    WrongInputKind,
     NoncontiguousPage {
         expected: ByteOffset,
         actual: ByteOffset,

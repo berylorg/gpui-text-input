@@ -13,7 +13,7 @@ impl RangeEditCoordinator {
         if self
             .binding
             .extent()
-            .check_byte_range(proposal.replacement())
+            .check_byte_range(proposal.replacement_bytes())
             .is_err()
         {
             return Err(MutationError::ReplacementOutsideExtent);
@@ -31,7 +31,7 @@ impl RangeEditCoordinator {
             }
         };
         let removed_breaks = proposal.replacement_line_breaks();
-        let replacement = proposal.replacement();
+        let replacement = proposal.replacement_bytes();
         let replaces_whole_source =
             replacement.start().get() == 0 && replacement.end().get() == base_extent.byte_len();
         if removed_breaks > replacement.len()
@@ -50,9 +50,16 @@ impl RangeEditCoordinator {
             inserted_line_breaks: 0,
             fragment_count: 0,
             staged_bytes: 0,
+            object_count: 0,
+            object_bytes: 0,
+            presentation_bytes: 0,
+            proof_count: 0,
+            source_page_count: 0,
             terminal_seen: false,
+            intended: None,
             detached: false,
             fragments: Vec::with_capacity(self.limits.max_fragments),
+            source_proofs: Vec::new(),
         });
         Ok(())
     }
@@ -78,5 +85,19 @@ impl RangeEditCoordinator {
     ) -> Result<MutationSettlement, MutationError> {
         self.active_mut(key, MutationState::Staging)?;
         Ok(self.finish(key, MutationOutcome::Rejected, false))
+    }
+
+    pub(crate) fn fail_precommit(
+        &mut self,
+        key: MutationKey,
+    ) -> Result<MutationSettlement, MutationError> {
+        let state = self.active_for_key(key)?.state;
+        if !matches!(state, MutationState::Preflight | MutationState::Staging) {
+            return Err(MutationError::WrongState {
+                expected: MutationState::Staging,
+                actual: state,
+            });
+        }
+        Ok(self.finish(key, MutationOutcome::Error, false))
     }
 }

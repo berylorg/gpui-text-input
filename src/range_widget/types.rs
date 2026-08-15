@@ -4,8 +4,10 @@ use gpui_scrollbar::ScrollbarStyle;
 use crate::{
     BlockTarget, ByteOffset, ByteRange, ClipboardKey, ClipboardLimits, ClipboardWriteRequest,
     ExactGeometryError, ExactGeometryLimits, MutationError, MutationFragment, MutationKey,
-    MutationLimits, MutationOutcome, MutationProposal, PageFailure, PageRequest, PageRequestKey,
-    RangeBinding, ResidencyLimits, SegmentationLimits, StreamingGeometryStyle,
+    MutationLimits, MutationOutcome, MutationProposal, ObjectRequest, ObjectRequestKey,
+    ObjectResidencyLimits, PageRequest, PageRequestKey,
+    PresentationGeneration, RangeBinding, ResidencyLimits, SegmentationLimits,
+    StreamingGeometryStyle,
 };
 
 /// Exact hard limits owned by one mounted range-backed widget.
@@ -53,10 +55,12 @@ impl RangeTextInputLimits {
 #[derive(Clone)]
 pub struct RangeTextInputConfig {
     pub binding: RangeBinding,
+    pub presentation_generation: PresentationGeneration,
     pub layout: StreamingLayoutBinding,
     pub style: StreamingGeometryStyle,
     pub geometry_limits: ExactGeometryLimits,
     pub residency_limits: ResidencyLimits,
+    pub object_residency_limits: ObjectResidencyLimits,
     pub mutation_limits: MutationLimits,
     pub clipboard_limits: ClipboardLimits,
     pub segmentation_limits: SegmentationLimits,
@@ -68,7 +72,10 @@ pub struct RangeTextInputConfig {
     pub scrollbar_style: ScrollbarStyle,
 }
 
-/// Selection direction and endpoints frozen in a coherent publication.
+/// Explicit byte-only projection used solely by platform text APIs.
+///
+/// The mounted widget's authoritative caret and selection use [`RangeSourceSelection`]. This
+/// projection exists only when both endpoints are proven ordinary text positions.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RangeSelection {
     pub anchor: ByteOffset,
@@ -89,10 +96,44 @@ impl RangeSelection {
     }
 }
 
-/// Compact logical vertical position.
+/// Compact desired logical vertical position, internal to one mounted surface.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct RangeScrollAnchor {
+pub(super) struct RangeScrollAnchor {
     pub source: ByteOffset,
+    pub intra_anchor: Pixels,
+}
+
+/// Directional composite selection carried by compact restoration only.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RangeSourceSelection {
+    /// Fixed composite anchor endpoint.
+    pub anchor: crate::SourcePosition,
+    /// Fixed composite active endpoint.
+    pub head: crate::SourcePosition,
+}
+
+impl RangeSourceSelection {
+    pub const fn caret(position: crate::SourcePosition) -> Self {
+        Self {
+            anchor: position,
+            head: position,
+        }
+    }
+
+    pub fn range(self) -> Result<crate::SourceRange, crate::SourceRangeError> {
+        match self.anchor.compare_in_revision(self.head) {
+            Some(std::cmp::Ordering::Greater) => crate::SourceRange::new(self.head, self.anchor),
+            _ => crate::SourceRange::new(self.anchor, self.head),
+        }
+    }
+}
+
+/// Compact logical scroll position with a fixed-size same-anchor continuation witness.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RangeRestorationScrollAnchor {
+    /// Logical source position and bounded same-anchor continuation.
+    pub position: crate::SourcePosition,
+    /// Bounded block displacement from the logical anchor.
     pub intra_anchor: Pixels,
 }
 
@@ -128,19 +169,19 @@ impl RangeHistoryIntent {
 pub struct RangeHistoryPlan {
     intent: RangeHistoryIntent,
     proposal: MutationProposal,
-    selection: RangeSelection,
+    positions: crate::MutationPositions,
 }
 
 impl RangeHistoryPlan {
     pub const fn new(
         intent: RangeHistoryIntent,
         proposal: MutationProposal,
-        selection: RangeSelection,
+        positions: crate::MutationPositions,
     ) -> Self {
         Self {
             intent,
             proposal,
-            selection,
+            positions,
         }
     }
     pub const fn intent(self) -> RangeHistoryIntent {
@@ -149,21 +190,84 @@ impl RangeHistoryPlan {
     pub const fn proposal(self) -> MutationProposal {
         self.proposal
     }
-    pub const fn selection(self) -> RangeSelection {
-        self.selection
+    pub const fn positions(self) -> crate::MutationPositions {
+        self.positions
     }
 }
 
 /// Compact state exported only at a fully quiescent cut.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RangeRestorationSeed {
+    /// Exact host binding, revision, and logical extent.
     pub binding: RangeBinding,
-    pub caret: ByteOffset,
-    pub selection: RangeSelection,
-    pub scroll: RangeScrollAnchor,
-    pub viewport: ByteRange,
-    pub overscan: ByteRange,
+    /// Exact active caret position.
+    pub caret: crate::SourcePosition,
+    /// Exact directional selection endpoints.
+    pub selection: RangeSourceSelection,
+    /// Exact logical vertical anchor.
+    pub scroll: RangeRestorationScrollAnchor,
+    /// Optional opaque host history frontier identity and availability.
     pub history: Option<RangeHistoryFrontier>,
+}
+
+/// Exact immutable anchor facts for one currently realized inline object.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RealizedInlineObjectAnchor {
+    pub binding: RangeBinding,
+    pub object_id: crate::InlineObjectId,
+    pub order: crate::InlineObjectOrder,
+    pub presentation_generation: crate::PresentationGeneration,
+    pub layout_epoch: crate::LayoutEpoch,
+    pub bounds: gpui::Bounds<Pixels>,
+}
+
+/// Keyboard key that requested ordinary inline-object activation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InlineObjectActivationKey {
+    Enter,
+    Space,
+}
+
+/// Exact origin of one ordinary inline-object activation request.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum InlineObjectInputOrigin {
+    Pointer { point: gpui::Point<Pixels> },
+    Keyboard { key: InlineObjectActivationKey },
+}
+
+/// App-neutral activation emitted only from the current exact coherent realization.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct InlineObjectActivation {
+    pub anchor: RealizedInlineObjectAnchor,
+    pub origin: InlineObjectInputOrigin,
+}
+
+/// Why a formerly active exact object no longer has a usable realized anchor.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InlineObjectRealizationLossReason {
+    SelectionChanged,
+    FocusLost,
+    Disabled,
+    Removed,
+    Replaced,
+    Superseded,
+    Unrealized,
+    Disposed,
+}
+
+/// Terminal loss of one exact active inline-object realization.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct InlineObjectRealizationLoss {
+    pub anchor: RealizedInlineObjectAnchor,
+    pub reason: InlineObjectRealizationLossReason,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct ActiveInlineObject {
+    pub anchor: RealizedInlineObjectAnchor,
+    pub leading: crate::SourcePosition,
+    pub trailing: crate::SourcePosition,
+    pub activation_eligible: bool,
 }
 
 /// App-neutral typed work emitted to the host.
@@ -172,6 +276,9 @@ pub enum RangeTextInputRequest {
     Page(PageRequest),
     CancelPage(PageRequestKey),
     ReleasePage(PageRequestKey),
+    ObjectPage(ObjectRequest),
+    CancelObjectPage(ObjectRequestKey),
+    ReleaseObjectPage(ObjectRequestKey),
     MutationPreflight(MutationProposal),
     MutationFragment {
         key: MutationKey,
@@ -183,10 +290,11 @@ pub enum RangeTextInputRequest {
     HistoryIntent(RangeHistoryIntent),
     CancelHistoryIntent(RangeHistoryIntent),
     ClipboardWrite(ClipboardWriteRequest),
+    CancelClipboardWrite(ClipboardKey),
 }
 
 /// App-neutral mounted interaction outcomes that do not require host work.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum RangeTextInputEvent {
     InlineAtomClicked(crate::AtomId),
     FocusLost,
@@ -195,6 +303,8 @@ pub enum RangeTextInputEvent {
         outcome: MutationOutcome,
     },
     RestorationRejected,
+    InlineObjectActivated(InlineObjectActivation),
+    InlineObjectRealizationLost(InlineObjectRealizationLoss),
 }
 
 /// Result of a platform query that may require bounded replay first.
@@ -252,7 +362,7 @@ impl From<crate::RangeContractError> for RangeTextInputError {
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct DesiredSurface {
-    pub selection: RangeSelection,
+    pub source_selection: Option<RangeSourceSelection>,
     pub composition: Option<ByteRange>,
     pub scroll: RangeScrollAnchor,
     pub target_block: Pixels,
@@ -260,6 +370,18 @@ pub(super) struct DesiredSurface {
     pub overscan: Pixels,
     pub preserve_scroll_anchor: bool,
     pub reveal_caret: bool,
+    pub inline_object_interaction: Option<DesiredInlineObjectInteraction>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum DesiredInlineObjectInteraction {
+    Set {
+        object_id: crate::InlineObjectId,
+        order: crate::InlineObjectOrder,
+        activation_eligible: bool,
+        origin: Option<InlineObjectInputOrigin>,
+    },
+    Clear(InlineObjectRealizationLossReason),
 }
 
 /// Frozen logical and visual facts owned by one exact realization job.
@@ -274,7 +396,7 @@ pub(super) struct SurfaceCandidate {
 impl DesiredSurface {
     pub fn origin(viewport_extent: Pixels, overscan: Pixels) -> Self {
         Self {
-            selection: RangeSelection::caret(ByteOffset::new(0)),
+            source_selection: None,
             composition: None,
             scroll: RangeScrollAnchor {
                 source: ByteOffset::new(0),
@@ -285,6 +407,7 @@ impl DesiredSurface {
             overscan,
             preserve_scroll_anchor: false,
             reveal_caret: true,
+            inline_object_interaction: None,
         }
     }
 
@@ -292,12 +415,3 @@ impl DesiredSurface {
         BlockTarget::new(self.target_block, self.viewport_extent, self.overscan)
     }
 }
-
-/// Settlement input for an admitted or detached exact host mutation.
-pub type RangeMutationResult = MutationOutcome;
-
-/// Terminal page input for a keyed host failure.
-pub type RangePageFailure = PageFailure;
-
-/// Key of a pending clipboard operation.
-pub type RangeClipboardKey = ClipboardKey;

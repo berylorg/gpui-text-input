@@ -1,14 +1,17 @@
 use gpui::{
-    SharedString, StreamingLayoutBinding, StreamingLayoutContinuation, StreamingOversizeAtom,
+    SharedString, StreamingEndOfSource, StreamingInlineObject, StreamingLayoutBinding,
+    StreamingLayoutContinuation, StreamingLineFinalization, StreamingOversizeAtom,
     StreamingTextSegment, WindowTextSystem,
 };
 use unicode_segmentation::GraphemeCursor;
 
-use crate::{ByteOffset, ByteRange, RangePage};
+use crate::{
+    ByteOffset, ByteRange, InlineObjectFact, InlineObjectGap, ObjectPage, RangePage, SourcePosition,
+};
 
 use super::{
-    ActiveAtom, ActiveJob, ActiveKind, AdmissionBudget, ExactGeometryCheckpoint,
-    ExactGeometryError, ExactGeometryLimits, StreamingGeometryStyle,
+    ActiveAtom, ActiveJob, ActiveKind, AdmissionBudget, DeferredObject, ExactGeometryCheckpoint,
+    ExactGeometryError, ExactGeometryLimits, OwnerInputs, StreamingGeometryStyle,
 };
 
 mod text;
@@ -22,9 +25,13 @@ pub(super) enum PageScan {
     },
 }
 
-pub(super) fn process_page(
+#[allow(clippy::too_many_arguments)]
+pub(super) fn process_page_range(
     job: &mut ActiveJob,
     page: &RangePage,
+    start: u64,
+    end: u64,
+    end_position: SourcePosition,
     text_system: &WindowTextSystem,
     binding: &StreamingLayoutBinding,
     style: &StreamingGeometryStyle,
@@ -32,9 +39,15 @@ pub(super) fn process_page(
     source_len: u64,
     budget: &mut AdmissionBudget,
 ) -> Result<PageScan, ExactGeometryError> {
-    let page_start = page.range().start().get();
     let page_end = page.range().end().get();
-    let mut position = page_start;
+    if start != job.scanner.read_position
+        || start > end
+        || end > page_end
+        || start < page.range().start().get()
+    {
+        return Err(ExactGeometryError::SourceContract);
+    }
+    let mut position = start;
     let mut atoms = page.atoms().iter().peekable();
     if let Some(active) = job.scanner.active_atom.as_deref().copied() {
         let atom = atoms.next().ok_or(ExactGeometryError::SourceContract)?;
@@ -42,30 +55,43 @@ pub(super) fn process_page(
             return Err(ExactGeometryError::SourceContract);
         }
         let range = active.global_range;
-        position = range.end().get().min(page_end);
+        position = range.end().get().min(end);
         if position == range.end().get() {
             let end_cursor = cursor_at(position, source_len)?;
             admit_compact_atom(
                 job,
                 range,
                 end_cursor,
+                if position == end {
+                    end_position
+                } else {
+                    ordinary_position(position)
+                },
                 text_system,
                 binding,
                 style,
                 limits,
                 true,
-                false,
                 budget,
             )?;
             job.scanner.active_atom = None;
-        } else {
+        } else if end == page.range().end().get() {
+            job.scanner.read_position = end;
             return Ok(PageScan::Complete);
+        } else {
+            return Err(ExactGeometryError::SourceContract);
         }
     }
     for atom in atoms {
+        if atom.global_range().end().get() <= start {
+            continue;
+        }
         let atom_start = atom.global_range().start().get();
         if atom_start < position || atom.fragment_range().start().get() < position {
             return Err(ExactGeometryError::SourceContract);
+        }
+        if atom_start >= end {
+            break;
         }
         if atom_start > position {
             if let Some(need) = text::process_text_region(
@@ -73,6 +99,7 @@ pub(super) fn process_page(
                 page,
                 position,
                 atom_start,
+                ordinary_position(atom_start),
                 true,
                 text_system,
                 binding,
@@ -81,41 +108,52 @@ pub(super) fn process_page(
                 source_len,
                 budget,
             )? {
+                if let PageScan::NeedContext { replay, .. } = need {
+                    job.scanner.read_position = replay.get();
+                }
                 return Ok(need);
             }
         }
         let range = atom.global_range();
-        position = range.end().get().min(page_end);
-        if range.end().get() <= page_end {
+        position = range.end().get().min(end);
+        if range.end().get() <= end {
             let end_cursor = cursor_at(range.end().get(), source_len)?;
             admit_compact_atom(
                 job,
                 range,
                 end_cursor,
+                if range.end().get() == end {
+                    end_position
+                } else {
+                    ordinary_position(range.end().get())
+                },
                 text_system,
                 binding,
                 style,
                 limits,
                 true,
-                false,
                 budget,
             )?;
-        } else {
+        } else if end == page.range().end().get() {
             job.scanner.active_atom = Some(Box::new(ActiveAtom {
                 id: atom.id(),
                 global_range: range,
             }));
             budget.observe(job, 0, 0)?;
+            job.scanner.read_position = end;
             return Ok(PageScan::Complete);
+        } else {
+            return Err(ExactGeometryError::SourceContract);
         }
     }
-    if position < page_end {
+    if position < end {
         if let Some(need) = text::process_text_region(
             job,
             page,
             position,
-            page_end,
-            false,
+            end,
+            end_position,
+            !matches!(end_position.gap, InlineObjectGap::NoObjects),
             text_system,
             binding,
             style,
@@ -123,15 +161,222 @@ pub(super) fn process_page(
             source_len,
             budget,
         )? {
+            if let PageScan::NeedContext { replay, .. } = need {
+                job.scanner.read_position = replay.get();
+            }
             return Ok(need);
         }
     }
+    job.scanner.read_position = end;
     Ok(PageScan::Complete)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn process_object_page(
+    job: &mut ActiveJob,
+    text_page: &RangePage,
+    object_page: &ObjectPage,
+    text_system: &WindowTextSystem,
+    inputs: &OwnerInputs,
+    limits: ExactGeometryLimits,
+    source_len: u64,
+    budget: &mut AdmissionBudget,
+) -> Result<PageScan, ExactGeometryError> {
+    let objects = object_page.objects();
+    let mut index = 0usize;
+    if let Some(deferred) = job.scanner.deferred_object.take() {
+        if deferred.binding != inputs.binding
+            || deferred.presentation_generation != inputs.presentation_generation
+        {
+            return Err(ExactGeometryError::SourceContract);
+        }
+        let next = objects.first().ok_or(ExactGeometryError::SourceContract)?;
+        admit_inline_object(
+            job,
+            text_page,
+            &deferred.fact,
+            Some(next),
+            text_system,
+            &inputs.layout,
+            &inputs.style,
+            limits,
+            source_len,
+            budget,
+        )?;
+    }
+    while index < objects.len() {
+        let object = &objects[index];
+        if job.scanner.first_object_cursor.is_none() {
+            job.scanner.first_object_cursor = Some(object.cursor());
+        }
+        let is_deferred_tail = !object_page.complete() && index + 1 == objects.len();
+        if is_deferred_tail {
+            if job.scanner.deferred_object.is_some() {
+                return Err(ExactGeometryError::SourceContract);
+            }
+            job.scanner.deferred_object = Some(Box::new(DeferredObject {
+                binding: inputs.binding,
+                presentation_generation: inputs.presentation_generation,
+                fact: object.clone(),
+            }));
+            job.scanner.object_cursor = Some(object.cursor());
+            budget.observe(job, 0, 0)?;
+            break;
+        }
+        let next = objects.get(index + 1);
+        admit_inline_object(
+            job,
+            text_page,
+            object,
+            next,
+            text_system,
+            &inputs.layout,
+            &inputs.style,
+            limits,
+            source_len,
+            budget,
+        )?;
+        index += 1;
+    }
+    if !object_page.complete() {
+        if object_page.continuation() != job.scanner.object_cursor {
+            return Err(ExactGeometryError::SourceContract);
+        }
+        return Ok(PageScan::Complete);
+    }
+    if job.scanner.deferred_object.is_some() {
+        return Err(ExactGeometryError::SourceContract);
+    }
+    if let Some(last) = objects.last() {
+        job.scanner.object_cursor = Some(last.cursor());
+    }
+    // Text bytes can be retained in the bounded segment/grapheme scanner after the last GPUI
+    // admission. The explicit read cursor proves exactly which resident byte follows that retained
+    // prefix; it is deliberately distinct from the composite GPUI continuation.
+    let start = job.scanner.read_position;
+    let end = text_page.range().end().get();
+    let end_position = if start == end {
+        SourcePosition::try_from(job.scanner.continuation.next_position)
+            .map_err(|_| ExactGeometryError::SourceContract)?
+    } else {
+        ordinary_position(end)
+    };
+    process_page_range(
+        job,
+        text_page,
+        start,
+        end,
+        end_position,
+        text_system,
+        &inputs.layout,
+        &inputs.style,
+        limits,
+        source_len,
+        budget,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn admit_inline_object(
+    job: &mut ActiveJob,
+    page: &RangePage,
+    object: &InlineObjectFact,
+    next: Option<&InlineObjectFact>,
+    text_system: &WindowTextSystem,
+    binding: &StreamingLayoutBinding,
+    style: &StreamingGeometryStyle,
+    limits: ExactGeometryLimits,
+    source_len: u64,
+    budget: &mut AdmissionBudget,
+) -> Result<(), ExactGeometryError> {
+    let leading = SourcePosition::try_from(job.scanner.continuation.next_position)
+        .map_err(|_| ExactGeometryError::SourceContract)?;
+    if leading.byte_offset > object.anchor() {
+        return Err(ExactGeometryError::SourceContract);
+    }
+    let expected_leading = if leading.byte_offset == object.anchor() {
+        leading
+    } else {
+        SourcePosition::new(
+            object.anchor(),
+            InlineObjectGap::before(object.cursor().neighbor()),
+        )
+    };
+    if leading.byte_offset < object.anchor() {
+        process_page_range(
+            job,
+            page,
+            job.scanner.read_position,
+            object.anchor().get(),
+            expected_leading,
+            text_system,
+            binding,
+            style,
+            limits,
+            source_len,
+            budget,
+        )?;
+        admit_text_segment(
+            job,
+            expected_leading,
+            text_system,
+            binding,
+            style,
+            limits,
+            true,
+            budget,
+        )?;
+    }
+    if SourcePosition::try_from(job.scanner.continuation.next_position)
+        .map_err(|_| ExactGeometryError::SourceContract)?
+        != expected_leading
+    {
+        return Err(ExactGeometryError::SourceContract);
+    }
+    let trailing_gap = match next.filter(|next| next.anchor() == object.anchor()) {
+        Some(next) => {
+            InlineObjectGap::between(object.cursor().neighbor(), next.cursor().neighbor())
+                .map_err(|_| ExactGeometryError::SourceContract)?
+        }
+        None => InlineObjectGap::after(object.cursor().neighbor()),
+    };
+    let trailing = SourcePosition::new(object.anchor(), trailing_gap);
+    let presentation = object.presentation();
+    let runs = if presentation.display().is_empty() {
+        Vec::new()
+    } else {
+        let mut run = style.text_run.clone();
+        run.len = presentation.display().len();
+        vec![run]
+    };
+    let input = StreamingInlineObject {
+        input_id: binding.input_id,
+        segment_policy_id: binding.segment_policy_id,
+        ordinal: job.scanner.continuation.next_ordinal,
+        id: object.id().into(),
+        order: object.order().into(),
+        leading: expected_leading.into(),
+        trailing: trailing.into(),
+        presentation: presentation.display().clone(),
+        runs,
+        width: presentation.width(),
+        height: presentation.height(),
+        baseline: presentation.baseline(),
+        background: presentation.background(),
+    };
+    // Checkpoints retained by the admission must pair the post-object composite continuation with
+    // the exact object-source cursor that produced it.
+    job.scanner.object_cursor = Some(object.cursor());
+    admit_layout(job, text_system, binding, limits, true, budget, |session| {
+        session.admit_inline_object(input)
+    })?;
+    Ok(())
 }
 
 fn complete_grapheme(
     job: &mut ActiveJob,
     end: u64,
+    end_position: SourcePosition,
     text_system: &WindowTextSystem,
     binding: &StreamingLayoutBinding,
     style: &StreamingGeometryStyle,
@@ -142,15 +387,37 @@ fn complete_grapheme(
     let grapheme = job.scanner.grapheme_text.take();
     let end_cursor = job.scanner.cursor.clone();
     if grapheme.as_deref() == Some("\n") {
+        job.scanner.cursor = job.scanner.grapheme_start_cursor.clone();
+        admit_text_segment(
+            job,
+            ordinary_position(start),
+            text_system,
+            binding,
+            style,
+            limits,
+            false,
+            budget,
+        )?;
+        job.scanner.cursor = end_cursor.clone();
+        job.scanner.grapheme_start = end;
+        job.scanner.grapheme_start_cursor = end_cursor.clone();
         job.scanner.logical_line = job
             .scanner
             .logical_line
             .checked_add(1)
             .ok_or(ExactGeometryError::SourceContract)?;
-        job.scanner.cursor = end_cursor.clone();
-        job.scanner.grapheme_start = end;
-        job.scanner.grapheme_start_cursor = end_cursor.clone();
-        admit_text_segment(job, text_system, binding, style, limits, true, end, budget)?;
+        let delimiter_start = job.scanner.continuation.next_position;
+        job.scanner.segment_start = end;
+        let finalization = StreamingLineFinalization {
+            input_id: binding.input_id,
+            segment_policy_id: binding.segment_policy_id,
+            ordinal: job.scanner.continuation.next_ordinal,
+            delimiter_range: Some(delimiter_start..end_position.into()),
+            next_position: end_position.into(),
+        };
+        admit_layout(job, text_system, binding, limits, true, budget, |session| {
+            session.finalize_logical_line(finalization)
+        })?;
     } else if let Some(grapheme) = grapheme {
         if job
             .scanner
@@ -162,12 +429,12 @@ fn complete_grapheme(
             job.scanner.cursor = job.scanner.grapheme_start_cursor.clone();
             admit_text_segment(
                 job,
+                ordinary_position(start),
                 text_system,
                 binding,
                 style,
                 limits,
-                false,
-                start,
+                true,
                 budget,
             )?;
             job.scanner.cursor = end_cursor.clone();
@@ -179,12 +446,12 @@ fn complete_grapheme(
         job.scanner.cursor = job.scanner.grapheme_start_cursor.clone();
         admit_text_segment(
             job,
+            ordinary_position(start),
             text_system,
             binding,
             style,
             limits,
-            false,
-            start,
+            true,
             budget,
         )?;
         job.scanner.cursor = end_cursor.clone();
@@ -193,11 +460,11 @@ fn complete_grapheme(
             job,
             ByteRange::from_u64(start, end).map_err(|_| ExactGeometryError::SourceContract)?,
             end_cursor.clone(),
+            end_position,
             text_system,
             binding,
             style,
             limits,
-            false,
             false,
             budget,
         )?;
@@ -213,15 +480,15 @@ fn complete_grapheme(
 
 fn admit_text_segment(
     job: &mut ActiveJob,
+    end_position: SourcePosition,
     text_system: &WindowTextSystem,
     binding: &StreamingLayoutBinding,
     style: &StreamingGeometryStyle,
     limits: ExactGeometryLimits,
-    ends_line: bool,
-    next_offset: u64,
+    retain_checkpoint: bool,
     budget: &mut AdmissionBudget,
 ) -> Result<(), ExactGeometryError> {
-    if job.scanner.segment_text.is_empty() && !ends_line {
+    if job.scanner.segment_text.is_empty() {
         return Ok(());
     }
     let text = std::mem::take(&mut job.scanner.segment_text);
@@ -241,16 +508,20 @@ fn admit_text_segment(
         input_id: binding.input_id,
         segment_policy_id: binding.segment_policy_id,
         ordinal: job.scanner.continuation.next_ordinal,
-        logical_range: job.scanner.segment_start..end,
-        next_logical_offset: next_offset,
+        logical_range: job.scanner.continuation.next_position..end_position.into(),
         text: SharedString::new(text),
         runs,
-        ends_logical_line: ends_line,
     };
-    job.scanner.segment_start = next_offset;
-    admit_layout(job, text_system, binding, limits, budget, |session| {
-        session.admit_text(segment)
-    })?;
+    job.scanner.segment_start = end;
+    admit_layout(
+        job,
+        text_system,
+        binding,
+        limits,
+        retain_checkpoint,
+        budget,
+        |session| session.admit_text(segment),
+    )?;
     Ok(())
 }
 
@@ -258,23 +529,23 @@ fn admit_compact_atom(
     job: &mut ActiveJob,
     range: ByteRange,
     end_cursor: GraphemeCursor,
+    end_position: SourcePosition,
     text_system: &WindowTextSystem,
     binding: &StreamingLayoutBinding,
     style: &StreamingGeometryStyle,
     limits: ExactGeometryLimits,
     imposes_grapheme_boundary: bool,
-    ends_line: bool,
     budget: &mut AdmissionBudget,
 ) -> Result<(), ExactGeometryError> {
     job.scanner.cursor = job.scanner.grapheme_start_cursor.clone();
     admit_text_segment(
         job,
+        SourcePosition::new(range.start(), InlineObjectGap::NoObjects),
         text_system,
         binding,
         style,
         limits,
-        false,
-        range.start().get(),
+        true,
         budget,
     )?;
     job.scanner.cursor = end_cursor.clone();
@@ -286,20 +557,18 @@ fn admit_compact_atom(
         input_id: binding.input_id,
         segment_policy_id: binding.segment_policy_id,
         ordinal: job.scanner.continuation.next_ordinal,
-        logical_range: range.start().get()..range.end().get(),
-        next_logical_offset: range.end().get(),
+        logical_range: job.scanner.continuation.next_position..end_position.into(),
         presentation: presentation.presentation.clone(),
         runs: presentation.runs.clone(),
         width: presentation.width,
         height: presentation.height,
         baseline: presentation.baseline,
         background: presentation.background,
-        ends_logical_line: ends_line,
     };
     job.scanner.segment_start = range.end().get();
     job.scanner.grapheme_start = range.end().get();
     job.scanner.grapheme_start_cursor = end_cursor.clone();
-    admit_layout(job, text_system, binding, limits, budget, |session| {
+    admit_layout(job, text_system, binding, limits, true, budget, |session| {
         session.admit_oversize_atom(atom)
     })?;
     Ok(())
@@ -310,6 +579,7 @@ fn admit_layout(
     text_system: &WindowTextSystem,
     binding: &StreamingLayoutBinding,
     limits: ExactGeometryLimits,
+    retain_checkpoint: bool,
     budget: &mut AdmissionBudget,
     admit: impl FnOnce(
         &mut gpui::StreamingLayoutSession<'_>,
@@ -367,7 +637,7 @@ fn admit_layout(
         (full_transient_bytes, full_transient_items)
     };
     budget.observe(job, transient_bytes, transient_items)?;
-    if matches!(job.kind, ActiveKind::Index) {
+    if retain_checkpoint && matches!(job.kind, ActiveKind::Index) {
         let checkpoint =
             super::checkpoint::make_checkpoint(&job.scanner, binding, false).map_err(|error| {
                 budget.failure_stage = Some(super::ExactGeometryFailureStage::Checkpoint);
@@ -412,20 +682,55 @@ pub(super) fn finalize_source(
         return Err(ExactGeometryError::SourceContract);
     }
     if job.scanner.grapheme_start < source_end {
-        complete_grapheme(job, source_end, text_system, binding, style, limits, budget)?;
+        complete_grapheme(
+            job,
+            source_end,
+            ordinary_position(source_end),
+            text_system,
+            binding,
+            style,
+            limits,
+            budget,
+        )?;
     }
+    let terminal = if job.scanner.continuation.next_position.byte_offset == source_end {
+        SourcePosition::try_from(job.scanner.continuation.next_position)
+            .map_err(|_| ExactGeometryError::SourceContract)?
+    } else {
+        ordinary_position(source_end)
+    };
     admit_text_segment(
         job,
+        terminal,
         text_system,
         binding,
         style,
         limits,
-        true,
-        source_end,
+        false,
         budget,
+    )?;
+    let end = StreamingEndOfSource {
+        input_id: binding.input_id,
+        segment_policy_id: binding.segment_policy_id,
+        ordinal: job.scanner.continuation.next_ordinal,
+        source_extent: source_end,
+        position: job.scanner.continuation.next_position,
+    };
+    admit_layout(
+        job,
+        text_system,
+        binding,
+        limits,
+        false,
+        budget,
+        |session| session.end_source(end),
     )?;
     super::target_output::finish_target_source(job);
     Ok(())
+}
+
+fn ordinary_position(offset: u64) -> SourcePosition {
+    SourcePosition::new(ByteOffset::new(offset), InlineObjectGap::NoObjects)
 }
 
 fn cursor_at(offset: u64, source_len: u64) -> Result<GraphemeCursor, ExactGeometryError> {

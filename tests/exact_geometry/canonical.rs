@@ -24,8 +24,11 @@ fn canonical_partitions_preserve_aggregates_and_every_checkpoint_cursor(cx: &mut
                 .checkpoints()
                 .iter()
                 .map(|checkpoint| {
-                    assert_eq!(checkpoint.source().get(), checkpoint.cursor_offset() as u64);
-                    let source_offset = checkpoint.source().get() as usize;
+                    assert_eq!(
+                        checkpoint.source().byte_offset.get(),
+                        checkpoint.cursor_offset() as u64
+                    );
+                    let source_offset = checkpoint.source().byte_offset.get() as usize;
                     assert_eq!(
                         checkpoint.logical_line(),
                         source[..source_offset].matches('\n').count() as u64,
@@ -64,7 +67,7 @@ fn newline_checkpoints_publish_post_newline_line_and_segment_state(cx: &mut Test
             .iter()
             .map(|checkpoint| {
                 (
-                    checkpoint.source().get(),
+                    checkpoint.source().byte_offset.get(),
                     checkpoint.cursor_offset() as u64,
                     checkpoint.logical_line(),
                     checkpoint.segment(),
@@ -76,11 +79,61 @@ fn newline_checkpoints_publish_post_newline_line_and_segment_state(cx: &mut Test
             facts,
             vec![
                 (0, 0, 0, 0, false),
-                (2, 2, 1, 1, false),
-                (4, 4, 2, 2, false),
-                (5, 5, 2, 3, true),
+                (2, 2, 1, 2, false),
+                (4, 4, 2, 4, false),
+                (5, 5, 2, 6, true),
             ]
         );
+    });
+}
+
+#[gpui::test]
+fn ordinary_target_retains_explicit_composite_line_and_source_boundaries(cx: &mut TestAppContext) {
+    with_text_system(cx, |text_system| {
+        let source = "a\nb";
+        let mut owner = scan_index(text_system, source, &[source.len()], 16, 16, 256 * 1024, 16);
+        let target = owner
+            .request_block_target(
+                GeometryJobId::new(2),
+                BlockTarget::new(px(0.), px(100.), px(0.)),
+            )
+            .unwrap();
+        assert_eq!(target.progress(), ExactGeometryProgress::Scanning);
+        assert_eq!(
+            drive_ascii_job(
+                &mut owner,
+                text_system,
+                source,
+                target.key(),
+                0,
+                source.len(),
+                2,
+            ),
+            ExactGeometryProgress::TargetComplete
+        );
+        let fragments = owner.target().unwrap().fragments();
+        let boundaries = fragments
+            .iter()
+            .filter_map(|fragment| match fragment {
+                StreamingLayoutFragment::Boundary(fragment) => Some(fragment),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(boundaries.len(), 2);
+        assert_eq!(boundaries[0].kind, StreamingBoundaryKind::LogicalLine);
+        assert_eq!(boundaries[1].kind, StreamingBoundaryKind::EndOfSource);
+        assert!(fragments.iter().all(|fragment| {
+            let maps = match fragment {
+                StreamingLayoutFragment::Text(fragment) => fragment.maps(),
+                StreamingLayoutFragment::OversizeAtom(fragment) => fragment.maps(),
+                StreamingLayoutFragment::Boundary(fragment) => fragment.maps(),
+                StreamingLayoutFragment::InlineObject(_) => return false,
+            };
+            maps.iter().all(|map| {
+                map.logical_position
+                    == StreamingLayoutPosition::at(map.logical_position.byte_offset)
+            })
+        }));
     });
 }
 
@@ -118,7 +171,8 @@ fn target_resolves_independently_expected_leading_visual_line_sources(cx: &mut T
                 .iter()
                 .rev()
                 .find(|checkpoint| {
-                    checkpoint.source().get() == 0 || checkpoint.resume_block_offset() <= px(block)
+                    checkpoint.source().byte_offset.get() == 0
+                        || checkpoint.resume_block_offset() <= px(block)
                 })
                 .unwrap()
                 .source();
@@ -129,7 +183,7 @@ fn target_resolves_independently_expected_leading_visual_line_sources(cx: &mut T
                         text_system,
                         source,
                         start.key(),
-                        predecessor.get() as usize,
+                        predecessor.byte_offset.get() as usize,
                         source.len(),
                         10 + ix as u64,
                     ),
@@ -137,7 +191,7 @@ fn target_resolves_independently_expected_leading_visual_line_sources(cx: &mut T
                 );
             }
             assert_eq!(
-                owner.target().unwrap().target_source().get(),
+                owner.target().unwrap().target_source().byte_offset.get(),
                 expected_source
             );
         }
@@ -167,10 +221,12 @@ fn soft_wrap_target_has_literal_leading_anchor_and_viewport_overscan_maps(cx: &m
             .iter()
             .rev()
             .find(|checkpoint| {
-                checkpoint.source().get() == 0 || checkpoint.resume_block_offset() <= px(14.)
+                checkpoint.source().byte_offset.get() == 0
+                    || checkpoint.resume_block_offset() <= px(14.)
             })
             .unwrap()
             .source()
+            .byte_offset
             .get() as usize;
         assert_eq!(
             drive_ascii_job(
@@ -188,8 +244,8 @@ fn soft_wrap_target_has_literal_leading_anchor_and_viewport_overscan_maps(cx: &m
         // The 12px wrap width fits exactly two 6px test-font glyphs. The absolute target begins on
         // the second soft-wrapped visual line, so its independently known leading source is byte 2.
         assert_eq!(predecessor, 2);
-        assert_eq!(target.target_source().get(), 2);
-        assert_eq!(target.source_end().get(), 10);
+        assert_eq!(target.target_source().byte_offset.get(), 2);
+        assert_eq!(target.source_end().byte_offset.get(), 10);
 
         // The viewport is [14, 28) and its overscan is [28, 42). Only canonical segments 2..4 and
         // 4..6 intersect that literal block window; the following 6..8 segment starts at 42px and
@@ -260,8 +316,7 @@ fn target_inside_tall_atom_line_resolves_that_lines_leading_source(cx: &mut Test
             )],
         );
         assert_eq!(
-            owner
-                .admit_page(index, &index_page, text_system)
+            admit_page_with_empty_objects(&mut owner, index, &index_page, text_system)
                 .unwrap()
                 .progress(),
             ExactGeometryProgress::IndexComplete
@@ -286,10 +341,8 @@ fn target_inside_tall_atom_line_resolves_that_lines_leading_source(cx: &mut Test
                 "atom",
             )],
         );
-        owner
-            .admit_page(start.key(), &target_page, text_system)
-            .unwrap();
-        assert_eq!(owner.target().unwrap().target_source().get(), 2);
+        admit_page_with_empty_objects(&mut owner, start.key(), &target_page, text_system).unwrap();
+        assert_eq!(owner.target().unwrap().target_source().byte_offset.get(), 2);
     });
 }
 
@@ -299,8 +352,9 @@ fn sparse_gap_discards_pre_window_output_and_matches_dense_canonical_target(
 ) {
     with_text_system(cx, |text_system| {
         let source = "x\n".repeat(1_200);
+        let dense_replacement_cap = 4 * 1024 * 1024;
         let build = |checkpoint_cap| {
-            let mut owner = owner(&source, 8, checkpoint_cap, 512 * 1024, 8);
+            let mut owner = owner(&source, 8, checkpoint_cap, dense_replacement_cap, 8);
             let job = start_index(&mut owner, 1);
             assert_eq!(
                 drive_ascii_job(&mut owner, text_system, &source, job, 0, 128, 1),
@@ -328,7 +382,7 @@ fn sparse_gap_discards_pre_window_output_and_matches_dense_canonical_target(
             .iter()
             .rev()
             .find(|checkpoint| {
-                checkpoint.source().get() == 0
+                checkpoint.source().byte_offset.get() == 0
                     || checkpoint.resume_block_offset() <= target.block_offset()
             })
             .unwrap()
@@ -340,13 +394,13 @@ fn sparse_gap_discards_pre_window_output_and_matches_dense_canonical_target(
             .iter()
             .rev()
             .find(|checkpoint| {
-                checkpoint.source().get() == 0
+                checkpoint.source().byte_offset.get() == 0
                     || checkpoint.resume_block_offset() <= target.block_offset()
             })
             .unwrap()
             .source();
-        assert_eq!(sparse_predecessor.get(), 0);
-        assert!(dense_predecessor.get() > 1_700);
+        assert_eq!(sparse_predecessor.byte_offset.get(), 0);
+        assert!(dense_predecessor.byte_offset.get() > 1_700);
 
         assert_eq!(
             drive_ascii_job(
@@ -354,7 +408,7 @@ fn sparse_gap_discards_pre_window_output_and_matches_dense_canonical_target(
                 text_system,
                 &source,
                 sparse_start.key(),
-                sparse_predecessor.get() as usize,
+                sparse_predecessor.byte_offset.get() as usize,
                 128,
                 100,
             ),
@@ -366,7 +420,7 @@ fn sparse_gap_discards_pre_window_output_and_matches_dense_canonical_target(
                 text_system,
                 &source,
                 dense_start.key(),
-                dense_predecessor.get() as usize,
+                dense_predecessor.byte_offset.get() as usize,
                 128,
                 100,
             ),
@@ -383,7 +437,7 @@ fn sparse_gap_discards_pre_window_output_and_matches_dense_canonical_target(
         );
         assert_eq!(sparse_target.charge(), dense_target.charge());
         assert!(sparse_target.fragments().len() <= 8);
-        assert!(sparse_target.source_end().get() < source.len() as u64);
+        assert!(sparse_target.source_end().byte_offset.get() < source.len() as u64);
     });
 }
 
@@ -409,7 +463,7 @@ fn checkpoint_replay_matches_origin_across_cap_flush_and_split_grapheme(cx: &mut
             .unwrap()
             .checkpoints()
             .iter()
-            .find(|checkpoint| checkpoint.source().get() == 6)
+            .find(|checkpoint| checkpoint.source().byte_offset.get() == 6)
             .expect("cap flush checkpoint before split grapheme")
             .clone();
         assert_eq!(checkpoint.cursor_offset(), 6);
@@ -428,7 +482,7 @@ fn checkpoint_replay_matches_origin_across_cap_flush_and_split_grapheme(cx: &mut
             .iter()
             .rev()
             .find(|candidate| {
-                candidate.source().get() == 0
+                candidate.source().byte_offset.get() == 0
                     || candidate.resume_block_offset() <= target.block_offset()
             })
             .unwrap()
@@ -438,19 +492,28 @@ fn checkpoint_replay_matches_origin_across_cap_flush_and_split_grapheme(cx: &mut
 
         for (owner, start, predecessor, first_id) in [
             (&mut replay, replay_start, replay_predecessor, 20),
-            (&mut origin, origin_start, ByteOffset::new(0), 30),
+            (
+                &mut origin,
+                origin_start,
+                gpui_text_input::SourcePosition::new(
+                    ByteOffset::new(0),
+                    gpui_text_input::InlineObjectGap::NoObjects,
+                ),
+                30,
+            ),
         ] {
             let job = start.key();
-            let mut page_start = predecessor.get() as usize;
+            let mut page_start = predecessor.byte_offset.get() as usize;
             let first_end = 7;
             let first = page(owner, job, source, page_start, first_end, first_id);
-            let mut progress = owner.admit_page(job, &first, text_system).unwrap();
+            let mut progress =
+                admit_page_with_empty_objects(owner, job, &first, text_system).unwrap();
             page_start = first_end;
             let mut id = first_id + 1;
             while progress.progress() == ExactGeometryProgress::Scanning {
                 let end = page_start.saturating_add(8).min(source.len());
                 let next = page(owner, job, source, page_start, end, id);
-                progress = owner.admit_page(job, &next, text_system).unwrap();
+                progress = admit_page_with_empty_objects(owner, job, &next, text_system).unwrap();
                 page_start = end;
                 id += 1;
             }
@@ -479,7 +542,7 @@ fn arbitrarily_long_logical_line_keeps_fixed_scan_and_target_residency(cx: &mut 
         while start < source.len() {
             let end = (start + 128).min(source.len());
             let next = page(&mut owner, index_job, &source, start, end, id);
-            owner.admit_page(index_job, &next, text_system).unwrap();
+            admit_page_with_empty_objects(&mut owner, index_job, &next, text_system).unwrap();
             peak_scan = peak_scan.max(owner.counts().scan_buffer_bytes);
             start = end;
             id += 1;
@@ -499,7 +562,7 @@ fn arbitrarily_long_logical_line_keeps_fixed_scan_and_target_residency(cx: &mut 
             .iter()
             .rev()
             .find(|checkpoint| {
-                checkpoint.source().get() == 0
+                checkpoint.source().byte_offset.get() == 0
                     || checkpoint.resume_block_offset() <= target.block_offset()
             })
             .unwrap()
@@ -510,14 +573,14 @@ fn arbitrarily_long_logical_line_keeps_fixed_scan_and_target_residency(cx: &mut 
                 text_system,
                 &source,
                 target_start.key(),
-                predecessor.get() as usize,
+                predecessor.byte_offset.get() as usize,
                 128,
                 id,
             ),
             ExactGeometryProgress::TargetComplete
         );
         assert!(owner.target().unwrap().fragments().len() <= 8);
-        assert!(owner.target().unwrap().source_end().get() < source.len() as u64);
+        assert!(owner.target().unwrap().source_end().byte_offset.get() < source.len() as u64);
     });
 }
 
@@ -547,20 +610,36 @@ fn oversized_grapheme_and_cross_page_atom_remain_compact_exact_ranges(cx: &mut T
                 })
                 .unwrap_or_default();
             let next = page_with_atoms(&mut owner, job, &source, start, end, ix as u64 + 1, atoms);
-            owner.admit_page(job, &next, text_system).unwrap();
+            admit_page_with_empty_objects(&mut owner, job, &next, text_system).unwrap();
             start = end;
         }
         let index = owner.index().unwrap();
-        assert_eq!(index.checkpoints().first().unwrap().source().get(), 0);
         assert_eq!(
-            index.checkpoints().last().unwrap().source().get(),
+            index
+                .checkpoints()
+                .first()
+                .unwrap()
+                .source()
+                .byte_offset
+                .get(),
+            0
+        );
+        assert_eq!(
+            index
+                .checkpoints()
+                .last()
+                .unwrap()
+                .source()
+                .byte_offset
+                .get(),
             source.len() as u64
         );
         assert!(
             index
                 .checkpoints()
                 .iter()
-                .all(|checkpoint| checkpoint.source().get() == checkpoint.cursor_offset() as u64)
+                .all(|checkpoint| checkpoint.source().byte_offset.get()
+                    == checkpoint.cursor_offset() as u64)
         );
         assert_eq!(owner.counts().active_atom_bytes, 0);
     });

@@ -13,6 +13,7 @@ fn bounded_owner_with_cap(
 ) -> ExactGeometryOwner {
     ExactGeometryOwner::new(
         binding(source, 1),
+        PresentationGeneration::new(1),
         layout(8, 24.),
         style(),
         ExactGeometryLimits::new(max_page_bytes, 16, retained_bytes, 16 * 1024).unwrap(),
@@ -125,15 +126,14 @@ fn reach_context_with_forward_cap(
     text_system: &WindowTextSystem,
     forward_cap: usize,
 ) -> (PageRequest, RangePage) {
-    for id in 1..256 {
+    for id in 1..1024 {
         let request = owner.request_page(job, PageRequestId::new(id)).unwrap();
         let page = response_with_forward_cap(source, id, request, forward_cap);
         if demand(request).1 == PageDirection::Backward {
             return (request, page);
         }
         assert_eq!(
-            owner
-                .admit_page(job, &page, text_system)
+            admit_page_with_empty_objects(owner, job, &page, text_system)
                 .unwrap()
                 .progress(),
             ExactGeometryProgress::Scanning
@@ -197,13 +197,14 @@ fn borrowed_context_page_peak_accepts_exact_byte_cap_and_rejects_one_under(
     cx: &mut TestAppContext,
 ) {
     with_text_system(cx, |text_system| {
-        let source = format!("{}{}TARGET", "a".repeat(1024), "😀".repeat(24));
+        let source = format!("{}{}TARGET", "a".repeat(4096), "😀".repeat(24));
         let exercise = |cap| {
             let mut owner = ExactGeometryOwner::new(
                 binding(&source, 1),
+                PresentationGeneration::new(1),
                 layout(8, 24.),
                 style(),
-                ExactGeometryLimits::new(1024, 2, cap, 16 * 1024).unwrap(),
+                ExactGeometryLimits::new(4096, 2, cap, 16 * 1024).unwrap(),
             )
             .unwrap();
             let job = start_index(&mut owner, 1);
@@ -287,7 +288,7 @@ fn context_envelope_rejects_wrong_edge_and_nonprogress_before_owner_admission(
             }
         );
 
-        let admitted = owner.admit_page(job, &valid, text_system).unwrap();
+        let admitted = admit_page_with_empty_objects(&mut owner, job, &valid, text_system).unwrap();
         assert_eq!(admitted.progress(), ExactGeometryProgress::Scanning);
         assert_eq!(admitted.release().pages, vec![request.key()]);
     });
@@ -326,7 +327,8 @@ fn split_multibyte_pages_request_bounded_context_then_exact_forward_replay(
 
                 let stationary_counts = owner.counts();
                 let stationary_estimate = owner.estimate();
-                let admission = owner.admit_page(job, &page, text_system).unwrap();
+                let admission =
+                    admit_page_with_empty_objects(&mut owner, job, &page, text_system).unwrap();
                 assert_eq!(admission.progress(), ExactGeometryProgress::Scanning);
                 assert_eq!(admission.release().pages, vec![page.key()]);
                 assert_eq!(owner.estimate(), stationary_estimate);
@@ -345,8 +347,11 @@ fn split_multibyte_pages_request_bounded_context_then_exact_forward_replay(
                 );
                 let replay_page = response(&source, request_id, replay);
                 request_id += 1;
-                let admission = owner.admit_page(job, &replay_page, text_system).unwrap();
-                assert_eq!(admission.release().pages, vec![replay_page.key()]);
+                let admission =
+                    admit_page_with_empty_objects(&mut owner, job, &replay_page, text_system)
+                        .unwrap();
+                assert!(admission.release().pages.is_empty());
+                assert_eq!(admission.release().object_pages.len(), 1);
                 prior_forward = Some(replay_page);
                 if admission.progress() == ExactGeometryProgress::IndexComplete {
                     break;
@@ -354,8 +359,10 @@ fn split_multibyte_pages_request_bounded_context_then_exact_forward_replay(
                 continue;
             }
 
-            let admission = owner.admit_page(job, &page, text_system).unwrap();
-            assert_eq!(admission.release().pages, vec![page.key()]);
+            let admission =
+                admit_page_with_empty_objects(&mut owner, job, &page, text_system).unwrap();
+            assert!(admission.release().pages.is_empty());
+            assert_eq!(admission.release().object_pages.len(), 1);
             prior_forward = Some(page);
             if admission.progress() == ExactGeometryProgress::IndexComplete {
                 break;

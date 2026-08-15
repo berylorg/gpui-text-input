@@ -14,9 +14,15 @@ mod render;
 mod replacement;
 mod restoration;
 mod surface;
+#[cfg(test)]
+mod terminal_tests;
+mod transition;
 mod types;
 
-pub use surface::{CoherentRangeSurface, RangeSurfaceCharge};
+pub use surface::{
+    CoherentRangeSurface, RangeSurfaceCharge, RangeSurfaceHit, RealizedInlineObjectGeometry,
+    RealizedInlineObjectPresentation, RealizedObjectGapGeometry,
+};
 pub use types::*;
 
 use std::{
@@ -32,8 +38,8 @@ use gpui_scrollbar::{
 };
 
 use crate::{
-    ByteOffset, ByteRange, ExactGeometryOwner, RangeClipboardCoordinator, RangeEditCoordinator,
-    RangeResidency, SegmentationContinuation,
+    ByteRange, ExactGeometryOwner, ObjectResidency, RangeClipboardCoordinator,
+    RangeEditCoordinator, RangeResidency, SegmentationContinuation,
 };
 
 /// GPUI entity implementing the app-neutral range-backed multiline editor.
@@ -43,34 +49,54 @@ pub struct RangeTextInput {
     read_only: bool,
     config: RangeTextInputConfig,
     residency: RangeResidency,
+    object_residency: ObjectResidency,
     geometry: ExactGeometryOwner,
     edits: RangeEditCoordinator,
     clipboard: RangeClipboardCoordinator,
     pending_clipboard_page: Option<clipboard::PendingClipboardPage>,
+    clipboard_cut_proofs: Option<(
+        crate::ClipboardKey,
+        Vec<crate::range_edit::SourcePositionProof>,
+    )>,
+    dispatched_clipboard_write: Option<crate::ClipboardKey>,
     surface: Option<CoherentRangeSurface>,
     last_surface_admission: Option<RangeSurfaceCharge>,
     desired: DesiredSurface,
     requests: VecDeque<RangeTextInputRequest>,
     dispatched_pages: HashSet<crate::PageRequestKey>,
+    dispatched_object_pages: HashSet<crate::ObjectRequestKey>,
     dispatched_mutations: HashSet<crate::MutationKey>,
     active_geometry: Option<crate::GeometryJobKey>,
     pending_geometry_page: Option<geometry::PendingGeometryPage>,
+    pending_geometry_object: Option<geometry::PendingGeometryObject>,
     pending_page_aliases: Vec<page_delivery::PendingPageAlias>,
     surface_candidate: Option<SurfaceCandidate>,
     segmentation: Option<SegmentationContinuation>,
     segmentation_action: Option<interaction::PendingBoundaryAction>,
     platform: Option<platform::PlatformReplay>,
     restoration: Option<restoration::RestorationValidation>,
+    restoration_seed: Option<RangeRestorationSeed>,
+    published_restoration: Option<RangeRestorationSeed>,
     replacement: Option<replacement::ReplacementScan>,
     pending_history: Option<history::PendingHistory>,
     detached_edits: Vec<RangeEditCoordinator>,
-    mutation_selection: Option<(crate::MutationKey, RangeSelection)>,
-    mutation_composition: Option<(crate::MutationKey, ByteRange, RangeSelection)>,
-    pending_insert: Option<(crate::MutationKey, String, ByteOffset)>,
+    mutation_positions: Option<(crate::MutationKey, crate::MutationPositions)>,
+    adopted_positions: Option<crate::MutationPositions>,
+    admitted_edit_proofs: Vec<crate::range_edit::SourcePositionProof>,
+    mutation_composition: Option<(crate::MutationKey, ByteRange, RangeSourceSelection)>,
+    pending_insert: Option<(
+        crate::MutationKey,
+        String,
+        crate::SourcePosition,
+        Vec<crate::range_edit::SourcePositionProof>,
+    )>,
+    pending_object_remove: Option<(crate::MutationKey, crate::ObjectTarget)>,
     platform_ready: Option<(std::ops::Range<usize>, String)>,
     next_id: u64,
     mounted: bool,
-    pointer_anchor: Option<crate::ByteOffset>,
+    pointer_anchor: Option<crate::SourcePosition>,
+    active_object: Option<ActiveInlineObject>,
+    pending_select_all: bool,
     scrollbar: RangeScrollbar,
     last_bounds: Option<Bounds<Pixels>>,
     focus_subscription: Option<Subscription>,
@@ -118,12 +144,17 @@ impl RangeTextInput {
                 .iter()
                 .any(|value| !f32::from(*value).is_finite())
             || config.geometry_limits.max_page_bytes() > config.residency_limits.max_pending_bytes()
-            || config.clipboard_limits.max_page_bytes()
+            || config.clipboard_limits.max_text_page_bytes()
                 > config.residency_limits.max_pending_bytes()
             || config.segmentation_limits.max_page_bytes()
                 > config.residency_limits.max_pending_bytes()
             || config.limits.page_bytes > config.residency_limits.max_pending_bytes()
             || config.limits.platform_bytes > config.residency_limits.max_pending_bytes()
+            || config.object_residency_limits.max_pending_requests() < 1
+            || config.object_residency_limits.max_resident_objects()
+                > config.object_residency_limits.max_pending_objects()
+            || config.object_residency_limits.max_resident_bytes()
+                > config.object_residency_limits.max_pending_bytes()
         {
             return Err(RangeTextInputError::InvalidLimits);
         }
@@ -172,39 +203,60 @@ impl RangeTextInput {
             enabled: true,
             read_only: false,
             residency: RangeResidency::new(binding, config.residency_limits),
+            object_residency: ObjectResidency::new(
+                binding,
+                config.presentation_generation,
+                config.object_residency_limits,
+            ),
             geometry: ExactGeometryOwner::new(
                 binding,
+                config.presentation_generation,
                 config.layout.clone(),
                 config.style.clone(),
                 config.geometry_limits,
             )?,
             edits: RangeEditCoordinator::new(binding, config.mutation_limits),
-            clipboard: RangeClipboardCoordinator::new(binding, config.clipboard_limits),
+            clipboard: RangeClipboardCoordinator::new_composite(
+                binding,
+                config.presentation_generation,
+                config.clipboard_limits,
+            ),
             pending_clipboard_page: None,
+            clipboard_cut_proofs: None,
+            dispatched_clipboard_write: None,
             surface: None,
             last_surface_admission: None,
             desired: DesiredSurface::origin(config.viewport_extent, config.overscan),
             requests: VecDeque::new(),
             dispatched_pages: HashSet::new(),
+            dispatched_object_pages: HashSet::new(),
             dispatched_mutations: HashSet::new(),
             active_geometry: None,
             pending_geometry_page: None,
+            pending_geometry_object: None,
             pending_page_aliases: Vec::new(),
             surface_candidate: None,
             segmentation: None,
             segmentation_action: None,
             platform: None,
             restoration: None,
+            restoration_seed: None,
+            published_restoration: None,
             replacement: None,
             pending_history: None,
             detached_edits: Vec::new(),
-            mutation_selection: None,
+            mutation_positions: None,
+            adopted_positions: None,
+            admitted_edit_proofs: Vec::new(),
             mutation_composition: None,
             pending_insert: None,
+            pending_object_remove: None,
             platform_ready: None,
             next_id: 1,
             mounted: true,
             pointer_anchor: None,
+            active_object: None,
+            pending_select_all: false,
             scrollbar: RangeScrollbar {
                 owner: scrollbar_owner,
                 state: ScrollbarState::new(scrollbar_owner),
@@ -219,9 +271,8 @@ impl RangeTextInput {
         this.start_index()?;
         let focus = this.focus_handle.clone();
         this.focus_subscription = Some(cx.on_focus_out(&focus, window, |input, _, _, cx| {
-            input.pointer_anchor = None;
-            if input.desired.composition.take().is_some() && input.geometry.index().is_some() {
-                let _ = input.start_target();
+            if let Ok(candidate) = input.prepare_focus_loss_transition(input.desired) {
+                let _ = input.commit_widget_transition(candidate, Some(cx));
             }
             cx.emit(RangeTextInputEvent::FocusLost);
             cx.notify();
@@ -260,12 +311,18 @@ impl RangeTextInput {
             RangeTextInputRequest::Page(page) => {
                 self.dispatched_pages.insert(page.key());
             }
+            RangeTextInputRequest::ObjectPage(page) => {
+                self.dispatched_object_pages.insert(page.key());
+            }
             RangeTextInputRequest::MutationPreflight(proposal) => {
                 self.dispatched_mutations.insert(proposal.key());
             }
             RangeTextInputRequest::MutationFragment { key, .. }
             | RangeTextInputRequest::MutationCommit(key) => {
                 self.dispatched_mutations.insert(*key);
+            }
+            RangeTextInputRequest::ClipboardWrite(write) => {
+                self.dispatched_clipboard_write = Some(write.key());
             }
             _ => {}
         }
@@ -276,15 +333,19 @@ impl RangeTextInput {
     pub fn is_quiescent(&self) -> bool {
         self.active_geometry.is_none()
             && self.pending_geometry_page.is_none()
+            && self.pending_geometry_object.is_none()
             && self.residency.counts().pending_requests == 0
+            && self.object_residency.counts().pending_requests == 0
             && self.segmentation.is_none()
             && self.platform.is_none()
             && self.platform_ready.is_none()
             && self.restoration.is_none()
+            && self.restoration_seed.is_none()
             && self.surface_candidate.is_none()
             && self.replacement.is_none()
             && self.pending_history.is_none()
             && matches!(self.clipboard.state(), crate::ClipboardState::Idle)
+            && self.dispatched_clipboard_write.is_none()
             && matches!(self.edits.state(), crate::MutationState::Idle)
             && self.detached_edits.is_empty()
             && self.requests.is_empty()
@@ -300,11 +361,19 @@ impl RangeTextInput {
     /// Enables or disables mounted interaction without discarding the coherent surface.
     pub fn set_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
         if self.enabled != enabled {
-            self.enabled = enabled;
-            if !enabled {
-                self.pointer_anchor = None;
+            let active = if !enabled && self.active_object.is_some() {
+                transition::ActiveObjectTransition::Clear(
+                    InlineObjectRealizationLossReason::Disabled,
+                )
+            } else {
+                transition::ActiveObjectTransition::Preserve
+            };
+            let pointer_anchor = enabled.then_some(self.pointer_anchor).flatten();
+            if let Ok(candidate) =
+                self.prepare_interaction_state_transition(enabled, pointer_anchor, active)
+            {
+                self.commit_active_object_transition(candidate, cx);
             }
-            cx.notify();
         }
     }
 
@@ -326,14 +395,27 @@ impl RangeTextInput {
         if !self.mounted {
             return Err(RangeTextInputError::NotMounted);
         }
-        let release = self.geometry.set_layout(layout.clone(), style.clone())?;
-        self.release_geometry(&release, None, Some(cx));
-        self.config.layout = layout;
-        self.config.style = style;
-        self.active_geometry = None;
-        self.desired.preserve_scroll_anchor = true;
-        self.start_index()?;
-        cx.notify();
+        let candidate = self.prepare_layout_transition(layout, style)?;
+        let progress = self.commit_widget_transition(candidate, Some(cx));
+        debug_assert_eq!(progress, crate::ExactGeometryProgress::Scanning);
+        Ok(())
+    }
+
+    /// Invalidates object presentation under a new generation while retaining the prior surface.
+    pub fn set_presentation_generation(
+        &mut self,
+        presentation_generation: crate::PresentationGeneration,
+        cx: &mut Context<Self>,
+    ) -> Result<(), RangeTextInputError> {
+        if !self.mounted {
+            return Err(RangeTextInputError::NotMounted);
+        }
+        if self.config.presentation_generation == presentation_generation {
+            return Ok(());
+        }
+        let candidate = self.prepare_presentation_transition(presentation_generation)?;
+        let progress = self.commit_widget_transition(candidate, Some(cx));
+        debug_assert_eq!(progress, crate::ExactGeometryProgress::Scanning);
         Ok(())
     }
 
@@ -349,11 +431,18 @@ impl RangeTextInput {
         if !f32::from(block_offset).is_finite() || block_offset < Pixels::ZERO {
             return Err(RangeTextInputError::InvalidLimits);
         }
-        self.desired.target_block = block_offset;
-        self.desired.preserve_scroll_anchor = false;
-        self.desired.reveal_caret = false;
-        self.start_target()?;
-        cx.notify();
+        let mut desired = self.desired;
+        desired.target_block = block_offset;
+        desired.preserve_scroll_anchor = false;
+        desired.reveal_caret = false;
+        if self.restoration.is_none() && self.restoration_seed.is_none() {
+            let candidate = self.prepare_target_transition(desired, None)?;
+            let _ = self.commit_widget_transition(candidate, Some(cx));
+        } else {
+            // Restoration owns its own exact rejection path until that task is retired.
+            self.desired = desired;
+            self.start_target(cx)?;
+        }
         Ok(())
     }
 

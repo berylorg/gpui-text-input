@@ -19,6 +19,7 @@ impl ExactGeometryOwner {
             .binding;
         let candidate = OwnerInputs {
             binding,
+            presentation_generation: self.key.presentation_generation(),
             layout: layout.clone(),
             style: style.clone(),
         };
@@ -39,6 +40,7 @@ impl ExactGeometryOwner {
             .binding;
         let candidate = OwnerInputs {
             binding,
+            presentation_generation: self.key.presentation_generation(),
             layout: layout.clone(),
             style: style.clone(),
         };
@@ -55,9 +57,17 @@ impl ExactGeometryOwner {
             .is_some_and(|active| active.key == key)
         {
             let active = self.active.take().expect("active key checked");
+            let mut pages = Vec::new();
+            let mut object_pages = Vec::new();
+            match active.pending.as_deref().copied() {
+                Some(PendingInput::Text(page)) => pages.push(page),
+                Some(PendingInput::Object(page)) => object_pages.push(page),
+                None => {}
+            }
             return Ok(ExactGeometryRelease {
                 jobs: vec![key],
-                pages: active.pending.as_deref().copied().into_iter().collect(),
+                pages,
+                object_pages,
                 counts: accounting::active_counts(&active),
             });
         }
@@ -86,8 +96,26 @@ impl ExactGeometryOwner {
         if active.key != key {
             return Err(ExactGeometryError::ObsoleteJob(key));
         }
-        if active.pending.as_deref().copied() != Some(page) {
+        if active.pending.as_deref().copied() != Some(PendingInput::Text(page)) {
             return Err(ExactGeometryError::WrongPage(page));
+        }
+        self.cancel(key)
+    }
+
+    pub fn fail_object_page(
+        &mut self,
+        key: GeometryJobKey,
+        page: crate::ObjectRequestKey,
+    ) -> Result<ExactGeometryRelease, ExactGeometryError> {
+        let active = self
+            .active
+            .as_deref()
+            .ok_or(ExactGeometryError::ObsoleteJob(key))?;
+        if active.key != key {
+            return Err(ExactGeometryError::ObsoleteJob(key));
+        }
+        if active.pending.as_deref().copied() != Some(PendingInput::Object(page)) {
+            return Err(ExactGeometryError::WrongObjectPage(page));
         }
         self.cancel(key)
     }
@@ -95,18 +123,26 @@ impl ExactGeometryOwner {
     pub fn rebind(
         &mut self,
         binding: RangeBinding,
+        presentation_generation: crate::PresentationGeneration,
     ) -> Result<ExactGeometryRelease, ExactGeometryError> {
         let next_epoch = self.next_epoch()?;
         let inputs = self.inputs.as_deref().ok_or(ExactGeometryError::Disposed)?;
         let candidate = Box::new(OwnerInputs {
             binding,
+            presentation_generation,
             layout: inputs.layout.clone(),
             style: inputs.style.clone(),
         });
         self.admit_input_candidate(&candidate)?;
         let release = self.release_all(true);
-        self.key = GeometryKey::new(binding.binding(), binding.revision(), next_epoch);
+        self.key = GeometryKey::new(
+            binding.binding(),
+            binding.revision(),
+            presentation_generation,
+            next_epoch,
+        );
         self.inputs = Some(candidate);
+        self.highest_object_request = None;
         Ok(release)
     }
 
@@ -124,13 +160,47 @@ impl ExactGeometryOwner {
             .binding;
         let candidate = Box::new(OwnerInputs {
             binding,
+            presentation_generation: self.key.presentation_generation(),
             layout,
             style,
         });
         self.admit_input_candidate(&candidate)?;
         let release = self.release_all(true);
-        self.key = GeometryKey::new(binding.binding(), binding.revision(), next_epoch);
+        self.key = GeometryKey::new(
+            binding.binding(),
+            binding.revision(),
+            self.key.presentation_generation(),
+            next_epoch,
+        );
         self.inputs = Some(candidate);
+        Ok(release)
+    }
+
+    /// Replaces object presentation inputs without changing the geometry-affecting layout epoch.
+    pub fn set_presentation_generation(
+        &mut self,
+        presentation_generation: crate::PresentationGeneration,
+    ) -> Result<ExactGeometryRelease, ExactGeometryError> {
+        let inputs = self.inputs.as_deref().ok_or(ExactGeometryError::Disposed)?;
+        if self.key.presentation_generation() == presentation_generation {
+            return Ok(ExactGeometryRelease::default());
+        }
+        let candidate = Box::new(OwnerInputs {
+            binding: inputs.binding,
+            presentation_generation,
+            layout: inputs.layout.clone(),
+            style: inputs.style.clone(),
+        });
+        self.admit_input_candidate(&candidate)?;
+        let release = self.release_all(true);
+        self.key = GeometryKey::new(
+            candidate.binding.binding(),
+            candidate.binding.revision(),
+            presentation_generation,
+            self.key.epoch(),
+        );
+        self.inputs = Some(candidate);
+        self.highest_object_request = None;
         Ok(release)
     }
 
@@ -171,9 +241,14 @@ impl ExactGeometryOwner {
         counts.owner_items = 0;
         let mut jobs = Vec::new();
         let mut pages = Vec::new();
+        let mut object_pages = Vec::new();
         if let Some(active) = self.active.take() {
             jobs.push(active.key);
-            pages.extend(active.pending.as_deref().copied());
+            match active.pending.as_deref().copied() {
+                Some(PendingInput::Text(page)) => pages.push(page),
+                Some(PendingInput::Object(page)) => object_pages.push(page),
+                None => {}
+            }
         }
         if let Some(desired) = self.desired_target.take() {
             jobs.push(desired.key);
@@ -192,6 +267,7 @@ impl ExactGeometryOwner {
         ExactGeometryRelease {
             jobs,
             pages,
+            object_pages,
             counts,
         }
     }

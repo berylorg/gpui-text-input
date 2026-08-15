@@ -1,23 +1,32 @@
-use std::sync::Arc;
-
 use gpui::StreamingLayoutBinding;
 
-use crate::{ByteOffset, PageDirection, PagePurpose, PageRequest, PageRequestId, RangeBinding};
+use crate::{
+    ByteOffset, ObjectDemandEnvelope, ObjectDirection, ObjectPurpose, ObjectRequest,
+    ObjectRequestId, PageDirection, PagePurpose, PageRequest, PageRequestId,
+    PresentationGeneration, RangeBinding,
+};
 
 use super::*;
 
 impl ExactGeometryOwner {
     pub fn new(
         binding: RangeBinding,
+        presentation_generation: PresentationGeneration,
         layout: StreamingLayoutBinding,
         style: StreamingGeometryStyle,
         limits: ExactGeometryLimits,
     ) -> Result<Self, ExactGeometryError> {
         validation::validate_inputs(&layout, &style)?;
-        let key = GeometryKey::new(binding.binding(), binding.revision(), LayoutEpoch::new(1));
+        let key = GeometryKey::new(
+            binding.binding(),
+            binding.revision(),
+            presentation_generation,
+            LayoutEpoch::new(1),
+        );
         let mut owner = Self {
             inputs: Some(Box::new(OwnerInputs {
                 binding,
+                presentation_generation,
                 layout,
                 style,
             })),
@@ -25,6 +34,7 @@ impl ExactGeometryOwner {
             key,
             highest_job: None,
             highest_request: None,
+            highest_object_request: None,
             active: None,
             desired_target: None,
             index: None,
@@ -53,6 +63,13 @@ impl ExactGeometryOwner {
         self.desired_target.as_ref().map(|desired| desired.key)
     }
 
+    pub fn active_text_page(&self, key: GeometryJobKey) -> Option<PageId> {
+        self.active
+            .as_deref()
+            .filter(|active| active.key == key)
+            .and_then(|active| active.text_page.map(|page| page.id))
+    }
+
     pub const fn retained_high_water_bytes(&self) -> usize {
         self.high_water_bytes
     }
@@ -65,7 +82,7 @@ impl ExactGeometryOwner {
     pub fn estimate(&self) -> Option<StreamingGeometryEstimate> {
         let active = self.active.as_deref()?;
         matches!(active.kind, ActiveKind::Index).then_some(StreamingGeometryEstimate {
-            scanned_source: ByteOffset::new(active.scanner.continuation.next_logical_offset),
+            scanned_source: active.scanner.continuation.next_position.try_into().ok()?,
             visual_lines_lower_bound: active.scanner.continuation.visual_lines,
             content_height_lower_bound: active.scanner.continuation.block_offset,
         })
@@ -83,46 +100,6 @@ impl ExactGeometryOwner {
         let source_len = usize::try_from(inputs.binding.extent().byte_len())
             .map_err(|_| ExactGeometryError::SourceContract)?;
         let key = GeometryJobKey::new(self.key, id);
-        if source_len == 0 {
-            let scanner = Scanner::origin(&inputs.layout, 0);
-            let origin = scanner
-                .checkpoints
-                .front()
-                .expect("origin checkpoint")
-                .clone();
-            let mut terminal = origin.clone();
-            terminal.terminal = true;
-            let candidate = ExactGeometryIndex {
-                key,
-                checkpoints: Arc::from([origin, terminal]),
-                aggregate: ExactGeometryAggregate {
-                    visual_lines: 0,
-                    content_height: gpui::Pixels::ZERO,
-                },
-            };
-            let counts = accounting::counts_with_index_candidate(self, &candidate);
-            let required = counts
-                .total_bytes()
-                .saturating_add(std::mem::size_of::<ExactGeometryCheckpoint>());
-            let required_items = counts.total_items().saturating_add(1);
-            if required > self.limits.max_retained_bytes
-                || required_items > self.limits.max_retained_items
-            {
-                return Err(ExactGeometryError::CapacityExceeded);
-            }
-            self.high_water_bytes = self.high_water_bytes.max(required);
-            self.high_water_items = self.high_water_items.max(required_items);
-            let prior = self.index.replace(Box::new(candidate));
-            self.highest_job = Some(id);
-            self.observe_current();
-            return Ok(ExactGeometryStart {
-                key,
-                progress: ExactGeometryProgress::IndexComplete,
-                release: prior.map_or_else(ExactGeometryRelease::default, admission::index_release),
-                admission_required_bytes: required,
-                admission_required_items: required_items,
-            });
-        }
         let fixed = accounting::fixed_bytes_without_active(self);
         let retained_capacity = self
             .limits
@@ -136,6 +113,7 @@ impl ExactGeometryOwner {
                 anchor: ByteOffset::new(0),
             },
             pending: None,
+            text_page: None,
             window_identity: None,
             retained_capacity,
             scanner: Scanner::origin(&inputs.layout, source_len),
@@ -159,6 +137,11 @@ impl ExactGeometryOwner {
         id: PageRequestId,
     ) -> Result<PageRequest, ExactGeometryError> {
         let binding = self.inputs()?.binding;
+        let retained_item_capacity = self
+            .limits
+            .max_retained_items
+            .checked_sub(accounting::fixed_counts_without_active(self).total_items())
+            .ok_or(ExactGeometryError::CapacityExceeded)?;
         let active = self
             .active
             .as_deref_mut()
@@ -166,7 +149,7 @@ impl ExactGeometryOwner {
         if active.key != key {
             return Err(ExactGeometryError::ObsoleteJob(key));
         }
-        if active.pending.is_some() {
+        if active.pending.is_some() || active.text_page.is_some() {
             return Err(ExactGeometryError::PageAlreadyPending);
         }
         if self.highest_request.is_some_and(|highest| id <= highest) {
@@ -190,14 +173,90 @@ impl ExactGeometryOwner {
             self.limits.max_page_bytes,
         )
         .map_err(|_| ExactGeometryError::InvalidLimits)?;
-        active.pending = Some(Box::new(page_key));
-        if let Err(error) = accounting::ensure_active(active) {
+        active.pending = Some(Box::new(PendingInput::Text(page_key)));
+        if let Err(error) = accounting::ensure_active(active).and_then(|_| {
+            (accounting::active_counts(active).total_items() <= retained_item_capacity)
+                .then_some(())
+                .ok_or(ExactGeometryError::CapacityExceeded)
+        }) {
             active.pending = None;
             return Err(error);
         }
         self.highest_request = Some(id);
         self.observe_current();
         Ok(PageRequest::new(page_key))
+    }
+
+    pub fn request_object_page(
+        &mut self,
+        key: GeometryJobKey,
+        id: ObjectRequestId,
+        max_objects: usize,
+        max_retained_bytes: usize,
+    ) -> Result<ObjectRequest, ExactGeometryError> {
+        let (binding, presentation_generation) = {
+            let inputs = self.inputs()?;
+            (inputs.binding, inputs.presentation_generation)
+        };
+        let retained_item_capacity = self
+            .limits
+            .max_retained_items
+            .checked_sub(accounting::fixed_counts_without_active(self).total_items())
+            .ok_or(ExactGeometryError::CapacityExceeded)?;
+        let active = self
+            .active
+            .as_deref_mut()
+            .ok_or(ExactGeometryError::ObsoleteJob(key))?;
+        if active.key != key {
+            return Err(ExactGeometryError::ObsoleteJob(key));
+        }
+        if active.pending.is_some() {
+            return Err(ExactGeometryError::PageAlreadyPending);
+        }
+        if self
+            .highest_object_request
+            .is_some_and(|highest| id <= highest)
+        {
+            return Err(ExactGeometryError::IdNotMonotonic);
+        }
+        let page = active.text_page.ok_or(ExactGeometryError::WrongInputKind)?;
+        let purpose = match active.kind {
+            ActiveKind::Index => ObjectPurpose::GeometryIndex,
+            ActiveKind::Target { .. } => ObjectPurpose::GeometryTarget,
+        };
+        let cursor = active
+            .scanner
+            .object_cursor
+            .filter(|cursor| page.range.contains_offset(cursor.anchor()));
+        let demand = ObjectDemandEnvelope::range(
+            page.range,
+            cursor,
+            ObjectDirection::Forward,
+            max_objects,
+            max_retained_bytes,
+        )
+        .map_err(|_| ExactGeometryError::SourceContract)?;
+        let request_key = crate::ObjectRequestKey::new(
+            id,
+            binding.binding(),
+            binding.revision(),
+            presentation_generation,
+            purpose,
+            demand,
+        )
+        .map_err(|_| ExactGeometryError::SourceContract)?;
+        active.pending = Some(Box::new(PendingInput::Object(request_key)));
+        if let Err(error) = accounting::ensure_active(active).and_then(|_| {
+            (accounting::active_counts(active).total_items() <= retained_item_capacity)
+                .then_some(())
+                .ok_or(ExactGeometryError::CapacityExceeded)
+        }) {
+            active.pending = None;
+            return Err(error);
+        }
+        self.highest_object_request = Some(id);
+        self.observe_current();
+        Ok(ObjectRequest::new(request_key))
     }
 
     pub(super) fn inputs(&self) -> Result<&OwnerInputs, ExactGeometryError> {

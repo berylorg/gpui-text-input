@@ -8,7 +8,35 @@ impl ExactGeometryOwner {
         id: GeometryJobId,
         target: BlockTarget,
     ) -> Result<ExactGeometryStart, ExactGeometryError> {
+        self.request_block_target_inner(id, target, None)
+    }
+
+    /// Requests a bounded block target whose retained geometry includes an exact composite anchor.
+    pub fn request_block_target_anchored(
+        &mut self,
+        id: GeometryJobId,
+        target: BlockTarget,
+        anchor: SourcePosition,
+    ) -> Result<ExactGeometryStart, ExactGeometryError> {
+        self.request_block_target_inner(id, target, Some(anchor))
+    }
+
+    fn request_block_target_inner(
+        &mut self,
+        id: GeometryJobId,
+        target: BlockTarget,
+        anchor: Option<SourcePosition>,
+    ) -> Result<ExactGeometryStart, ExactGeometryError> {
         validate_target(target)?;
+        if anchor.is_some_and(|anchor| {
+            anchor.byte_offset.get()
+                > self
+                    .inputs
+                    .as_deref()
+                    .map_or(0, |inputs| inputs.binding.extent().byte_len())
+        }) {
+            return Err(ExactGeometryError::SourceContract);
+        }
         self.admit_job_id(id)?;
         let key = GeometryJobKey::new(self.key, id);
         if self.index.is_none()
@@ -27,9 +55,11 @@ impl ExactGeometryOwner {
             {
                 return Err(ExactGeometryError::CapacityExceeded);
             }
-            let prior = self
-                .desired_target
-                .replace(Box::new(DesiredTarget { key, target }));
+            let prior = self.desired_target.replace(Box::new(DesiredTarget {
+                key,
+                target,
+                anchor,
+            }));
             if let Err(error) = self.refresh_active_capacity() {
                 self.desired_target = prior;
                 let _ = self.refresh_active_capacity();
@@ -51,7 +81,7 @@ impl ExactGeometryOwner {
         if self.active.is_some() {
             return Err(ExactGeometryError::Busy);
         }
-        let start = self.start_target(key, target)?;
+        let start = self.start_target(key, target, anchor)?;
         self.highest_job = Some(id);
         Ok(start)
     }
@@ -68,11 +98,19 @@ impl ExactGeometryOwner {
             self.desired_target = Some(desired);
             return Err(ExactGeometryError::IndexIncomplete);
         }
-        let DesiredTarget { key, target } = *desired;
-        let start = match self.start_target(key, target) {
+        let DesiredTarget {
+            key,
+            target,
+            anchor,
+        } = *desired;
+        let start = match self.start_target(key, target, anchor) {
             Ok(start) => start,
             Err(error) => {
-                self.desired_target = Some(Box::new(DesiredTarget { key, target }));
+                self.desired_target = Some(Box::new(DesiredTarget {
+                    key,
+                    target,
+                    anchor,
+                }));
                 return Err(error);
             }
         };
@@ -82,24 +120,48 @@ impl ExactGeometryOwner {
     fn start_target(
         &mut self,
         key: GeometryJobKey,
-        target: BlockTarget,
+        mut target: BlockTarget,
+        anchor: Option<SourcePosition>,
     ) -> Result<ExactGeometryStart, ExactGeometryError> {
-        let predecessor = self
+        let index = self
             .index
             .as_deref()
-            .ok_or(ExactGeometryError::IndexIncomplete)?
-            .checkpoints
-            .iter()
-            .rev()
-            .find(|checkpoint| {
-                checkpoint.source.get() == 0
-                    || checkpoint.resume_block_offset() <= target.block_offset
-            })
-            .expect("index has origin")
-            .clone();
+            .ok_or(ExactGeometryError::IndexIncomplete)?;
+        let predecessor = if let Some(anchor) = anchor {
+            let include_preceding_object = matches!(
+                anchor.gap,
+                crate::InlineObjectGap::Between { .. } | crate::InlineObjectGap::After(_)
+            );
+            let checkpoint = index
+                .checkpoints
+                .iter()
+                .rev()
+                .find(|checkpoint| {
+                    checkpoint
+                        .source
+                        .compare_in_revision(anchor)
+                        .is_some_and(|ordering| {
+                            ordering.is_lt() || (!include_preceding_object && ordering.is_eq())
+                        })
+                })
+                .ok_or(ExactGeometryError::SourceContract)?;
+            target.block_offset = checkpoint.block_offset();
+            checkpoint.clone()
+        } else {
+            index
+                .checkpoints
+                .iter()
+                .rev()
+                .find(|checkpoint| {
+                    checkpoint.source.byte_offset.get() == 0
+                        || checkpoint.resume_block_offset() <= target.block_offset
+                })
+                .expect("index has origin")
+                .clone()
+        };
         let inputs = self.inputs()?;
         let source_len = inputs.binding.extent().byte_len();
-        if predecessor.source.get() == source_len {
+        if predecessor.source.byte_offset.get() == source_len {
             let candidate = BlockTargetPublication {
                 key,
                 predecessor: predecessor.source,
@@ -145,9 +207,10 @@ impl ExactGeometryOwner {
                 predecessor: predecessor.source,
             },
             page_use: ActivePageUse::Traverse {
-                anchor: predecessor.source,
+                anchor: predecessor.source.byte_offset,
             },
             pending: None,
+            text_page: None,
             window_identity: None,
             retained_capacity,
             scanner: Scanner::from_checkpoint(&predecessor),
@@ -179,7 +242,7 @@ impl ExactGeometryOwner {
     }
 }
 
-fn validate_target(target: BlockTarget) -> Result<(), ExactGeometryError> {
+pub(super) fn validate_target(target: BlockTarget) -> Result<(), ExactGeometryError> {
     let values = [target.block_offset, target.viewport_extent, target.overscan];
     let end = target.block_offset + target.viewport_extent + target.overscan;
     if values

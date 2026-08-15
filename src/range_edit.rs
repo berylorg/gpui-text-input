@@ -1,11 +1,20 @@
 //! Exact, bounded coordination for one host-owned range mutation.
 
-use crate::{AtomId, BindingId, ByteRange, LogicalExtent, RangeBinding, SourceRevision};
+use crate::{
+    AtomId, BindingId, ByteRange, InlineObjectGap, InlineObjectId, InlineObjectOrder,
+    LogicalExtent, ObjectResidency, RangeBinding, RangeResidency, SourcePosition, SourceRange,
+    SourceRevision,
+};
 
+mod coordinator;
 mod lifecycle;
 mod preflight;
+mod proof;
 mod settlement;
 mod staging;
+
+pub(crate) use coordinator::required_base_positions;
+pub use proof::*;
 
 macro_rules! opaque_id {
     ($name:ident, $doc:literal) => {
@@ -72,7 +81,7 @@ impl MutationKey {
 pub struct MutationProposal {
     key: MutationKey,
     kind: MutationKind,
-    replacement: ByteRange,
+    replacement: SourceRange,
     replacement_line_breaks: u64,
 }
 
@@ -81,7 +90,7 @@ impl MutationProposal {
     pub const fn new(
         key: MutationKey,
         kind: MutationKind,
-        replacement: ByteRange,
+        replacement: SourceRange,
         replacement_line_breaks: u64,
     ) -> Self {
         Self {
@@ -97,8 +106,15 @@ impl MutationProposal {
     pub const fn kind(self) -> MutationKind {
         self.kind
     }
-    pub const fn replacement(self) -> ByteRange {
+    pub const fn replacement(self) -> SourceRange {
         self.replacement
+    }
+    pub fn replacement_bytes(self) -> ByteRange {
+        ByteRange::new(
+            self.replacement.start().byte_offset,
+            self.replacement.end().byte_offset,
+        )
+        .expect("source range byte offsets are ordered")
     }
     pub const fn replacement_line_breaks(self) -> u64 {
         self.replacement_line_breaks
@@ -110,6 +126,9 @@ impl MutationProposal {
 pub struct MutationLimits {
     max_fragments: usize,
     max_staged_bytes: usize,
+    max_objects: usize,
+    max_object_bytes: usize,
+    max_presentation_bytes: usize,
 }
 
 impl MutationLimits {
@@ -120,6 +139,9 @@ impl MutationLimits {
         Ok(Self {
             max_fragments,
             max_staged_bytes,
+            max_objects: max_fragments,
+            max_object_bytes: max_staged_bytes,
+            max_presentation_bytes: max_staged_bytes,
         })
     }
     pub const fn max_fragments(self) -> usize {
@@ -127,6 +149,34 @@ impl MutationLimits {
     }
     pub const fn max_staged_bytes(self) -> usize {
         self.max_staged_bytes
+    }
+
+    /// Refines the independent object-count and retained-byte envelopes.
+    pub fn with_object_limits(
+        mut self,
+        max_objects: usize,
+        max_object_bytes: usize,
+        max_presentation_bytes: usize,
+    ) -> Result<Self, MutationError> {
+        if max_objects == 0 {
+            return Err(MutationError::InvalidLimits);
+        }
+        self.max_objects = max_objects;
+        self.max_object_bytes = max_object_bytes;
+        self.max_presentation_bytes = max_presentation_bytes;
+        Ok(self)
+    }
+
+    pub const fn max_objects(self) -> usize {
+        self.max_objects
+    }
+
+    pub const fn max_object_bytes(self) -> usize {
+        self.max_object_bytes
+    }
+
+    pub const fn max_presentation_bytes(self) -> usize {
+        self.max_presentation_bytes
     }
 }
 
@@ -147,12 +197,128 @@ pub enum AtomChange {
     },
 }
 
+/// One exact source-zero-width object isolated by adjacent composite gaps.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ObjectTarget {
+    range: SourceRange,
+    id: InlineObjectId,
+    order: InlineObjectOrder,
+}
+
+impl ObjectTarget {
+    pub fn new(
+        range: SourceRange,
+        id: InlineObjectId,
+        order: InlineObjectOrder,
+    ) -> Result<Self, MutationError> {
+        if range.start().byte_offset != range.end().byte_offset || range.is_empty() {
+            return Err(MutationError::MalformedObjectChange);
+        }
+        let follows_start = match range.start().gap {
+            InlineObjectGap::Before(next) => next.id() == id && next.order() == order,
+            InlineObjectGap::Between { following, .. } => {
+                following.id() == id && following.order() == order
+            }
+            InlineObjectGap::NoObjects | InlineObjectGap::After(_) => false,
+        };
+        let precedes_end = match range.end().gap {
+            InlineObjectGap::After(previous) => previous.id() == id && previous.order() == order,
+            InlineObjectGap::Between { preceding, .. } => {
+                preceding.id() == id && preceding.order() == order
+            }
+            InlineObjectGap::NoObjects | InlineObjectGap::Before(_) => false,
+        };
+        if !follows_start || !precedes_end {
+            return Err(MutationError::MalformedObjectChange);
+        }
+        Ok(Self { range, id, order })
+    }
+
+    pub const fn range(self) -> SourceRange {
+        self.range
+    }
+
+    pub const fn id(self) -> InlineObjectId {
+        self.id
+    }
+
+    pub const fn order(self) -> InlineObjectOrder {
+        self.order
+    }
+}
+
+/// Authoritative successor occurrence of one source-zero-width object.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SuccessorObject {
+    id: InlineObjectId,
+    anchor: crate::ByteOffset,
+    order: InlineObjectOrder,
+    retained_bytes: usize,
+    presentation_bytes: usize,
+}
+
+impl SuccessorObject {
+    pub const fn new(
+        id: InlineObjectId,
+        anchor: crate::ByteOffset,
+        order: InlineObjectOrder,
+        retained_bytes: usize,
+        presentation_bytes: usize,
+    ) -> Self {
+        Self {
+            id,
+            anchor,
+            order,
+            retained_bytes,
+            presentation_bytes,
+        }
+    }
+
+    pub const fn id(self) -> InlineObjectId {
+        self.id
+    }
+    pub const fn anchor(self) -> crate::ByteOffset {
+        self.anchor
+    }
+    pub const fn order(self) -> InlineObjectOrder {
+        self.order
+    }
+    pub const fn retained_bytes(self) -> usize {
+        self.retained_bytes
+    }
+    pub const fn presentation_bytes(self) -> usize {
+        self.presentation_bytes
+    }
+}
+
+/// One source-zero-width object mutation carried by the shared staged transaction.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ObjectChange {
+    Insert {
+        at: SourcePosition,
+        object: SuccessorObject,
+    },
+    Remove {
+        target: ObjectTarget,
+    },
+    Replace {
+        target: ObjectTarget,
+        object: SuccessorObject,
+    },
+    Move {
+        target: ObjectTarget,
+        to: SourcePosition,
+        object: SuccessorObject,
+    },
+}
+
 /// The payload of one ordered staging fragment.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MutationFragmentPayload {
     Utf8 { inserted_offset: u64, text: String },
     Atom(AtomChange),
-    Terminal,
+    Object(ObjectChange),
+    Terminal { intended: MutationPositions },
 }
 
 /// One exactly keyed, ordered mutation fragment.
@@ -197,12 +363,35 @@ pub enum MutationState {
 pub struct MutationCounts {
     pub fragments: usize,
     pub staged_bytes: usize,
+    pub objects: usize,
+    pub object_bytes: usize,
+    pub presentation_bytes: usize,
+    pub proofs: usize,
+    pub source_pages: usize,
+    pub transactions: usize,
+}
+
+impl MutationCounts {
+    fn checked_add(self, other: Self) -> Option<Self> {
+        Some(Self {
+            fragments: self.fragments.checked_add(other.fragments)?,
+            staged_bytes: self.staged_bytes.checked_add(other.staged_bytes)?,
+            objects: self.objects.checked_add(other.objects)?,
+            object_bytes: self.object_bytes.checked_add(other.object_bytes)?,
+            presentation_bytes: self
+                .presentation_bytes
+                .checked_add(other.presentation_bytes)?,
+            proofs: self.proofs.checked_add(other.proofs)?,
+            source_pages: self.source_pages.checked_add(other.source_pages)?,
+            transactions: self.transactions.checked_add(other.transactions)?,
+        })
+    }
 }
 
 /// The host's one exact terminal result.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MutationOutcome {
-    Committed(RangeBinding),
+    Committed(MutationCommit),
     Rejected,
     Conflict,
     Cancelled,
@@ -249,6 +438,8 @@ pub enum MutationError {
     },
     ObsoleteOperation(MutationKey),
     ReplacementOutsideExtent,
+    PositionOutsideExtent,
+    IncompatibleReplacementPositions,
     MalformedBaseExtent,
     MalformedReplacementLineBreaks,
     FragmentOutOfOrder {
@@ -257,11 +448,23 @@ pub enum MutationError {
     },
     FragmentLimitExceeded,
     StagedByteLimitExceeded,
+    ObjectLimitExceeded,
+    ObjectByteLimitExceeded,
+    PresentationByteLimitExceeded,
     InsertOffsetMismatch {
         expected: u64,
         actual: u64,
     },
     MalformedAtomChange,
+    MalformedObjectChange,
+    ObjectChangeOutsideReplacement,
+    DuplicateObjectChange(InlineObjectId),
+    DuplicateSuccessorObjectOrder {
+        anchor: crate::ByteOffset,
+        order: InlineObjectOrder,
+    },
+    SuccessorObjectsOutOfOrder,
+    SuccessorObjectOutsideExtent,
     DuplicateAtomInsert(AtomId),
     DuplicateAtomRemove(AtomId),
     DuplicateAtomRemoveRange(ByteRange),
@@ -275,7 +478,18 @@ pub enum MutationError {
     },
     MissingTerminalFragment,
     PostTerminalFragment,
+    MissingTextBoundaryProof,
+    InvalidTextBoundaryProof,
+    InvalidObjectGapProof,
+    StalePositionProof,
+    WrongSuccessorPositionProof,
+    WrongSuccessorPositions,
+    MissingPositionProof(SourcePosition),
+    UnexpectedPositionProof(SourcePosition),
+    DuplicatePositionProof(SourcePosition),
+    PositionProofLimitExceeded,
     IncoherentSuccessor,
+    ReleaseCountOverflow,
 }
 
 impl std::fmt::Display for MutationError {
@@ -296,9 +510,16 @@ struct ActiveMutation {
     inserted_line_breaks: u64,
     fragment_count: usize,
     staged_bytes: usize,
+    object_count: usize,
+    object_bytes: usize,
+    presentation_bytes: usize,
+    proof_count: usize,
+    source_page_count: usize,
     terminal_seen: bool,
+    intended: Option<MutationPositions>,
     detached: bool,
     fragments: Vec<MutationFragment>,
+    source_proofs: Vec<SourcePositionProof>,
 }
 
 /// Coordinates exactly one edit, undo, or redo transaction at a time.
@@ -308,125 +529,5 @@ pub struct RangeEditCoordinator {
     limits: MutationLimits,
     active: Option<ActiveMutation>,
     last_terminal: Option<MutationKey>,
-}
-
-impl RangeEditCoordinator {
-    pub const fn new(binding: RangeBinding, limits: MutationLimits) -> Self {
-        Self {
-            binding,
-            limits,
-            active: None,
-            last_terminal: None,
-        }
-    }
-    pub const fn binding(&self) -> RangeBinding {
-        self.binding
-    }
-    pub fn state(&self) -> MutationState {
-        self.active
-            .as_ref()
-            .map_or(MutationState::Idle, |active| active.state)
-    }
-    pub fn active_key(&self) -> Option<MutationKey> {
-        self.active.as_ref().map(|a| a.proposal.key())
-    }
-    pub fn counts(&self) -> MutationCounts {
-        self.active
-            .as_ref()
-            .map_or(MutationCounts::default(), |a| MutationCounts {
-                fragments: a.fragment_count,
-                staged_bytes: a.staged_bytes,
-            })
-    }
-    /// Returns staged fragments in their exact admitted order without joining their UTF-8.
-    pub fn staged_fragments(&self) -> &[MutationFragment] {
-        self.active
-            .as_ref()
-            .map_or(&[], |active| active.fragments.as_slice())
-    }
-
-    pub fn admit_commit(&mut self, key: MutationKey) -> Result<(), MutationError> {
-        let active = self.active_mut(key, MutationState::Staging)?;
-        if !active.terminal_seen {
-            return Err(MutationError::MissingTerminalFragment);
-        }
-        active.state = MutationState::CommitPending;
-        Ok(())
-    }
-
-    pub fn cancel(&mut self, key: MutationKey) -> Result<MutationCancellation, MutationError> {
-        let state = self.active_for_key(key)?.state;
-        match state {
-            MutationState::Preflight | MutationState::Staging => {
-                self.finish(key, MutationOutcome::Cancelled, false);
-                Ok(MutationCancellation::Cancelled)
-            }
-            MutationState::CommitPending | MutationState::DetachedCommit => {
-                Ok(MutationCancellation::AwaitingHostSettlement)
-            }
-            MutationState::Idle => Err(MutationError::NoActive),
-        }
-    }
-
-    fn check_key(&self, key: MutationKey) -> Result<(), MutationError> {
-        let expected = MutationKey::new(
-            self.binding.binding(),
-            self.binding.revision(),
-            key.operation(),
-        );
-        if key.binding() != expected.binding() || key.base_revision() != expected.base_revision() {
-            return Err(MutationError::WrongKey {
-                expected,
-                actual: key,
-            });
-        }
-        Ok(())
-    }
-    fn active_for_key(&self, key: MutationKey) -> Result<&ActiveMutation, MutationError> {
-        let Some(active) = &self.active else {
-            return if self.last_terminal == Some(key) {
-                Err(MutationError::ObsoleteOperation(key))
-            } else {
-                Err(MutationError::NoActive)
-            };
-        };
-        if active.proposal.key() != key {
-            return Err(MutationError::WrongKey {
-                expected: active.proposal.key(),
-                actual: key,
-            });
-        }
-        Ok(active)
-    }
-    fn active_mut(
-        &mut self,
-        key: MutationKey,
-        expected: MutationState,
-    ) -> Result<&mut ActiveMutation, MutationError> {
-        let active = self.active_for_key(key)?;
-        if active.state != expected {
-            return Err(MutationError::WrongState {
-                expected,
-                actual: active.state,
-            });
-        }
-        Ok(self.active.as_mut().expect("active checked"))
-    }
-    fn finish(
-        &mut self,
-        key: MutationKey,
-        outcome: MutationOutcome,
-        obsolete: bool,
-    ) -> MutationSettlement {
-        self.active = None;
-        self.last_terminal = Some(key);
-        if !obsolete {
-            if let MutationOutcome::Committed(successor) = outcome {
-                self.binding = successor;
-            }
-            MutationSettlement::Current(outcome)
-        } else {
-            MutationSettlement::Obsolete(outcome)
-        }
-    }
+    released: MutationCounts,
 }

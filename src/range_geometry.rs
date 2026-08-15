@@ -3,6 +3,11 @@
 mod exact;
 mod types;
 
+pub(crate) use exact::{
+    PreparedGeometryTransition, PreparedTargetResponse, PreparedTargetSuccessor,
+    TargetResponseSuccessor,
+};
+
 pub use exact::{
     BlockTarget, BlockTargetPublication, ExactGeometryAdmission, ExactGeometryAggregate,
     ExactGeometryCheckpoint, ExactGeometryCounts, ExactGeometryError, ExactGeometryFailure,

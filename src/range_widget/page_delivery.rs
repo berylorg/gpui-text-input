@@ -77,6 +77,11 @@ impl RangeTextInput {
         cx: &mut Context<Self>,
     ) -> Result<(), RangeTextInputError> {
         if !self.mounted {
+            if page.key().purpose() == PagePurpose::Restoration {
+                self.requests
+                    .push_back(RangeTextInputRequest::ReleasePage(page.key()));
+                return Err(RangeTextInputError::Stale);
+            }
             return Err(RangeTextInputError::NotMounted);
         }
         let key = page.key();
@@ -100,7 +105,10 @@ impl RangeTextInput {
             for page in pages {
                 self.deliver_aliased_page(page, window, cx)?;
             }
-            return self.service_geometry_page(window, cx);
+            return self.service_geometry_until_external_boundary(window, cx);
+        }
+        if key.purpose() == PagePurpose::GeometryTarget {
+            return self.deliver_geometry_target_page(page, window, cx);
         }
         let coalesced_clipboard = self.clipboard_waits_on(key).then(|| page.clone());
         let result = match key.purpose() {
@@ -125,7 +133,7 @@ impl RangeTextInput {
         let clipboard_service = coalesced_clipboard
             .as_ref()
             .map(|page| self.service_coalesced_clipboard_page(page, cx));
-        let service = self.service_geometry_page(window, cx);
+        let service = self.service_geometry_until_external_boundary(window, cx);
         if coalesced_clipboard.is_some() && matches!(&result, Err(RangeTextInputError::Stale)) {
             clipboard_service.expect("coalesced service exists")?;
             return service;
@@ -241,8 +249,9 @@ impl RangeTextInput {
         }
         if let Some(job) = self.active_geometry {
             if let Ok(release) = self.geometry.fail_page(job, key) {
-                self.release_geometry(&release, Some(key), Some(cx));
+                self.release_geometry(&release, Some(key), None, Some(cx));
                 self.active_geometry = None;
+                self.reject_restoration_geometry(cx)?;
                 return Ok(());
             }
         }
@@ -257,7 +266,7 @@ impl RangeTextInput {
         if self
             .restoration
             .as_ref()
-            .is_some_and(|validation| validation.pending() == Some(key))
+            .is_some_and(|validation| validation.pending_text() == Some(key))
         {
             self.reject_restoration(cx);
             return Ok(());
@@ -282,7 +291,7 @@ impl RangeTextInput {
         if key.purpose() == PagePurpose::Clipboard {
             let progress = self
                 .clipboard
-                .settle_page(key, failure)
+                .settle_text_page(key, failure)
                 .map_err(|_| RangeTextInputError::Stale)?;
             return self.advance_clipboard(progress, cx);
         }
@@ -306,7 +315,7 @@ impl RangeTextInput {
         if self
             .restoration
             .as_ref()
-            .is_some_and(|validation| validation.pending() == Some(key))
+            .is_some_and(|validation| validation.pending_text() == Some(key))
         {
             self.reject_restoration(cx);
             return Ok(());
@@ -331,7 +340,7 @@ impl RangeTextInput {
         if key.purpose() == PagePurpose::Clipboard {
             let progress = self
                 .clipboard
-                .settle_page(key, failure)
+                .settle_text_page(key, failure)
                 .map_err(|_| RangeTextInputError::Stale)?;
             return self.advance_clipboard(progress, cx);
         }

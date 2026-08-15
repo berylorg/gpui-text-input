@@ -53,6 +53,7 @@ impl Render for RangeTextInput {
             .on_action(cx.listener(Self::select_to_end))
             .on_action(cx.listener(Self::select_all))
             .on_action(cx.listener(Self::enter))
+            .on_action(cx.listener(Self::space))
             .on_action(cx.listener(Self::insert_newline))
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::cut))
@@ -135,13 +136,15 @@ impl RangeTextInput {
         if next == self.desired.target_block {
             return;
         }
-        self.desired.target_block = next;
-        self.desired.scroll.intra_anchor = Pixels::ZERO;
-        self.desired.preserve_scroll_anchor = false;
-        self.desired.reveal_caret = false;
-        if self.geometry.index().is_some() {
-            let _ = self.start_target();
-        }
+        let mut desired = self.desired;
+        desired.target_block = next;
+        desired.scroll.intra_anchor = Pixels::ZERO;
+        desired.preserve_scroll_anchor = false;
+        desired.reveal_caret = false;
+        let Ok(candidate) = self.prepare_target_transition(desired, None) else {
+            return;
+        };
+        let _ = self.commit_widget_transition(candidate, Some(cx));
         self.note_scroll_activity(window, cx);
     }
 
@@ -174,12 +177,14 @@ impl RangeTextInput {
             cx.propagate();
             return;
         }
-        self.desired.target_block = next;
-        self.desired.preserve_scroll_anchor = false;
-        self.desired.reveal_caret = false;
-        if self.geometry.index().is_some() {
-            let _ = self.start_target();
-        }
+        let mut desired = self.desired;
+        desired.target_block = next;
+        desired.preserve_scroll_anchor = false;
+        desired.reveal_caret = false;
+        let Ok(candidate) = self.prepare_target_transition(desired, None) else {
+            return;
+        };
+        let _ = self.commit_widget_transition(candidate, Some(cx));
         self.note_scroll_activity(window, cx);
     }
 }
@@ -190,9 +195,6 @@ struct RangeTextInputElement {
 
 struct RangePrepaint {
     origin: Point<Pixels>,
-    selections: Vec<gpui::PaintQuad>,
-    caret: Option<gpui::PaintQuad>,
-    marked: Vec<gpui::PaintQuad>,
     placeholder: Option<WrappedLine>,
 }
 
@@ -233,66 +235,14 @@ impl Element for RangeTextInputElement {
         window: &mut Window,
         cx: &mut App,
     ) -> RangePrepaint {
-        let _ = self
-            .input
-            .update(cx, |input, cx| input.service_geometry_page(window, cx));
         let input = self.input.read(cx);
         let Some(surface) = input.surface() else {
             return RangePrepaint {
                 origin: bounds.origin,
-                selections: Vec::new(),
-                caret: None,
-                marked: Vec::new(),
                 placeholder: None,
             };
         };
         let origin = bounds.origin - point(Pixels::ZERO, surface.scroll_block());
-        let selections = surface
-            .selection_bounds(
-                input.config.layout.line_height,
-                input.config.layout.wrap_width,
-            )
-            .into_iter()
-            .map(|bounds| {
-                gpui::fill(
-                    Bounds::new(origin + bounds.origin, bounds.size),
-                    input.config.theme.selection,
-                )
-            })
-            .collect();
-        let caret = (input.enabled && input.focus_handle.is_focused(window))
-            .then(|| surface.caret_bounds(input.config.layout.line_height))
-            .flatten()
-            .map(|bounds| {
-                gpui::fill(
-                    Bounds::new(origin + bounds.origin, bounds.size),
-                    input.config.theme.caret,
-                )
-            });
-        let marked = surface
-            .composition()
-            .into_iter()
-            .flat_map(|range| {
-                surface.bounds_for_range(
-                    range,
-                    input.config.layout.line_height,
-                    input.config.layout.wrap_width,
-                )
-            })
-            .map(|bounds| {
-                gpui::fill(
-                    Bounds::new(
-                        origin
-                            + point(
-                                bounds.origin.x,
-                                bounds.origin.y + bounds.size.height - px(1.),
-                            ),
-                        size(bounds.size.width, px(1.)),
-                    ),
-                    input.config.theme.marked_underline,
-                )
-            })
-            .collect();
         let placeholder = surface.placeholder().and_then(|placeholder| {
             let text_style = window.text_style();
             let run = TextRun {
@@ -317,9 +267,6 @@ impl Element for RangeTextInputElement {
         });
         RangePrepaint {
             origin,
-            selections,
-            caret,
-            marked,
             placeholder,
         }
     }
@@ -345,13 +292,16 @@ impl Element for RangeTextInputElement {
             );
         }
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
-            for quad in prepaint.selections.drain(..) {
-                window.paint_quad(quad);
-            }
             self.input.update(cx, |input, cx| {
                 let Some(surface) = input.surface() else {
                     return;
                 };
+                for selection in surface.selection_bounds() {
+                    window.paint_quad(gpui::fill(
+                        Bounds::new(prepaint.origin + selection.origin, selection.size),
+                        input.config.theme.selection,
+                    ));
+                }
                 for fragment in surface.fragments() {
                     let _ = match fragment {
                         gpui::StreamingLayoutFragment::Text(fragment) => {
@@ -360,7 +310,26 @@ impl Element for RangeTextInputElement {
                         gpui::StreamingLayoutFragment::OversizeAtom(fragment) => {
                             fragment.paint_background(prepaint.origin, window)
                         }
+                        gpui::StreamingLayoutFragment::InlineObject(fragment) => {
+                            fragment.paint_background(prepaint.origin, window)
+                        }
+                        gpui::StreamingLayoutFragment::Boundary(_) => Ok(()),
                     };
+                }
+                if let Some(active) = input.active_object {
+                    if active.anchor.binding == surface.binding()
+                        && active.anchor.presentation_generation
+                            == surface.geometry_key().presentation_generation()
+                        && active.anchor.layout_epoch == surface.geometry_key().epoch()
+                    {
+                        window.paint_quad(gpui::fill(
+                            Bounds::new(
+                                prepaint.origin + active.anchor.bounds.origin,
+                                active.anchor.bounds.size,
+                            ),
+                            input.config.theme.selection,
+                        ));
+                    }
                 }
                 for fragment in surface.fragments() {
                     let _ = match fragment {
@@ -370,6 +339,10 @@ impl Element for RangeTextInputElement {
                         gpui::StreamingLayoutFragment::OversizeAtom(fragment) => {
                             fragment.paint(prepaint.origin, window, cx)
                         }
+                        gpui::StreamingLayoutFragment::InlineObject(fragment) => {
+                            fragment.paint(prepaint.origin, window, cx)
+                        }
+                        gpui::StreamingLayoutFragment::Boundary(_) => Ok(()),
                     };
                 }
             });
@@ -383,12 +356,32 @@ impl Element for RangeTextInputElement {
                     cx,
                 );
             }
-            for quad in prepaint.marked.drain(..) {
-                window.paint_quad(quad);
-            }
-            if let Some(caret) = prepaint.caret.take() {
-                window.paint_quad(caret);
-            }
+            self.input.update(cx, |input, _| {
+                let Some(surface) = input.surface() else {
+                    return;
+                };
+                for marked in surface.composition_bounds() {
+                    window.paint_quad(gpui::fill(
+                        Bounds::new(
+                            prepaint.origin
+                                + point(
+                                    marked.origin.x,
+                                    marked.origin.y + marked.size.height - px(1.),
+                                ),
+                            size(marked.size.width, px(1.)),
+                        ),
+                        input.config.theme.marked_underline,
+                    ));
+                }
+                if input.enabled && input.focus_handle.is_focused(window) {
+                    if let Some(caret) = surface.caret_bounds(input.config.layout.line_height) {
+                        window.paint_quad(gpui::fill(
+                            Bounds::new(prepaint.origin + caret.origin, caret.size),
+                            input.config.theme.caret,
+                        ));
+                    }
+                }
+            });
         });
         self.input.update(cx, |input, cx| {
             let width_changed = bounds.size.width > Pixels::ZERO

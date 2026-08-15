@@ -1,6 +1,19 @@
 use super::*;
 
 impl RangeEditCoordinator {
+    /// Validates and settles one committed successor from admitted bounded source projections.
+    pub fn settle_committed(
+        &mut self,
+        key: MutationKey,
+        binding: RangeBinding,
+        positions: MutationPositions,
+        text: &RangeResidency,
+        objects: &ObjectResidency,
+    ) -> Result<MutationSettlement, MutationError> {
+        let commit = MutationCommit::from_admitted_sources(binding, positions, text, objects)?;
+        self.settle(key, MutationOutcome::Committed(commit))
+    }
+
     /// Admits the host's one exact terminal outcome and validates a committed successor extent.
     pub fn settle(
         &mut self,
@@ -17,11 +30,11 @@ impl RangeEditCoordinator {
                 actual: active.state,
             });
         }
-        if let MutationOutcome::Committed(successor) = outcome {
+        if let MutationOutcome::Committed(commit) = outcome {
             let expected_bytes = active
                 .base_extent
                 .byte_len()
-                .checked_sub(active.proposal.replacement().len())
+                .checked_sub(active.proposal.replacement_bytes().len())
                 .and_then(|bytes| bytes.checked_add(active.inserted_bytes))
                 .ok_or(MutationError::IncoherentSuccessor)?;
             let base_breaks = active
@@ -43,6 +56,7 @@ impl RangeEditCoordinator {
                     .checked_add(1)
                     .ok_or(MutationError::IncoherentSuccessor)?
             };
+            let successor = commit.binding();
             if successor.binding() != key.binding()
                 || successor.revision() == key.base_revision()
                 || successor.extent().byte_len() != expected_bytes
@@ -50,8 +64,47 @@ impl RangeEditCoordinator {
             {
                 return Err(MutationError::IncoherentSuccessor);
             }
+            if active.intended != Some(commit.positions()) {
+                return Err(MutationError::WrongSuccessorPositions);
+            }
+            for position in [
+                commit.positions().caret(),
+                commit.positions().selection_anchor(),
+                commit.positions().selection_head(),
+            ] {
+                let point = ByteRange::new(position.byte_offset, position.byte_offset)
+                    .map_err(|_| MutationError::IncoherentSuccessor)?;
+                successor
+                    .extent()
+                    .check_byte_range(point)
+                    .map_err(|_| MutationError::IncoherentSuccessor)?;
+            }
+            let proofs = commit.proofs().as_array();
+            if proofs.iter().any(|proof| proof.binding() != successor) {
+                return Err(MutationError::StalePositionProof);
+            }
         }
         let detached = active.detached;
+        if let MutationOutcome::Committed(commit) = outcome {
+            let proofs = commit.proofs().as_array();
+            let mut text_pages = Vec::with_capacity(3);
+            let mut object_pages = Vec::with_capacity(3);
+            for proof in proofs {
+                if let Some(page) = proof.text_page()
+                    && !text_pages.contains(&page)
+                {
+                    text_pages.push(page);
+                }
+                if !object_pages.contains(&proof.object_page()) {
+                    object_pages.push(proof.object_page());
+                }
+            }
+            self.record_release(MutationCounts {
+                proofs: 3,
+                source_pages: text_pages.len() + object_pages.len(),
+                ..MutationCounts::default()
+            });
+        }
         Ok(self.finish(key, outcome, detached))
     }
 }

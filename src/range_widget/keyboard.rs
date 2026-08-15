@@ -4,11 +4,12 @@ use crate::actions::{
     Backspace, Copy, Cut, Delete, DeleteWordBackward, DeleteWordForward, Enter, InsertNewline,
     MoveDown, MoveEnd, MoveHome, MoveLeft, MoveRight, MoveToEnd, MoveToStart, MoveUp, MoveWordLeft,
     MoveWordRight, Paste, Redo, SelectAll, SelectDown, SelectEnd, SelectHome, SelectLeft,
-    SelectRight, SelectToEnd, SelectToStart, SelectUp, SelectWordLeft, SelectWordRight, Undo,
+    SelectRight, SelectToEnd, SelectToStart, SelectUp, SelectWordLeft, SelectWordRight, Space,
+    Undo,
 };
 use crate::{
-    ByteOffset, ClipboardKind, MutationKind, RangeSelection, RangeTextInput, SegmentationDirection,
-    SegmentationKind,
+    ByteOffset, ClipboardKind, InlineObjectActivationKey, MutationKind, RangeSourceSelection,
+    RangeTextInput, SegmentationDirection, SegmentationKind,
 };
 
 impl RangeTextInput {
@@ -20,10 +21,50 @@ impl RangeTextInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let Some(surface) = self.interactive_surface() else {
+            return;
+        };
+        let selection = surface.selection();
+        if !extend && !selection.range().is_ok_and(|range| range.is_empty()) {
+            let position = match direction {
+                SegmentationDirection::Forward => selection.range().ok().map(|range| range.end()),
+                SegmentationDirection::Reverse => selection.range().ok().map(|range| range.start()),
+            };
+            if let Some(position) = position {
+                let _ = self.publish_source_selection(
+                    RangeSourceSelection::caret(position),
+                    None,
+                    None,
+                    cx,
+                );
+                return;
+            }
+        }
+        if let Some(object) = surface.adjacent_object(selection.head, direction) {
+            let head = match direction {
+                SegmentationDirection::Forward => object.trailing(),
+                SegmentationDirection::Reverse => object.leading(),
+            };
+            let anchor = if extend {
+                selection.anchor
+            } else {
+                match direction {
+                    SegmentationDirection::Forward => object.leading(),
+                    SegmentationDirection::Reverse => object.trailing(),
+                }
+            };
+            let next = RangeSourceSelection { anchor, head };
+            let activates_object = next.range().ok().is_some_and(|range| {
+                range.start() == object.leading() && range.end() == object.trailing()
+            });
+            let _ =
+                self.publish_source_selection(next, activates_object.then_some(object), None, cx);
+            return;
+        }
         let _ = self.begin_boundary(
             kind,
             direction,
-            super::interaction::PendingBoundaryAction::Move { extend },
+            super::interaction::PendingBoundaryAction::Move { extend, direction },
             window,
             cx,
         );
@@ -42,19 +83,29 @@ impl RangeTextInput {
         let Some(surface) = self.interactive_surface() else {
             return;
         };
-        if !surface.selection().range().is_empty() {
-            let _ = self.begin_replacement(
-                surface.selection().range(),
+        if !surface
+            .selection()
+            .range()
+            .is_ok_and(|range| range.is_empty())
+        {
+            let _ = self.begin_source_replacement(
+                surface.selection().range().expect("coherent selection"),
                 String::new(),
                 MutationKind::Edit,
                 cx,
             );
             return;
         }
+        if let Some(object) = surface.adjacent_object(surface.caret(), direction) {
+            let range = crate::SourceRange::new(object.leading(), object.trailing())
+                .expect("realized object has ordered edges");
+            let _ = self.begin_source_replacement(range, String::new(), MutationKind::Edit, cx);
+            return;
+        }
         let _ = self.begin_boundary(
             kind,
             direction,
-            super::interaction::PendingBoundaryAction::Delete,
+            super::interaction::PendingBoundaryAction::Delete { direction },
             window,
             cx,
         );
@@ -260,25 +311,40 @@ impl RangeTextInput {
         );
     }
 
-    fn select_document_offset(&mut self, offset: ByteOffset, extend: bool, cx: &mut Context<Self>) {
+    fn select_document_offset(
+        &mut self,
+        offset: ByteOffset,
+        direction: SegmentationDirection,
+        extend: bool,
+        cx: &mut Context<Self>,
+    ) {
         if !self.enabled {
             return;
         }
         let Some(surface) = self.interactive_surface() else {
             return;
         };
-        self.desired.selection = if extend {
-            RangeSelection {
+        let position = surface.source_position_for_byte(offset, direction).or_else(|| {
+            let endpoints = self.geometry.index()?.document_selection();
+            match direction {
+                SegmentationDirection::Forward => Some(endpoints.anchor),
+                SegmentationDirection::Reverse => Some(endpoints.head),
+            }
+            .filter(|position| position.byte_offset == offset)
+        });
+        let Some(position) = position else {
+            return;
+        };
+        let selection = if extend {
+            RangeSourceSelection {
                 anchor: surface.selection().anchor,
-                head: offset,
+                head: position,
             }
         } else {
-            RangeSelection::caret(offset)
+            RangeSourceSelection::caret(position)
         };
-        self.desired.composition = None;
-        self.desired.reveal_caret = true;
-        let _ = self.start_target();
-        cx.notify();
+        let selected_object = surface.object_selected_by(selection);
+        let _ = self.publish_source_selection(selection, selected_object, None, cx);
     }
 
     pub(super) fn move_to_start(
@@ -287,11 +353,17 @@ impl RangeTextInput {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.select_document_offset(ByteOffset::new(0), false, cx);
+        self.select_document_offset(
+            ByteOffset::new(0),
+            SegmentationDirection::Forward,
+            false,
+            cx,
+        );
     }
     pub(super) fn move_to_end(&mut self, _: &MoveToEnd, _: &mut Window, cx: &mut Context<Self>) {
         self.select_document_offset(
             ByteOffset::new(self.config.binding.extent().byte_len()),
+            SegmentationDirection::Reverse,
             false,
             cx,
         );
@@ -302,7 +374,12 @@ impl RangeTextInput {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.select_document_offset(ByteOffset::new(0), true, cx);
+        self.select_document_offset(
+            ByteOffset::new(0),
+            SegmentationDirection::Forward,
+            true,
+            cx,
+        );
     }
     pub(super) fn select_to_end(
         &mut self,
@@ -312,6 +389,7 @@ impl RangeTextInput {
     ) {
         self.select_document_offset(
             ByteOffset::new(self.config.binding.extent().byte_len()),
+            SegmentationDirection::Reverse,
             true,
             cx,
         );
@@ -320,14 +398,45 @@ impl RangeTextInput {
         if !self.enabled {
             return;
         }
-        self.desired.selection = RangeSelection {
-            anchor: ByteOffset::new(0),
-            head: ByteOffset::new(self.config.binding.extent().byte_len()),
-        };
-        self.desired.composition = None;
-        self.desired.reveal_caret = true;
-        let _ = self.start_target();
-        cx.notify();
+        if self.reject_restoration_task(cx).is_err() {
+            return;
+        }
+        let extent = self.config.binding.extent().byte_len();
+        let surface_selection = self.interactive_surface().and_then(|surface| {
+            Some(RangeSourceSelection {
+                anchor: surface.source_position_for_byte(
+                    ByteOffset::new(0),
+                    SegmentationDirection::Forward,
+                )?,
+                head: surface.source_position_for_byte(
+                    ByteOffset::new(extent),
+                    SegmentationDirection::Reverse,
+                )?,
+            })
+        });
+        let selection = surface_selection.or_else(|| {
+            self.geometry
+                .index()
+                .map(|index| index.document_selection())
+        });
+        if let Some(selection) = selection {
+            let selected_object = self
+                .interactive_surface()
+                .and_then(|surface| surface.object_selected_by(selection));
+            let _ = self.publish_source_selection(selection, selected_object, None, cx);
+            return;
+        }
+
+        let was_pending = self.pending_select_all;
+        self.pending_select_all = true;
+        if self.active_geometry.is_none() {
+            let started = self.start_index();
+            if started.is_err() {
+                self.pending_select_all = was_pending;
+            } else {
+                cx.notify();
+            }
+        }
     }
 
     fn move_vertical(&mut self, delta: i8, extend: bool, cx: &mut Context<Self>) {
@@ -337,23 +446,24 @@ impl RangeTextInput {
         let Some(surface) = self.interactive_surface() else {
             return;
         };
-        let Some(mut point) = surface.position_for_offset(surface.caret()) else {
+        let Some(mut point) = surface
+            .caret_bounds(self.config.layout.line_height)
+            .map(|bounds| bounds.origin)
+        else {
             return;
         };
         point.y += self.config.layout.line_height * f32::from(delta);
-        if let Some(offset) = surface.hit_test(point) {
-            self.desired.selection = if extend {
-                RangeSelection {
+        if let Some(crate::RangeSurfaceHit::Gap(position)) = surface.hit_test_composite(point) {
+            let selection = if extend {
+                RangeSourceSelection {
                     anchor: surface.selection().anchor,
-                    head: offset,
+                    head: position,
                 }
             } else {
-                RangeSelection::caret(offset)
+                RangeSourceSelection::caret(position)
             };
-            self.desired.composition = None;
-            self.desired.reveal_caret = true;
-            let _ = self.start_target();
-            cx.notify();
+            let selected_object = surface.object_selected_by(selection);
+            let _ = self.publish_source_selection(selection, selected_object, None, cx);
         }
     }
     pub(super) fn move_up(&mut self, _: &MoveUp, _: &mut Window, cx: &mut Context<Self>) {
@@ -370,7 +480,21 @@ impl RangeTextInput {
     }
 
     pub(super) fn enter(&mut self, _: &Enter, _: &mut Window, cx: &mut Context<Self>) {
+        if self
+            .activate_current_object(InlineObjectActivationKey::Enter, cx)
+            .consumes_key()
+        {
+            return;
+        }
         let _ = self.insert_text("\n".to_owned(), cx);
+    }
+    pub(super) fn space(&mut self, _: &Space, _: &mut Window, cx: &mut Context<Self>) {
+        if !self
+            .activate_current_object(InlineObjectActivationKey::Space, cx)
+            .consumes_key()
+        {
+            let _ = self.insert_text(" ".to_owned(), cx);
+        }
     }
     pub(super) fn insert_newline(
         &mut self,

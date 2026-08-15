@@ -16,6 +16,20 @@ fn assert_terminal_failure(
     );
 }
 
+fn assert_terminal_object_failure(
+    failure: &gpui_text_input::ExactGeometryFailure,
+    job: GeometryJobKey,
+    page: gpui_text_input::ObjectRequestKey,
+) {
+    assert_eq!(failure.release().jobs, vec![job]);
+    assert_eq!(failure.release().object_pages, vec![page]);
+    assert!(failure.release().counts.active_job_bytes > 0);
+    assert_eq!(
+        failure.release().counts.pending_object_page_bytes,
+        size_of::<gpui_text_input::ObjectRequestKey>()
+    );
+}
+
 fn subtract_counts(
     total: gpui_text_input::ExactGeometryCounts,
     base: gpui_text_input::ExactGeometryCounts,
@@ -31,10 +45,14 @@ fn subtract_counts(
         active_job_bytes: total.active_job_bytes - base.active_job_bytes,
         pending_page_items: total.pending_page_items - base.pending_page_items,
         pending_page_bytes: total.pending_page_bytes - base.pending_page_bytes,
+        pending_object_page_items: total.pending_object_page_items - base.pending_object_page_items,
+        pending_object_page_bytes: total.pending_object_page_bytes - base.pending_object_page_bytes,
         scan_buffer_items: total.scan_buffer_items - base.scan_buffer_items,
         scan_buffer_bytes: total.scan_buffer_bytes - base.scan_buffer_bytes,
         active_atom_items: total.active_atom_items - base.active_atom_items,
         active_atom_bytes: total.active_atom_bytes - base.active_atom_bytes,
+        deferred_object_items: total.deferred_object_items - base.deferred_object_items,
+        deferred_object_bytes: total.deferred_object_bytes - base.deferred_object_bytes,
         checkpoints: total.checkpoints - base.checkpoints,
         checkpoint_bytes: total.checkpoint_bytes - base.checkpoint_bytes,
         continuation_items: total.continuation_items - base.continuation_items,
@@ -55,16 +73,25 @@ fn borrowed_page_and_checkpoint_peaks_report_direct_exact_cap_and_release(cx: &m
             let mut owner = owner(&source, 8, 16, cap, 16);
             let job = start_index(&mut owner, 1);
             let next = page(&mut owner, job, &source, 0, 128, 1);
-            let result = owner.admit_page(job, &next, text_system);
+            let text = owner.admit_page(job, &next, text_system);
+            let result = text.and_then(|admission| {
+                assert_eq!(admission.progress(), ExactGeometryProgress::NeedObjects);
+                let text_required = admission.admission_required_bytes();
+                let objects = empty_object_page(&mut owner, job, &next, 1);
+                owner
+                    .admit_object_page(job, &next, &objects, text_system)
+                    .map(|admission| (objects.key(), text_required, admission))
+            });
             (owner, job, next.key(), result)
         };
 
         let (_, _, _, accepted) = exercise(512 * 1024);
-        let accepted = accepted.unwrap();
+        let (_, text_required, accepted) = accepted.unwrap();
         let required = accepted.admission_required_bytes();
+        assert!(text_required < required);
         assert!(required > 128);
         let (_, _, _, exact) = exercise(required);
-        assert_eq!(exact.unwrap().admission_required_bytes(), required);
+        assert_eq!(exact.unwrap().2.admission_required_bytes(), required);
 
         let (mut rejected, job, page, failure) = exercise(required - 1);
         let failure = failure.unwrap_err();
@@ -74,7 +101,8 @@ fn borrowed_page_and_checkpoint_peaks_report_direct_exact_cap_and_release(cx: &m
             gpui_text_input::ExactGeometryFailureStage::Checkpoint
         );
         assert_eq!(failure.admission_required_bytes(), required);
-        assert_terminal_failure(&failure, job, page);
+        let object_page = failure.release().object_pages[0];
+        assert_terminal_object_failure(&failure, job, object_page);
         assert!(128 < required - 1, "page payload fits the cap in isolation");
         let late = RangePage::new(
             PageId::new(99),
@@ -167,8 +195,12 @@ fn window_scan_and_finalize_errors_release_named_terminal_state(cx: &mut TestApp
         let first_window = cx.add_empty_window();
         first_window.update(|window, _| {
             assert_eq!(
-                window_owner
-                    .admit_page(job, &first, window.text_system())
+                admit_page_with_empty_objects(
+                    &mut window_owner,
+                    job,
+                    &first,
+                    window.text_system(),
+                )
                     .unwrap()
                     .progress(),
                 ExactGeometryProgress::Scanning
@@ -196,6 +228,7 @@ fn window_scan_and_finalize_errors_release_named_terminal_state(cx: &mut TestApp
         bad_layout.limits.maps = 1;
         let mut layout_owner = ExactGeometryOwner::new(
             binding("a\nb", 1),
+            PresentationGeneration::new(1),
             bad_layout,
             style(),
             ExactGeometryLimits::new(16, 8, 256 * 1024, 16 * 1024).unwrap(),
@@ -204,17 +237,25 @@ fn window_scan_and_finalize_errors_release_named_terminal_state(cx: &mut TestApp
         let layout_base = layout_owner.counts();
         let job = start_index(&mut layout_owner, 1);
         let next = page(&mut layout_owner, job, "a\nb", 0, 3, 1);
+        let text_admission = layout_owner
+            .admit_page(job, &next, window.text_system())
+            .unwrap();
+        assert_eq!(
+            text_admission.progress(),
+            ExactGeometryProgress::NeedObjects
+        );
+        let objects = empty_object_page(&mut layout_owner, job, &next, 1);
         let mut layout_active = subtract_counts(layout_owner.counts(), layout_base);
         layout_active.scan_buffer_items = 1;
         let failure = layout_owner
-            .admit_page(job, &next, window.text_system())
+            .admit_object_page(job, &next, &objects, window.text_system())
             .unwrap_err();
         assert!(matches!(failure.error(), ExactGeometryError::Layout(_)));
         assert_eq!(
             failure.stage(),
             gpui_text_input::ExactGeometryFailureStage::Scan
         );
-        assert_terminal_failure(&failure, job, next.key());
+        assert_terminal_object_failure(&failure, job, objects.key());
         assert_eq!(failure.release().counts, layout_active);
 
         let source = "xxxx";
@@ -232,19 +273,25 @@ fn window_scan_and_finalize_errors_release_named_terminal_state(cx: &mut TestApp
             1,
             vec![AtomFact::new(AtomId::new(7), atom_range, fragment, "atom")],
         );
+        let text_admission = owner.admit_page(job, &next, window.text_system()).unwrap();
+        assert_eq!(
+            text_admission.progress(),
+            ExactGeometryProgress::NeedObjects
+        );
+        let objects = empty_object_page(&mut owner, job, &next, 1);
         let mut expected_release = subtract_counts(owner.counts(), atom_base);
         expected_release.active_atom_items = 1;
         expected_release.active_atom_bytes =
             size_of::<gpui_text_input::AtomId>() + size_of::<ByteRange>();
         let failure = owner
-            .admit_page(job, &next, window.text_system())
+            .admit_object_page(job, &next, &objects, window.text_system())
             .unwrap_err();
         assert_eq!(failure.error(), &ExactGeometryError::SourceContract);
         assert_eq!(
             failure.stage(),
             gpui_text_input::ExactGeometryFailureStage::Finalize
         );
-        assert_terminal_failure(&failure, job, next.key());
+        assert_terminal_object_failure(&failure, job, objects.key());
         assert_eq!(failure.release().counts, expected_release);
     });
 }
@@ -257,20 +304,22 @@ fn publication_replacement_peak_is_exact_and_preserves_prior_on_one_under(cx: &m
             let mut owner = owner(source, 16, 16, cap, 16);
             let first = start_index(&mut owner, 1);
             let first_page = page(&mut owner, first, source, 0, source.len(), 1);
-            owner.admit_page(first, &first_page, text_system).unwrap();
+            admit_page_with_empty_objects(&mut owner, first, &first_page, text_system).unwrap();
             let prior = owner.index().unwrap().key();
             let second = start_index(&mut owner, 2);
             let second_page = page(&mut owner, second, source, 0, source.len(), 2);
-            let result = owner.admit_page(second, &second_page, text_system);
+            let result =
+                admit_page_with_empty_objects(&mut owner, second, &second_page, text_system);
             (owner, prior, second, second_page.key(), result)
         };
 
-        let (accepted_owner, prior, _, page, accepted) = exercise(512 * 1024);
+        let (accepted_owner, prior, _, _page, accepted) = exercise(512 * 1024);
         let accepted = accepted.unwrap();
         let required = accepted.admission_required_bytes();
         assert!(accepted_owner.counts().total_bytes() < required);
         assert_eq!(accepted.release().jobs, vec![prior]);
-        assert_eq!(accepted.release().pages, vec![page]);
+        assert!(accepted.release().pages.is_empty());
+        assert_eq!(accepted.release().object_pages.len(), 1);
         assert!(accepted.release().counts.publication_bytes > 0);
         assert!(accepted.release().counts.checkpoint_bytes > 0);
         assert!(accepted.release().counts.active_job_bytes > 0);
@@ -280,7 +329,7 @@ fn publication_replacement_peak_is_exact_and_preserves_prior_on_one_under(cx: &m
         assert_eq!(exact.admission_required_bytes(), required);
         assert_eq!(exact.release().jobs, vec![prior]);
 
-        let (rejected, prior, second, page, failure) = exercise(required - 1);
+        let (rejected, prior, second, _page, failure) = exercise(required - 1);
         let failure = failure.unwrap_err();
         assert_eq!(failure.error(), &ExactGeometryError::CapacityExceeded);
         assert_eq!(
@@ -288,7 +337,9 @@ fn publication_replacement_peak_is_exact_and_preserves_prior_on_one_under(cx: &m
             gpui_text_input::ExactGeometryFailureStage::Publication
         );
         assert_eq!(failure.admission_required_bytes(), required);
-        assert_terminal_failure(&failure, second, page);
+        assert_eq!(failure.release().jobs, vec![second]);
+        assert!(failure.release().pages.is_empty());
+        assert_eq!(failure.release().object_pages.len(), 1);
         assert_eq!(rejected.index().unwrap().key(), prior);
     });
 }
@@ -300,7 +351,7 @@ fn target_and_terminal_fast_path_replacements_report_prior_publications(cx: &mut
         let mut owner = owner(source, 16, 16, 256 * 1024, 16);
         let index = start_index(&mut owner, 1);
         let index_page = page(&mut owner, index, source, 0, source.len(), 1);
-        owner.admit_page(index, &index_page, text_system).unwrap();
+        admit_page_with_empty_objects(&mut owner, index, &index_page, text_system).unwrap();
 
         let first = owner
             .request_block_target(
@@ -309,9 +360,7 @@ fn target_and_terminal_fast_path_replacements_report_prior_publications(cx: &mut
             )
             .unwrap();
         let first_page = page(&mut owner, first.key(), source, 0, source.len(), 2);
-        owner
-            .admit_page(first.key(), &first_page, text_system)
-            .unwrap();
+        admit_page_with_empty_objects(&mut owner, first.key(), &first_page, text_system).unwrap();
         let prior_target = owner.target().unwrap().key();
 
         let second = owner
@@ -321,9 +370,9 @@ fn target_and_terminal_fast_path_replacements_report_prior_publications(cx: &mut
             )
             .unwrap();
         let second_page = page(&mut owner, second.key(), source, 0, source.len(), 3);
-        let replacement = owner
-            .admit_page(second.key(), &second_page, text_system)
-            .unwrap();
+        let replacement =
+            admit_page_with_empty_objects(&mut owner, second.key(), &second_page, text_system)
+                .unwrap();
         assert_eq!(replacement.release().jobs, vec![prior_target]);
         assert!(replacement.release().counts.output_record_bytes > 0);
         assert!(replacement.release().counts.active_job_bytes > 0);

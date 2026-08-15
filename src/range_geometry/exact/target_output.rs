@@ -46,6 +46,25 @@ fn fragment_vertical_bounds(
             fragment.bounds.origin.y,
             fragment.bounds.origin.y + fragment.bounds.size.height,
         ),
+        StreamingLayoutFragment::InlineObject(fragment) => (
+            fragment.bounds.origin.y,
+            fragment.bounds.origin.y + fragment.bounds.size.height,
+        ),
+        StreamingLayoutFragment::Boundary(fragment) => {
+            let start = fragment
+                .maps()
+                .iter()
+                .map(|map| map.position.y)
+                .min_by(|left, right| left.partial_cmp(right).unwrap())
+                .unwrap_or(prior.block_offset);
+            let end = fragment
+                .maps()
+                .iter()
+                .map(|map| map.position.y)
+                .max_by(|left, right| left.partial_cmp(right).unwrap())
+                .unwrap_or(prior.block_offset);
+            (start, end + line_height)
+        }
     }
 }
 
@@ -64,35 +83,43 @@ pub(super) fn update_target_source(
         let maps: &[gpui::StreamingLayoutMap] = match fragment {
             StreamingLayoutFragment::Text(fragment) => fragment.maps(),
             StreamingLayoutFragment::OversizeAtom(fragment) => fragment.maps(),
+            StreamingLayoutFragment::InlineObject(fragment) => fragment.maps(),
+            StreamingLayoutFragment::Boundary(fragment) => fragment.maps(),
         };
         for map in maps {
             if map.position.y > job.scanner.target_line_block {
                 if target.block_offset < map.position.y {
-                    job.scanner.target_source = Some(job.scanner.target_line_source);
+                    job.scanner.target_source = Some(job.scanner.target_line_position);
                     return;
                 }
                 job.scanner.target_line_block = map.position.y;
-                job.scanner.target_line_source = map.logical_offset;
+                job.scanner.target_line_position = map
+                    .logical_position
+                    .try_into()
+                    .expect("accepted GPUI map position is source-compatible");
             }
         }
     }
     if continuation.block_offset > target.block_offset {
-        job.scanner.target_source = Some(job.scanner.target_line_source);
+        job.scanner.target_source = Some(job.scanner.target_line_position);
     } else {
         if continuation.block_offset > job.scanner.target_line_block {
             job.scanner.target_line_block = continuation.block_offset;
-            job.scanner.target_line_source = continuation.next_logical_offset;
+            job.scanner.target_line_position = continuation
+                .next_position
+                .try_into()
+                .expect("accepted GPUI continuation is source-compatible");
         }
         if target.block_offset >= job.scanner.target_line_block
             && target.block_offset < continuation.block_offset + continuation.line_block_extent
         {
-            job.scanner.target_source = Some(job.scanner.target_line_source);
+            job.scanner.target_source = Some(job.scanner.target_line_position);
         }
     }
 }
 
 pub(super) fn finish_target_source(job: &mut ActiveJob) {
     if matches!(job.kind, ActiveKind::Target { .. }) && job.scanner.target_source.is_none() {
-        job.scanner.target_source = Some(job.scanner.target_line_source);
+        job.scanner.target_source = Some(job.scanner.target_line_position);
     }
 }

@@ -14,6 +14,11 @@ This crate does not own Beryl composer concepts, including image atoms, image ma
 
 This crate does not support non-GPUI UI frameworks.
 
+This crate does not retain accessibility-specific inline-object labels or descriptions, construct
+an operating-system accessibility tree, publish platform semantic nodes, or receive assistive-
+technology actions. Inline-object semantic state and activation eligibility are bounded app-neutral
+presentation and interaction facts only.
+
 # Decisions
 
 ## Standalone Crate
@@ -29,11 +34,12 @@ value, cursor and selection state, IME composition, generic editing and clipboar
 undo and redo history, focus integration, layout, scrolling, and app-neutral events.
 
 The range-backed multiline variant does not own authoritative text or storage. Its host owns the
-authoritative revisioned UTF-8 source, opaque binding identity, logical extent, bounded page source,
-staged edit sink, and any supported undo and redo authority. The widget owns only its fixed resident
-page window, revision-bound viewport and range requests, compact cursor and selection offsets,
-composition state, scroll state, and bounded pending-edit coordination. It never concatenates those
-pages into an authoritative whole value or reconstructs host undo history.
+authoritative revisioned UTF-8 and inline-object sources, opaque binding identity, logical extent,
+bounded page sources, staged edit sink, and any supported undo and redo authority. The widget owns
+only its fixed resident text-page and object-page windows, revision-bound viewport and range
+requests, compact cursor and selection source positions, composition state, scroll state, and
+bounded pending-edit coordination. It never concatenates those pages into an authoritative whole
+value or reconstructs host undo history.
 
 Every range-backed request names the exact binding identity and source revision. A response applies
 only to that binding and revision; rebinding never lets an old response become current by offset
@@ -51,12 +57,21 @@ without owning text-input policy or host text authority.
 
 Scrollbar geometry supplied by multiline text-input widgets is derived from the current authoritative text-input scroll offset and the latest measured scroll limits. Painted geometry may provide bounds and limits, but stale painted offsets must not drive scrollbar thumb position after wheel scrolling or keyboard reveal changes.
 
-The crate supports opaque inline atoms as app-neutral text ranges. Atoms have stable host-owned ids,
-visible display ranges, and fallback copy text. Owned-value variants keep atom ranges valid across
-generic edits, selection, navigation, deletion, undo, redo, and plain clipboard export. Range-backed
-hosts return authoritative atom ranges with their revisioned pages and mutation results, while the
-widget preserves those ranges within its coherent resident projection. The crate does not interpret
-what an atom means or serialize any host domain payload.
+The crate supports app-neutral source-covering atoms in owned-value and range-backed variants. A
+source-covering atom owns one nonempty UTF-8 source range. The range-backed variant additionally
+supports source-zero-width inline objects anchored at proven UTF-8 scalar boundaries; they consume
+no source bytes. Both forms have stable host-owned identities and fallback copy text. Each zero-
+width object additionally has one bounded host-owned order key that totally orders objects sharing
+an anchor, plus bounded presentation facts. The crate does not interpret
+what an object means or serialize any host domain payload.
+
+Owned-value variants keep their source-covering atom ranges valid across generic edits, selection,
+navigation, deletion, undo, redo, and plain clipboard export. Range-backed hosts return
+source-covering atoms with revisioned text pages and source-zero-width objects through a distinct
+revision-bound bounded object-page source. The widget merge-joins only the facts needed by its
+coherent resident projection. It never injects fallback or display text into authoritative UTF-8,
+constructs a synthetic source range for a zero-width object, or retains a whole-source object
+registry.
 
 Host applications own domain meaning for the text, field validation, settings apply behavior,
 command submission, transcript quoting, non-text attachments, backend input serialization,
@@ -68,9 +83,9 @@ owns the authoritative source and mutation boundary above.
 A range-backed binding is the pair of one opaque host binding identity and one exact source
 revision. Its source describes the checked logical UTF-8 extent and serves only bounded absolute
 ranges. Each page carries the binding and revision, its source-selected exact logical range, valid
-UTF-8 bytes, authoritative atom facts for that range, and checked preceding, following, and
-end-of-source facts. A page edge is a proven UTF-8 scalar boundary but is not implicitly a grapheme,
-word, atom, or logical-line boundary.
+UTF-8 bytes, authoritative source-covering atom facts for that range, and checked preceding,
+following, and end-of-source facts. A page edge is a proven UTF-8 scalar boundary but is not
+implicitly a grapheme, word, atom, or logical-line boundary.
 
 Page demands additionally carry a unique request identity and purpose, such as viewport, caret,
 selection, segmentation, clipboard, platform replay, restoration, or geometry indexing. An
@@ -94,6 +109,25 @@ Mismatched, duplicate, stale, non-progressing, over-cap, or invalid-UTF-8 respon
 resident projection and release their payload normally. The host and widget keep page payload,
 resident-page, and in-flight-request counts and bytes within configured finite limits.
 
+A source-zero-width object demand is separate from a UTF-8 page demand and carries the same exact
+binding and revision discipline plus the current host-owned presentation generation. It names one
+bounded byte interval or one exact byte anchor, an optional same-anchor order cursor, a direction,
+a unique request identity, and positive retained-byte and object-count ceilings. The response
+contains only objects inside that envelope, preserves strict `(anchor, order-key, object-id)` order,
+proves its preceding, following, and completion facts, and supplies a continuation cursor when more
+objects remain. A response may advance only its object cursor while consuming no UTF-8 bytes, so an
+arbitrarily large set at one anchor remains pageable. Duplicate identities, duplicate same-anchor
+order keys, inconsistent continuation facts, an object anchored at a non-scalar boundary, or a
+presentation-generation mismatch is malformed or obsolete as appropriate.
+
+One source position is a proven UTF-8 byte offset plus a constant-size inline gap witness. The gap
+witness names the adjacent source-zero-width objects at that anchor, or the before-all or after-all
+edge, and proves that those identities and order keys are adjacent in the exact source revision.
+It therefore represents positions before, between, and after any number of objects at one anchor
+without assigning source bytes to them. Caret, selection, composition, replacement, clipboard, and
+restoration endpoints use source positions. A byte offset alone is accepted only when no inline-gap
+choice is ambiguous at that revision.
+
 The crate owns authoritative grapheme, word, and logical-line segmentation across page boundaries.
 For each unresolved leading or trailing page edge it retains a typed continuation naming the
 binding, revision, segmentation kind, exact edge offset, and next bounded adjacent range. A
@@ -113,10 +147,26 @@ the whole document to resolve one continuation.
 ## Range-Backed Edit Transactions
 
 An edit, undo, or redo uses one host-owned staged transaction keyed by binding identity, base
-revision, and unique operation identity. The transaction names one exact replacement range and
-accepts inserted UTF-8 and atom changes only as bounded ordered fragments with checked offsets and a
-terminal fragment. Staging does not change authoritative text, and the host may reject the proposal
-or a fragment before commit without exposing a partial replacement.
+revision, and unique operation identity. The transaction names one exact composite replacement
+range whose endpoints are source positions. It accepts inserted UTF-8, source-covering atom
+changes, and source-zero-width object insertions, removals, replacements, or moves only as bounded
+ordered fragments with checked source positions and a terminal fragment. Staging does not change
+authoritative text or objects, and the host may reject the proposal or a fragment before commit
+without exposing a partial replacement.
+
+Typing, paste, deletion, cut, undo, redo, and a host-initiated inline-object command all enter the
+same transaction authority. A host-initiated command proposes its exact base binding, revision,
+composite range, operation identity, bounded fragments, and intended successor positions through
+the widget boundary; it cannot mutate widget projection state directly. The widget rejects an
+external proposal when the binding is stale, the editor is not mutable, another mutation owns the
+single transaction slot, or its bounded envelope is invalid.
+
+Within one transaction, unchanged zero-width objects before the replacement keep their relative
+place before inserted content and unchanged objects after it keep their relative place after that
+content. The host assigns authoritative successor anchors and same-anchor order keys, preserving
+the relative order of unchanged objects unless the transaction explicitly moves them. This rule
+allows text insertion before, between, or after same-anchor objects without manufacturing bytes for
+the objects themselves.
 
 Cancellation observed before commit admission terminates the transaction as `Cancelled` and leaves
 the base revision unchanged. Once commit is admitted, later cancellation cannot retract it or
@@ -128,10 +178,14 @@ with an internally uncertain commit must reconcile it before returning one of th
 outcomes; the widget never retries or infers the outcome.
 
 `Committed` atomically publishes the complete replacement and no other outcome publishes any of
-it. Terminal settlement releases every staged fragment and transaction reservation as one cleanup
-operation; cancellation, failure, or cleanup cannot delete a prefix, retain a suffix as visible
-text, or partially apply compensating work. The widget adopts the successor revision only with a
-coherent source projection for that exact committed result.
+it. The committed result supplies the exact successor binding and logical UTF-8 extent plus exact
+successor caret and selection source positions, or an exact host-produced position mapping for the
+captured endpoints. The widget validates those positions against the successor text and object
+sources before adoption. Terminal settlement releases every staged fragment and transaction
+reservation as one cleanup operation; cancellation, failure, or cleanup cannot delete a prefix,
+retain a suffix as visible content, publish only object changes, or partially apply compensating
+work. The widget adopts the successor revision only with a coherent source projection for that
+exact committed result.
 
 ## Range-Backed Geometry And Clipboard
 
@@ -157,10 +211,25 @@ that exceeds the cap is scanned to its exact logical end without retaining its c
 represented by one compact oversize-layout atom. Its source range remains authoritative for
 selection, editing, copy, and replacement.
 
+Source-zero-width objects enter that same inline layout stream at their exact anchors and in their
+authoritative same-anchor order. They contribute visual geometry but never advance the UTF-8 source
+cursor. A bounded immutable presentation fact supplies the realized object's display content,
+layout metrics or presentation key, semantic state, and activation eligibility without exposing
+host-domain payload. Presentation facts have separate
+configured count and retained-byte caps. A geometry-affecting presentation change starts a new
+layout epoch; a paint-only change still publishes under an exact presentation generation.
+
+The layout cursor and sparse checkpoints retain a compact object continuation in addition to the
+UTF-8 offset. They may stream arbitrarily many same-anchor objects through bounded pages and work
+quanta without retaining the complete set. The coherent viewport records exact bounds and hit
+regions only for realized objects in the viewport and bounded overscan. It does not keep an object
+realized merely to preserve an offscreen activation anchor.
+
 Each index job begins from one crate-produced compact layout checkpoint and advances through exact
 source pages and canonical shaping segments. A checkpoint contains no source text or shaped glyph
-payload; it carries the exact source offset, block offset, visual-line count, logical-line and
-segment position, inline placement continuation, and shaping-input identity needed to resume.
+payload; it carries the exact source offset and object cursor, block offset, visual-line count,
+logical-line and segment position, inline placement continuation, and shaping-input identity needed
+to resume.
 Checkpoints are produced only by the crate's streaming layout path and cannot be asserted by the
 host.
 
@@ -183,18 +252,24 @@ start the block-target job. The old coherent surface remains current while index
 resolution is pending. Estimated byte ratios, page-fragment shaping, caller-supplied checkpoint
 facts, and whole-line assembly never authorize source positioning.
 
-The painted viewport, pointer hit testing, caret geometry, selection geometry, and reveal target are
-exact for the current binding, revision, and layout epoch. Until the background index is complete,
-only the total visual-line count, total content height, and scrollbar extent may be explicitly
-estimated and refined. Estimated totals never authorize caret placement or selection geometry and
-become exact only when the complete index for that key is proven. Results from an older binding,
-revision, epoch, or job identity are obsolete and discarded.
+The painted viewport, pointer hit testing, caret geometry, selection geometry, inline-object
+geometry, and reveal target are exact for the current binding, revision, presentation generation,
+and layout epoch. Hit testing distinguishes every same-anchor object and every adjacent inline gap.
+An ordinary inline-object activation reports the exact binding, source revision, object identity,
+order key, presentation generation, layout epoch, realized bounds, and input origin. Keyboard
+activation reports the same realized anchor geometry. Until the background index is complete, only
+the total visual-line count, total content height, and scrollbar extent may be explicitly estimated
+and refined. Estimated totals never authorize caret placement, selection geometry, object
+activation, or source positioning and become exact only when the complete index for that key is
+proven. Results from an older binding, revision, presentation generation, epoch, or job identity
+are obsolete and discarded.
 
-Viewport publication freezes its logical selection, caret, composition, scroll anchor, exact
-checkpoint, resident pages, shaped fragments, atoms, caret and selection geometry, hit regions, and
-reveal facts under one key and one actual-value capacity admission. Desired interaction state is not
-current presentation state. Pending, failed, cancelled, stale, or over-cap replacement work leaves
-the complete prior coherent publication unchanged.
+Viewport publication freezes its composite selection, caret, composition, scroll anchor, exact
+checkpoint, resident text and object pages, shaped fragments, source-covering atoms, source-zero-
+width objects, caret and selection geometry, hit regions, and reveal facts under one key and one
+actual-value capacity admission. Desired interaction state is not current presentation state.
+Pending, failed, cancelled, stale, or over-cap replacement work leaves the complete prior coherent
+publication unchanged.
 
 Restoration validates the seed's binding, revision, extent, bounded intra-anchor offset, and every
 distinct caret, selection, scroll, viewport, and overscan range through bounded source and layout
@@ -203,11 +278,13 @@ relationship; an absent rectangle is valid only when that relationship proves th
 outside the published viewport. No restored surface publishes until these facts and the visible
 window are coherent.
 
-Range-backed copy and cut bind to the exact current binding, revision, and selected logical range.
-They read that representation through bounded pages under one host-configured hard clipboard-byte
-cap; the widget does not start a contiguous clipboard write unless it has the
-complete exact representation within that cap. Page failure, revision conflict, cancellation,
-rebind, unmount, or a representation exceeding the cap makes no document mutation.
+Range-backed copy and cut bind to the exact current binding, revision, and selected composite
+range. They merge UTF-8 and inline-object pages in source order, emitting each selected object's
+fallback text at its exact source position and same-anchor order. One host-configured hard
+clipboard-byte cap applies to the contiguous result; the widget does not start a clipboard write
+unless it has the complete exact representation within that cap. Text-page or object-page failure,
+revision conflict, cancellation, rebind, unmount, or a representation exceeding the cap makes no
+document mutation.
 
 Cut writes the complete clipboard representation first. Only a successful clipboard write may
 start the staged deletion transaction against the same binding, base revision, and selected range.
@@ -215,12 +292,97 @@ If that later deletion conflicts, is rejected, is cancelled, or fails, the copie
 may remain but that deletion transaction applies no change. The crate provides no cut path that
 deletes before or independently of successful copy.
 
+## Range-Backed Atomic Interaction Publication
+
+The range-backed widget owns one bounded staged-publication boundary for layout, presentation,
+true-rebind, selection, reveal, and inline-object activation transitions that cross geometry, text
+or object residency, queued host requests, coherent-surface candidates, or interaction events. A
+transition prepares one compact candidate against the exact current widget generation. It does not
+mutate current owners, desired state, active-object state, request queues, counters, scrollbar
+ownership, or externally visible events while admission remains fallible.
+
+The candidate contains only the proposed operation and bounded deltas: exact geometry input and
+job replacement, the retirement set for superseded jobs and requests, post-retirement text and
+object residency dispositions, queued and dispatched request effects, proposed desired selection
+and surface candidate, an already prepared terminal coherent surface when the target is complete,
+active-object result, compact lifecycle changes, and deferred events. It contains no coherent-
+surface copy, resident-page graph copy, whole source, object registry, or second mounted owner
+graph.
+
+Host page delivery enters this boundary before consuming its dispatched key or changing text,
+object, or geometry residency. Text and object owners prepare an inbound-page disposition and a
+read-only projected resident iterator. Nonterminal geometry preparation owns only the new scanner
+delta and preallocated destination storage. Terminal preparation constructs the final compact
+target from the admitted records plus that delta and charges its coexistence with the unchanged
+active job and all current resident pages. Commit then moves the prepared admissions and clears the
+dispatched key without rollback or allocation.
+
+Pending Select All is part of terminal preparation rather than a successor transition. The exact
+completed index retains constant-size first and last object cursors, from which the candidate derives
+document endpoints before coherent-surface admission. Rejection therefore preserves the prior
+selection and request state; success publishes the terminal surface with the exact full selection.
+
+Preparation computes residency against a read-only post-retirement projection. Entries named by
+the retirement set are treated as absent and their exact charges are subtracted before the new
+demand is classified. Coalescing is valid only onto a pending request that survives the same
+candidate; otherwise the demand uses a surviving resident page or reserves one new exact request.
+Rapid target replacement prepares retirement and successor admission together, so it neither
+cancels the current target before successor admission nor rejects the successor merely because the
+superseded target still owns the single active slot.
+
+Candidate admission uses delta-only recursive charges and includes every retained byte and semantic
+item owned by the candidate itself: each box, each vector's actual allocated capacity, the proposed
+geometry job and terminal surface, request and event records, and their peak coexistence with the
+current owners and prior coherent publication. Preparation allocates one empty bounded destination
+request queue with capacity for surviving current requests and prepared effects. Commit moves
+surviving requests into that storage without cloning their payloads or allocating. Exact fit is
+accepted and one under is rejected. Preparation may inspect only configured bounded owner
+collections and compact checkpoints; it performs no logical-source scan and allocates no whole-
+state snapshot.
+
+After every capacity, identity, arithmetic, owner-key, residency, queue, geometry, surface, and
+lifecycle check succeeds, commit runs synchronously without yielding or invoking a host callback.
+The scrollbar's read-only exact-current-owner check is the final fallible gate for true rebind. The
+widget first moves the prepared deltas into geometry, residency, lifecycle, the preallocated request
+queue, desired, coherent-surface or surface-candidate, active-object, and identity-counter state.
+It then performs the now-infallible exact scrollbar-owner replacement before any request, event,
+drag-cancellation, or notification effect becomes observable. Only after both owners are coherent
+may it expose cancellations and releases, new page or object requests, realization-loss or
+activation events, restoration outcomes, drag cancellation, and notification. A reentrant response
+or host action therefore observes only the fully committed generation.
+
+Any rejected or discarded candidate releases only its own exactly accounted temporary capacity.
+The prior geometry key and configuration, coherent surface, current and desired selection, active
+object, resident and pending pages, request queues, counters, scrollbar owner, and event stream
+remain unchanged. Rejection uses no compensating rollback and cannot leave a later publication path
+for the rejected desired state.
+
+Candidate preparation and commit occur only on explicit interaction or lifecycle transitions.
+Ordinary render, paint, caret lookup, hit testing, presentation-metadata reads, and stable-frame work read
+the immutable coherent surface directly and do not inspect a candidate. This boundary adds no lock,
+registry, routine scan, or per-lookup allocation to those paths and preserves GPUI's existing text-
+map asymptotics and constant-time realized-object lookup after fragment identification.
+
+Wheel, scrollbar, reveal, and other rapid-retarget entry points derive proposed desired state in a
+local value and pass it directly into candidate preparation. They never write widget desired state
+or notify merely because preparation was attempted. A terminal target is not a special fallible
+tail: its coherent surface, restoration validation, replacement peak, active-object loss, and
+request-queue transfer are prepared and charged inside the same candidate before mutation.
+
 ## Text Model
 
 The owned-value text model stores plain UTF-8 text and exposes caret, selection, marked-text, and
-edit operations in terms of valid text boundaries. The range-backed model exposes the same compact
-editor coordinates against one exact host revision while retaining only bounded resident pages;
-nonresident boundary decisions request the required revision-bound range instead of guessing.
+edit operations in terms of valid text boundaries and inline gaps. The range-backed model exposes
+compact source positions against one exact host revision while retaining only bounded text and
+object pages; nonresident byte-boundary or inline-gap decisions request the required revision-bound
+facts instead of guessing.
+
+Left and right movement traverse the composite source order. Each source-zero-width object is one
+indivisible step even when several share one byte anchor. The caret may stop before the first,
+between adjacent objects, and after the last. Selection endpoints preserve those exact gaps, so a
+selection may include one same-anchor object without including its neighbors or any source byte.
+Backspace, Delete, replacement, and cut target the adjacent or selected object through the ordinary
+staged mutation boundary; they never emulate object removal by deleting display or fallback text.
 
 Character-wise movement and deletion operate on Unicode grapheme boundaries. Word-wise movement,
 selection, deletion, and double-click selection use the crate-owned Unicode word segments exposed by
@@ -238,9 +400,11 @@ Read-only mode preserves focus, caret movement, selection, copy, and text-range 
 ## Widget Layer
 
 The GPUI widget layer owns focus handling, platform text-input integration, keyboard action routing
-for baseline text editing, pointer hit testing, selection painting, caret painting, placeholder
-rendering, and visible-range behavior. In the range-backed variant these mechanics operate only on
-the current coherent resident projection and the bounded coordination state defined above.
+for baseline text editing, pointer hit testing, selection painting, caret painting, realized inline-
+object presentation, placeholder rendering, and visible-range
+behavior. In the range-backed variant these mechanics operate only on the current coherent resident
+projection and the bounded coordination state defined above. The widget has no accessibility-
+specific payload, OS accessibility tree, or assistive-technology action route.
 
 The widget exposes app-neutral callbacks, events, and key-propagation policies for text-input activity. Those hooks report or delegate baseline text-input activity; they do not encode host commands such as settings apply, conversation submission, color-picker opening, numeric stepping, or backend steering.
 
@@ -252,12 +416,13 @@ widget and cannot mutate a later binding. Late responses are rejected by their r
 
 At a quiescent range-backed cut with no active composition, pre-commit edit, or admitted edit, the
 host may synchronously request one compact restoration seed before rebind or unmount. The seed
-contains only the exact binding identity, source revision and logical extent, logical caret and
-selection offsets, a logical vertical-scroll anchor with its bounded intra-anchor offset, and an
-optional opaque host-owned undo/redo frontier identity and availability fact. The widget does not
-inspect that host-owned frontier. The seed contains no text, atom, resident page, shaped layout,
-composition, undo payload, clipboard payload, pending request, job, or staged mutation. A host that
-requires exact restoration must first fence
+contains only the exact binding identity, source revision and logical extent, caret and selection
+source positions with their constant-size inline-gap witnesses, a logical vertical-scroll anchor
+with its bounded intra-anchor object continuation, and an optional opaque host-owned undo/redo
+frontier identity and availability fact. The widget does not inspect that host-owned frontier. The
+seed contains no text, object presentation, resident page, shaped layout, composition, undo
+payload, clipboard payload, pending request, job, or staged mutation. A host that requires exact
+restoration must first fence
 new edits and settle or explicitly cancel every nonquiescent state through its ordinary exact
 boundary; an already admitted commit cannot be covered by a seed captured at its prior revision.
 
@@ -268,11 +433,12 @@ exact host settlement arrives; rebind or unmount may detach it, but seed export 
 describe its base revision as current.
 
 A new range-backed widget may accept that seed only for the identical binding, revision, and logical
-extent. It validates the compact offsets and required UTF-8 boundaries through bounded source pages,
-re-requests the ranges needed for caret, selection, viewport, and overscan, and publishes no
-restored surface until those facts are coherent. A mismatched, malformed, or boundary-invalid seed
-is rejected rather than clamped, translated to another revision, or used to retain old widget
-state. Restoration transfers no resident or staged capacity from the unmounted instance.
+extent. It validates the compact positions, UTF-8 boundaries, adjacent-object gap witnesses, and
+scroll continuation through bounded text and object pages, re-requests the ranges needed for caret,
+selection, viewport, and overscan, and publishes no restored surface until those facts are
+coherent. A mismatched, malformed, boundary-invalid, or nonadjacent seed is rejected rather than
+clamped, translated to another revision, or used to retain old widget state. Restoration transfers
+no resident or staged capacity from the unmounted instance.
 
 Owned-value undo and redo histories are retained editor mechanics, not host application state. Each
 stack is bounded by both snapshot count and retained UTF-8 byte budget, and hosts may clear that
@@ -284,4 +450,7 @@ range-backed edits; the widget retains no authoritative undo snapshot stack for 
 
 The public API uses generic text-input names and value types. It must not expose host application nouns, Codex protocol types, Beryl workspace types, settings-window row types, image-label concepts, or persistence concepts.
 
-Inline non-text hooks must be modeled as opaque editor primitives with host-owned semantics. The crate must not special-case Beryl images, settings fields, or backend payloads.
+Inline non-text hooks must be modeled as opaque editor primitives with host-owned semantics. Stable
+object identities, order keys, bounded presentation facts, source positions, and
+activation geometry are generic widget data; they carry no application meaning. The crate must not
+special-case Beryl images, settings fields, backend payloads, or any other consumer domain.

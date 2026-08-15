@@ -1,20 +1,25 @@
 use std::sync::Arc;
 
 use gpui::{
-    FontFallbacks, FontFeatures, SharedString, StreamingLayoutBinding, StreamingLayoutFragment,
-    StreamingLayoutLimits, TestAppContext, TextRun, WindowTextSystem, black, font, px,
+    FontFallbacks, FontFeatures, SharedString, StreamingBoundaryKind, StreamingLayoutBinding,
+    StreamingLayoutFragment, StreamingLayoutLimits, StreamingLayoutPosition, TestAppContext,
+    TextRun, WindowTextSystem, black, font, px,
 };
 use gpui_text_input::{
     AtomFact, AtomId, BindingId, BlockTarget, ByteOffset, ByteRange, ExactGeometryError,
     ExactGeometryLimits, ExactGeometryOwner, ExactGeometryProgress, ExactGeometryRelease,
-    GeometryJobId, GeometryJobKey, LogicalExtent, PageEdgeFact, PageId, PageRequestId,
-    RangeBinding, RangePage, SourceRevision, StreamingGeometryStyle, StreamingOversizePresentation,
+    GeometryJobId, GeometryJobKey, InlineObjectFact, InlineObjectGap, InlineObjectId,
+    InlineObjectOrder, InlineObjectPresentation, LogicalExtent, ObjectPage, ObjectPageEdgeFact,
+    ObjectPageId, ObjectRequestId, PageEdgeFact, PageId, PageRequestId, PresentationGeneration,
+    RangeBinding, RangePage, SourcePosition, SourceRevision, StreamingGeometryStyle,
+    StreamingOversizePresentation,
 };
 
 fn layout(segment_bytes: usize, wrap_width: f32) -> StreamingLayoutBinding {
     StreamingLayoutBinding {
         input_id: 41,
         segment_policy_id: 73,
+        start_position: StreamingLayoutPosition::at(0),
         wrap_width: px(wrap_width),
         font_size: px(10.),
         line_height: px(14.),
@@ -26,6 +31,7 @@ fn layout(segment_bytes: usize, wrap_width: f32) -> StreamingLayoutBinding {
             wraps: 128,
             maps: 257,
             fragments: 1,
+            retained_items: 16 * 1024,
             retained_bytes: 128 * 1024,
         },
     }
@@ -115,6 +121,7 @@ fn owner_with_retained_items(
 ) -> Result<ExactGeometryOwner, gpui_text_input::ExactGeometryError> {
     ExactGeometryOwner::new(
         binding(source, 1),
+        PresentationGeneration::new(1),
         layout(segment_bytes, wrap_width),
         geometry_style,
         ExactGeometryLimits::new(256, checkpoint_cap, byte_cap, retained_items).unwrap(),
@@ -189,6 +196,47 @@ fn start_index(owner: &mut ExactGeometryOwner, id: u64) -> GeometryJobKey {
     start.key()
 }
 
+fn admit_page_with_empty_objects(
+    owner: &mut ExactGeometryOwner,
+    job: GeometryJobKey,
+    page: &RangePage,
+    text_system: &WindowTextSystem,
+) -> Result<gpui_text_input::ExactGeometryAdmission, gpui_text_input::ExactGeometryFailure> {
+    let admission = owner.admit_page(job, page, text_system)?;
+    if admission.progress() != ExactGeometryProgress::NeedObjects {
+        return Ok(admission);
+    }
+    let object_page = empty_object_page(owner, job, page, page.key().id().get());
+    owner.admit_object_page(job, page, &object_page, text_system)
+}
+
+fn empty_object_page(
+    owner: &mut ExactGeometryOwner,
+    job: GeometryJobKey,
+    page: &RangePage,
+    id: u64,
+) -> ObjectPage {
+    let id = ObjectRequestId::new(id);
+    let request = owner
+        .request_object_page(job, id, 8, 16 * 1024)
+        .expect("object demand follows admitted text page");
+    let edge = request.key().demand().cursor().map_or(
+        ObjectPageEdgeFact::EnvelopeBoundary,
+        ObjectPageEdgeFact::Continues,
+    );
+    let object_page = ObjectPage::new(
+        ObjectPageId::new(page.id().get()),
+        request.key(),
+        vec![],
+        edge,
+        ObjectPageEdgeFact::EnvelopeBoundary,
+        true,
+        None,
+    )
+    .expect("exact empty object response");
+    object_page
+}
+
 fn scan_index(
     text_system: &WindowTextSystem,
     source: &str,
@@ -209,7 +257,7 @@ fn scan_index(
     let mut start = 0;
     for (ix, &end) in partitions.iter().enumerate() {
         let page = page(&mut owner, job, source, start, end, ix as u64 + 1);
-        let progress = owner.admit_page(job, &page, text_system).unwrap();
+        let progress = admit_page_with_empty_objects(&mut owner, job, &page, text_system).unwrap();
         assert_eq!(
             progress.progress(),
             if end == source.len() {
@@ -236,7 +284,7 @@ fn drive_ascii_job(
     loop {
         let end = start.saturating_add(page_bytes).min(source.len());
         let page = page(owner, job, source, start, end, request_id);
-        let admission = owner.admit_page(job, &page, text_system).unwrap();
+        let admission = admit_page_with_empty_objects(owner, job, &page, text_system).unwrap();
         if admission.progress() != ExactGeometryProgress::Scanning {
             return admission.progress();
         }
@@ -250,7 +298,7 @@ fn fragment_facts(
 ) -> Vec<(std::ops::Range<u64>, Vec<(u64, u32, u32)>)> {
     fragments
         .iter()
-        .map(|fragment| {
+        .filter_map(|fragment| {
             let (range, maps) = match fragment {
                 StreamingLayoutFragment::Text(fragment) => {
                     (fragment.logical_range(), fragment.maps().as_ref())
@@ -258,19 +306,22 @@ fn fragment_facts(
                 StreamingLayoutFragment::OversizeAtom(fragment) => {
                     (fragment.logical_range.clone(), fragment.maps().as_ref())
                 }
+                StreamingLayoutFragment::InlineObject(_) | StreamingLayoutFragment::Boundary(_) => {
+                    return None;
+                }
             };
-            (
-                range,
+            Some((
+                range.start.byte_offset..range.end.byte_offset,
                 maps.iter()
                     .map(|map| {
                         (
-                            map.logical_offset,
+                            map.logical_position.byte_offset,
                             f32::from(map.position.x).to_bits(),
                             f32::from(map.position.y).to_bits(),
                         )
                     })
                     .collect(),
-            )
+            ))
         })
         .collect()
 }
@@ -284,6 +335,8 @@ fn with_text_system(test: &mut TestAppContext, f: impl FnOnce(&WindowTextSystem)
 mod canonical;
 #[path = "exact_geometry/capacity_lifecycle.rs"]
 mod capacity_lifecycle;
+#[path = "exact_geometry/composite_objects.rs"]
+mod composite_objects;
 #[path = "exact_geometry/precontext.rs"]
 mod precontext;
 #[path = "exact_geometry/precontext_atoms.rs"]
