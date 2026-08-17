@@ -10,15 +10,11 @@ use crate::{
 
 use super::{
     ActiveJob, ActiveKind, ActivePageUse, BlockTarget, BlockTargetPublication, DesiredTarget,
-    ExactGeometryError, ExactGeometryOwner, ExactGeometryProgress, ExactGeometryRelease,
-    ExactGeometryStart, OwnerInputs, PendingInput, Scanner, StreamingGeometryStyle, accounting,
-    validation,
+    ExactGeometryError, ExactGeometryIndex, ExactGeometryOwner, ExactGeometryProgress,
+    ExactGeometryRelease, ExactGeometryStart, OwnerInputs, PendingInput, Scanner,
+    StreamingGeometryStyle, accounting, validation,
 };
 
-/// One bounded, fully prepared exact-geometry delta owned by a widget transition candidate.
-///
-/// Preparation allocates and validates every replacement record. `commit` only moves those
-/// records into the owner and drops the named retired records.
 #[derive(Debug)]
 pub(crate) struct PreparedGeometryTransition {
     key: GeometryKey,
@@ -294,6 +290,51 @@ impl ExactGeometryOwner {
             .index
             .as_deref()
             .ok_or(ExactGeometryError::IndexIncomplete)?;
+        self.prepare_target_replacement_from_index_inner(
+            index, key, job_id, request_id, target, anchor, release,
+        )
+    }
+
+    pub(crate) fn prepare_target_replacement_from_index(
+        &self,
+        index: &ExactGeometryIndex,
+        job_id: GeometryJobId,
+        request_id: PageRequestId,
+        target: BlockTarget,
+        anchor: Option<SourcePosition>,
+    ) -> Result<PreparedGeometryTransition, ExactGeometryError> {
+        super::target::validate_target(target)?;
+        let inputs = self.inputs()?;
+        if anchor
+            .is_some_and(|anchor| anchor.byte_offset.get() > inputs.binding.extent().byte_len())
+        {
+            return Err(ExactGeometryError::SourceContract);
+        }
+        self.admit_transition_job_id(job_id)?;
+        let key = GeometryJobKey::new(self.key, job_id);
+        self.prepare_target_replacement_from_index_inner(
+            index,
+            key,
+            job_id,
+            request_id,
+            target,
+            anchor,
+            self.preview_target_replacement_release(),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_target_replacement_from_index_inner(
+        &self,
+        index: &ExactGeometryIndex,
+        key: GeometryJobKey,
+        job_id: GeometryJobId,
+        request_id: PageRequestId,
+        target: BlockTarget,
+        anchor: Option<SourcePosition>,
+        release: ExactGeometryRelease,
+    ) -> Result<PreparedGeometryTransition, ExactGeometryError> {
+        let inputs = self.inputs()?;
         let predecessor = if let Some(anchor) = anchor {
             let include_preceding_object = matches!(
                 anchor.gap,
@@ -350,7 +391,8 @@ impl ExactGeometryOwner {
         }
 
         self.admit_transition_request_id(request_id)?;
-        let fixed = accounting::post_target_retirement_counts(self).total_bytes();
+        let fixed =
+            accounting::counts(self.inputs.as_deref(), None, None, Some(index), None).total_bytes();
         let active = self.prepare_target_active(
             key,
             target,

@@ -1,4 +1,3 @@
-/// Exact byte and semantic-record residency of the geometry owner graph.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ExactGeometryCounts {
     pub owner_items: usize,
@@ -23,7 +22,6 @@ pub struct ExactGeometryCounts {
     pub checkpoint_bytes: usize,
     pub continuation_items: usize,
     pub continuation_bytes: usize,
-    /// Exact GPUI semantic records retained by output fragments.
     pub output_items: usize,
     pub output_record_bytes: usize,
     pub output_payload_bytes: usize,
@@ -49,7 +47,6 @@ impl ExactGeometryCounts {
             .saturating_add(self.publication_bytes)
     }
 
-    /// Checked-by-admission semantic records retained by the owner graph.
     pub fn total_items(self) -> usize {
         self.owner_items
             .saturating_add(self.input_items)

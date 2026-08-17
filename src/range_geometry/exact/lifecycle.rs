@@ -5,7 +5,6 @@ use crate::{PageRequestKey, RangeBinding};
 use super::*;
 
 impl ExactGeometryOwner {
-    /// Reports the exact peak owner bytes required to replace layout inputs.
     pub fn set_layout_required_bytes(
         &self,
         layout: &StreamingLayoutBinding,
@@ -26,7 +25,6 @@ impl ExactGeometryOwner {
         Ok(accounting::counts_with_input_candidate(self, &candidate).total_bytes())
     }
 
-    /// Reports the exact peak semantic records required to replace layout inputs.
     pub fn set_layout_required_items(
         &self,
         layout: &StreamingLayoutBinding,
@@ -176,7 +174,6 @@ impl ExactGeometryOwner {
         Ok(release)
     }
 
-    /// Replaces object presentation inputs without changing the geometry-affecting layout epoch.
     pub fn set_presentation_generation(
         &mut self,
         presentation_generation: crate::PresentationGeneration,
@@ -212,10 +209,6 @@ impl ExactGeometryOwner {
         accounting::owner_counts(self)
     }
 
-    /// Moves the current exact target publication to its final surface owner.
-    ///
-    /// The shaped graph is not cloned. Its charge therefore transfers to the caller and stops
-    /// contributing to this coordinator's counts.
     pub fn take_target(&mut self) -> Option<BlockTargetPublication> {
         self.target.take().map(|target| *target)
     }

@@ -317,6 +317,12 @@ target from the admitted records plus that delta and charges its coexistence wit
 active job and all current resident pages. Commit then moves the prepared admissions and clears the
 dispatched key without rollback or allocation.
 
+A malformed text-page, object-page, or residency-backed geometry delivery terminally settles the
+named request or job step and releases both the delivered payload and its reservation. It is not
+retryable under the same key. A well-formed exact-key delivery rejected only because candidate
+capacity or terminal publication capacity is unavailable consumes neither the dispatched key nor
+its reservation, changes no resident owner, and remains retryable with that exact key.
+
 Pending Select All is part of terminal preparation rather than a successor transition. The exact
 completed index retains constant-size first and last object cursors, from which the candidate derives
 document endpoints before coherent-surface admission. Rejection therefore preserves the prior
@@ -362,6 +368,12 @@ Ordinary render, paint, caret lookup, hit testing, presentation-metadata reads, 
 the immutable coherent surface directly and do not inspect a candidate. This boundary adds no lock,
 registry, routine scan, or per-lookup allocation to those paths and preserves GPUI's existing text-
 map asymptotics and constant-time realized-object lookup after fragment identification.
+
+Prepaint may spend one configured bounded work quantum advancing already admitted geometry whose
+required text, object, and continuation inputs are resident. This resident-only advancement stops
+before dispatching a request, invoking a host callback, or performing any other external work. If
+it reaches terminal object work, it leaves terminal object publication and every externally
+observable effect to the widget's ordinary service path through this staged-publication boundary.
 
 Wheel, scrollbar, reveal, and other rapid-retarget entry points derive proposed desired state in a
 local value and pass it directly into candidate preparation. They never write widget desired state

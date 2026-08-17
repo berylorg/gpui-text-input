@@ -34,8 +34,9 @@ fn reach_atom_context(
     job: GeometryJobKey,
     text_system: &WindowTextSystem,
     atoms: &[(AtomId, ByteRange)],
+    first_id: u64,
 ) -> (gpui_text_input::PageRequest, RangePage) {
-    for id in 1..256 {
+    for id in first_id..first_id + 256 {
         let request = owner.request_page(job, PageRequestId::new(id)).unwrap();
         let page = response_with_atoms(source, id, request, 4, atoms);
         if demand(request).1 == gpui_text_input::PageDirection::Backward {
@@ -49,6 +50,105 @@ fn reach_atom_context(
         );
     }
     panic!("atom fixture never requested pre-context")
+}
+
+#[gpui::test]
+fn index_text_responses_require_object_then_forward_replay_successors(cx: &mut TestAppContext) {
+    with_text_system(cx, |text_system| {
+        let source = "\u{1f1e6}".repeat(13);
+        let atoms = [(AtomId::new(77), ByteRange::from_u64(0, 4).unwrap())];
+        let mut owner = bounded_owner(&source, 64);
+        let job = start_index(&mut owner, 1);
+
+        let traverse_request = owner.request_page(job, PageRequestId::new(1)).unwrap();
+        let traverse = response_with_atoms(&source, 1, traverse_request, 4, &atoms);
+        let admission = owner.admit_page(job, &traverse, text_system).unwrap();
+        assert_eq!(admission.progress(), ExactGeometryProgress::NeedObjects);
+        assert!(owner.index().is_none());
+        assert!(owner.target().is_none());
+        let objects = empty_object_page(&mut owner, job, &traverse, 2);
+        assert_eq!(
+            objects.key().purpose(),
+            gpui_text_input::ObjectPurpose::GeometryIndex
+        );
+        assert_eq!(
+            owner
+                .admit_object_page(job, &traverse, &objects, text_system)
+                .unwrap()
+                .progress(),
+            ExactGeometryProgress::Scanning
+        );
+
+        let (_, context) = reach_atom_context(&mut owner, &source, job, text_system, &atoms, 100);
+        assert_eq!(
+            owner
+                .admit_page(job, &context, text_system)
+                .unwrap()
+                .progress(),
+            ExactGeometryProgress::Scanning
+        );
+        let replay = owner.request_page(job, PageRequestId::new(500)).unwrap();
+        assert_eq!(demand(replay).1, gpui_text_input::PageDirection::Forward);
+        assert_eq!(
+            replay.key().purpose(),
+            gpui_text_input::PagePurpose::GeometryIndex
+        );
+        assert!(owner.index().is_none());
+        assert!(owner.target().is_none());
+    });
+}
+
+#[gpui::test]
+fn target_text_responses_require_object_then_forward_replay_successors(cx: &mut TestAppContext) {
+    with_text_system(cx, |text_system| {
+        let source = "\u{1f1e6}".repeat(13);
+        let atoms = [(AtomId::new(77), ByteRange::from_u64(0, 4).unwrap())];
+        let mut owner = bounded_owner(&source, 64);
+        let index = start_index(&mut owner, 1);
+        let (progress, _) = drive_atom_job(&mut owner, &source, index, text_system, 4, &atoms, 1);
+        assert_eq!(progress, ExactGeometryProgress::IndexComplete);
+        let job = owner
+            .request_block_target(
+                GeometryJobId::new(2),
+                BlockTarget::new(px(14.), px(28.), px(14.)),
+            )
+            .unwrap()
+            .key();
+
+        let traverse_request = owner.request_page(job, PageRequestId::new(1_000)).unwrap();
+        let traverse = response_with_atoms(&source, 1_000, traverse_request, 4, &atoms);
+        let admission = owner.admit_page(job, &traverse, text_system).unwrap();
+        assert_eq!(admission.progress(), ExactGeometryProgress::NeedObjects);
+        assert!(owner.target().is_none());
+        let objects = empty_object_page(&mut owner, job, &traverse, 1_001);
+        assert_eq!(
+            objects.key().purpose(),
+            gpui_text_input::ObjectPurpose::GeometryTarget
+        );
+        assert_eq!(
+            owner
+                .admit_object_page(job, &traverse, &objects, text_system)
+                .unwrap()
+                .progress(),
+            ExactGeometryProgress::Scanning
+        );
+
+        let (_, context) = reach_atom_context(&mut owner, &source, job, text_system, &atoms, 1_100);
+        assert_eq!(
+            owner
+                .admit_page(job, &context, text_system)
+                .unwrap()
+                .progress(),
+            ExactGeometryProgress::Scanning
+        );
+        let replay = owner.request_page(job, PageRequestId::new(1_500)).unwrap();
+        assert_eq!(demand(replay).1, gpui_text_input::PageDirection::Forward);
+        assert_eq!(
+            replay.key().purpose(),
+            gpui_text_input::PagePurpose::GeometryTarget
+        );
+        assert!(owner.target().is_none());
+    });
 }
 
 #[gpui::test]
@@ -154,6 +254,7 @@ fn atom_context_suffix_rejects_intersection_and_obsolete_failure_preserves_newer
             terminal_job,
             text_system,
             &[real_atom],
+            1,
         );
         let malformed = response_with_atoms(
             &source,
@@ -175,8 +276,14 @@ fn atom_context_suffix_rejects_intersection_and_obsolete_failure_preserves_newer
 
         let mut owner = bounded_owner(&source, 64);
         let obsolete_job = start_index(&mut owner, 1);
-        let (obsolete_request, _) =
-            reach_atom_context(&mut owner, &source, obsolete_job, text_system, &[real_atom]);
+        let (obsolete_request, _) = reach_atom_context(
+            &mut owner,
+            &source,
+            obsolete_job,
+            text_system,
+            &[real_atom],
+            1,
+        );
         let obsolete_malformed = response_with_atoms(
             &source,
             501,

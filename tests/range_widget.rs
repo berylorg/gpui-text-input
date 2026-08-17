@@ -299,6 +299,29 @@ fn bounded_mutation_stream(
     (proposal, fragments, text, objects, fragment_count + 2)
 }
 
+fn retain_mutation_request_queue_capacity(
+    input: &gpui::Entity<RangeTextInput>,
+    cx: &mut gpui::VisualTestContext,
+    source: &str,
+) {
+    let (proposal, fragments, text, objects, request_count) = bounded_mutation_stream(source, 128);
+    input.update(cx, |input, cx| {
+        input
+            .propose_host_mutation(proposal, fragments, &text, &objects, cx)
+            .unwrap();
+    });
+    let key = proposal.key();
+    for _ in 0..request_count {
+        input
+            .update(cx, |input, _| input.take_request())
+            .expect("bounded host mutation request");
+    }
+    assert!(input.update(cx, |input, _| input.take_request()).is_none());
+    input.update(cx, |input, cx| {
+        input.reject_mutation_staging(key, cx).unwrap();
+    });
+}
+
 fn settle_ordinary_commit(
     input: &mut RangeTextInput,
     key: gpui_text_input::MutationKey,
@@ -1187,6 +1210,64 @@ fn page_for(source: &str, id: u64, request: gpui_text_input::PageRequest) -> Ran
             PageEdgeFact::Continues
         },
         end == source.len(),
+    )
+    .unwrap()
+}
+
+fn page_for_with_local_atom(
+    source: &str,
+    id: u64,
+    request: gpui_text_input::PageRequest,
+    atom: AtomId,
+    fallback: &str,
+) -> RangePage {
+    let key = request.key();
+    let base = page_for(source, id, request);
+    RangePage::new(
+        base.id(),
+        key,
+        base.range(),
+        base.text().to_owned(),
+        vec![AtomFact::new(atom, base.range(), base.range(), fallback)],
+        base.preceding(),
+        base.following(),
+        base.end_of_source(),
+    )
+    .unwrap()
+}
+
+fn malformed_geometry_text_page(
+    id: u64,
+    request: gpui_text_input::PageRequest,
+    source_len: usize,
+) -> RangePage {
+    let PageDemandEnvelope::Adjacent {
+        anchor, direction, ..
+    } = request.key().demand()
+    else {
+        panic!("geometry requests adjacent text")
+    };
+    let (start, end) = match direction {
+        PageDirection::Forward => (anchor.get(), anchor.get() + 1),
+        PageDirection::Backward => (anchor.get() - 1, anchor.get()),
+    };
+    assert!(
+        end < source_len as u64,
+        "fixture must claim a premature source end"
+    );
+    RangePage::new(
+        PageId::new(id),
+        request.key(),
+        ByteRange::from_u64(start, end).unwrap(),
+        "x".to_owned(),
+        vec![],
+        if start == 0 {
+            PageEdgeFact::DocumentBoundary
+        } else {
+            PageEdgeFact::Continues
+        },
+        PageEdgeFact::DocumentBoundary,
+        true,
     )
     .unwrap()
 }
@@ -3997,6 +4078,404 @@ fn geometry_object_demand_caps_accept_exact_fit_and_reject_one_under(
 }
 
 #[gpui::test]
+fn malformed_exact_geometry_index_text_page_terminates_and_can_restart(
+    cx: &mut gpui::TestAppContext,
+) {
+    let source = "malformed geometry index text";
+    let configuration = config(source, 1);
+    let layout = configuration.layout.clone();
+    let style = configuration.style.clone();
+    let (input, cx) =
+        cx.add_window_view(|window, cx| RangeTextInput::new(configuration, window, cx).unwrap());
+    let RangeTextInputRequest::Page(request) =
+        input.update(cx, |input, _| input.take_request()).unwrap()
+    else {
+        panic!("initial geometry-index text request")
+    };
+    assert_eq!(request.key().purpose(), PagePurpose::GeometryIndex);
+    let malformed = malformed_geometry_text_page(94_000, request, source.len());
+    let late = malformed.clone();
+    let error = cx.update(|window, app| {
+        input.update(app, |input, cx| input.deliver_page(malformed, window, cx))
+    });
+    assert!(
+        matches!(
+            error,
+            Err(gpui_text_input::RangeTextInputError::Geometry(
+                gpui_text_input::ExactGeometryError::SourceContract
+            ))
+        ),
+        "{error:?}"
+    );
+    let mut releases = 0;
+    while let Some(released) = input.update(cx, |input, _| input.take_request()) {
+        match released {
+            RangeTextInputRequest::ReleasePage(key) if key == request.key() => releases += 1,
+            other => panic!("unexpected index-text settlement request: {other:?}"),
+        }
+    }
+    assert_eq!(releases, 1);
+    input.read_with(cx, |input, _| {
+        assert!(input.surface().is_none());
+        assert!(input.is_quiescent());
+    });
+
+    assert!(matches!(
+        cx.update(|window, app| {
+            input.update(app, |input, cx| input.deliver_page(late, window, cx))
+        }),
+        Err(gpui_text_input::RangeTextInputError::Stale)
+    ));
+    assert!(matches!(
+        input.update(cx, |input, _| input.take_request()),
+        Some(RangeTextInputRequest::ReleasePage(key)) if key == request.key()
+    ));
+    input.update(cx, |input, cx| input.set_layout(layout, style, cx).unwrap());
+    cx.update(|window, app| window.draw(app).clear());
+    assert!(drive_pages(&input, cx, source).is_empty());
+    input.read_with(cx, |input, _| {
+        assert!(input.surface().is_some());
+        assert!(input.is_quiescent());
+    });
+}
+
+#[gpui::test]
+fn malformed_exact_geometry_target_text_page_retains_prior_surface_and_can_restart(
+    cx: &mut gpui::TestAppContext,
+) {
+    cx.update(ensure_text_input_bindings);
+    let source = "0123456789".repeat(12);
+    let (input, cx) = cx.add_window_view(|window, cx| {
+        let input = RangeTextInput::new(config(&source, 1), window, cx).unwrap();
+        input.focus(window);
+        input
+    });
+    assert!(drive_pages(&input, cx, &source).is_empty());
+    cx.simulate_keystrokes("ctrl-a");
+    assert!(drive_pages(&input, cx, &source).is_empty());
+    let prior = input.read_with(cx, |input, _| input.surface().unwrap().geometry_key());
+    input.update(cx, |input, cx| {
+        input.request_absolute_scroll(px(0.), cx).unwrap()
+    });
+
+    let target = loop {
+        match input.update(cx, |input, _| input.take_request()).unwrap() {
+            RangeTextInputRequest::Page(request)
+                if request.key().purpose() == PagePurpose::GeometryTarget =>
+            {
+                break request;
+            }
+            RangeTextInputRequest::Page(request) => {
+                let page = page_for(&source, 94_100, request);
+                cx.update(|window, app| {
+                    input.update(app, |input, cx| {
+                        input.deliver_page(page, window, cx).unwrap()
+                    })
+                });
+            }
+            RangeTextInputRequest::ObjectPage(request) => {
+                let page = restoration_object_page(request, &[], 94_101);
+                cx.update(|window, app| {
+                    input.update(app, |input, cx| {
+                        input
+                            .deliver_object_page_in_window(page, window, cx)
+                            .unwrap()
+                    })
+                });
+            }
+            RangeTextInputRequest::ReleasePage(_) | RangeTextInputRequest::ReleaseObjectPage(_) => {
+            }
+            other => panic!("unexpected target-text request: {other:?}"),
+        }
+    };
+    let malformed = malformed_geometry_text_page(94_102, target, source.len());
+    let late = malformed.clone();
+    let error = cx.update(|window, app| {
+        input.update(app, |input, cx| input.deliver_page(malformed, window, cx))
+    });
+    assert!(matches!(
+        error,
+        Err(gpui_text_input::RangeTextInputError::Geometry(
+            gpui_text_input::ExactGeometryError::SourceContract
+        ))
+    ));
+    input.read_with(cx, |input, _| {
+        assert_eq!(input.surface().unwrap().geometry_key(), prior);
+    });
+    let mut releases = 0;
+    while let Some(released) = input.update(cx, |input, _| input.take_request()) {
+        match released {
+            RangeTextInputRequest::ReleasePage(key) if key == target.key() => releases += 1,
+            RangeTextInputRequest::ReleasePage(_) | RangeTextInputRequest::ReleaseObjectPage(_) => {
+            }
+            other => panic!("unexpected target-text settlement request: {other:?}"),
+        }
+    }
+    assert_eq!(releases, 1);
+    input.read_with(cx, |input, _| assert!(input.is_quiescent()));
+
+    assert!(matches!(
+        cx.update(|window, app| {
+            input.update(app, |input, cx| input.deliver_page(late, window, cx))
+        }),
+        Err(gpui_text_input::RangeTextInputError::Stale)
+    ));
+    assert!(matches!(
+        input.update(cx, |input, _| input.take_request()),
+        Some(RangeTextInputRequest::ReleasePage(key)) if key == target.key()
+    ));
+    input.update(cx, |input, cx| {
+        input.request_absolute_scroll(px(0.), cx).unwrap()
+    });
+    let RangeTextInputRequest::Page(restarted) =
+        input.update(cx, |input, _| input.take_request()).unwrap()
+    else {
+        panic!("fresh target-text request")
+    };
+    assert_eq!(restarted.key().purpose(), PagePurpose::GeometryTarget);
+    let page = page_for(&source, 94_103, restarted);
+    cx.update(|window, app| {
+        input.update(app, |input, cx| {
+            input.deliver_page(page, window, cx).unwrap()
+        })
+    });
+    cx.update(|window, app| window.draw(app).clear());
+    assert!(drive_pages(&input, cx, &source).is_empty());
+    input.read_with(cx, |input, _| {
+        assert!(input.surface().is_some());
+        assert!(input.is_quiescent());
+    });
+}
+
+#[gpui::test]
+fn malformed_geometry_index_text_residency_conflict_terminates_and_can_restart(
+    cx: &mut gpui::TestAppContext,
+) {
+    let source = "x".repeat(120);
+    let configuration = config(&source, 1);
+    let layout = configuration.layout.clone();
+    let style = configuration.style.clone();
+    let (input, cx) =
+        cx.add_window_view(|window, cx| RangeTextInput::new(configuration, window, cx).unwrap());
+    let resident_atom = AtomId::new(950);
+    assert!(drive_pages(&input, cx, &source).is_empty());
+    let prior = input.read_with(cx, |input, _| input.surface().unwrap().geometry_key());
+    input.update(cx, |input, cx| {
+        input.set_layout(layout.clone(), style.clone(), cx).unwrap()
+    });
+    let request = loop {
+        match input.update(cx, |input, _| input.take_request()).unwrap() {
+            RangeTextInputRequest::Page(request) => break request,
+            RangeTextInputRequest::ReleasePage(_) | RangeTextInputRequest::ReleaseObjectPage(_) => {
+            }
+            other => panic!("unexpected index text-conflict request: {other:?}"),
+        }
+    };
+    assert_eq!(request.key().purpose(), PagePurpose::GeometryIndex);
+    let first_page = page_for_with_local_atom(&source, 98_000, request, resident_atom, "resident");
+    cx.update(|window, app| {
+        input.update(app, |input, cx| {
+            input.deliver_page(first_page, window, cx).unwrap()
+        })
+    });
+    let object_request = loop {
+        match input.update(cx, |input, _| input.take_request()).unwrap() {
+            RangeTextInputRequest::ObjectPage(request) => break request,
+            RangeTextInputRequest::ReleasePage(_) | RangeTextInputRequest::ReleaseObjectPage(_) => {
+            }
+            other => panic!("unexpected index text-conflict object request: {other:?}"),
+        }
+    };
+    assert_eq!(object_request.key().purpose(), ObjectPurpose::GeometryIndex);
+    let object_page = restoration_object_page(object_request, &[], 98_001);
+    cx.update(|window, app| {
+        input.update(app, |input, cx| {
+            input
+                .deliver_object_page_in_window(object_page, window, cx)
+                .unwrap()
+        })
+    });
+    let conflict_request = loop {
+        match input.update(cx, |input, _| input.take_request()).unwrap() {
+            RangeTextInputRequest::Page(request) => break request,
+            RangeTextInputRequest::ReleasePage(_) | RangeTextInputRequest::ReleaseObjectPage(_) => {
+            }
+            other => panic!("unexpected index text-conflict successor request: {other:?}"),
+        }
+    };
+    assert_eq!(conflict_request.key().purpose(), PagePurpose::GeometryIndex);
+    let malformed = page_for_with_local_atom(
+        &source,
+        98_002,
+        conflict_request,
+        resident_atom,
+        "conflicting",
+    );
+    let late = malformed.clone();
+    let error = cx.update(|window, app| {
+        input.update(app, |input, cx| input.deliver_page(malformed, window, cx))
+    });
+    assert!(matches!(
+        error,
+        Err(gpui_text_input::RangeTextInputError::Geometry(
+            gpui_text_input::ExactGeometryError::SourceContract
+        ))
+    ));
+    input.read_with(cx, |input, _| {
+        assert_eq!(input.surface().unwrap().geometry_key(), prior);
+    });
+    let mut releases = 0;
+    while let Some(released) = input.update(cx, |input, _| input.take_request()) {
+        match released {
+            RangeTextInputRequest::ReleasePage(key) if key == conflict_request.key() => {
+                releases += 1
+            }
+            RangeTextInputRequest::ReleasePage(_) | RangeTextInputRequest::ReleaseObjectPage(_) => {
+            }
+            other => panic!("unexpected index text-conflict settlement request: {other:?}"),
+        }
+    }
+    assert_eq!(releases, 1);
+    input.read_with(cx, |input, _| assert!(input.is_quiescent()));
+    assert!(matches!(
+        cx.update(|window, app| {
+            input.update(app, |input, cx| input.deliver_page(late, window, cx))
+        }),
+        Err(gpui_text_input::RangeTextInputError::Stale)
+    ));
+    assert!(matches!(
+        input.update(cx, |input, _| input.take_request()),
+        Some(RangeTextInputRequest::ReleasePage(key)) if key == conflict_request.key()
+    ));
+    input.update(cx, |input, cx| input.set_layout(layout, style, cx).unwrap());
+    assert!(drive_pages(&input, cx, &source).is_empty());
+    input.read_with(cx, |input, _| {
+        assert!(input.surface().is_some());
+        assert!(input.is_quiescent());
+    });
+}
+
+#[gpui::test]
+fn malformed_geometry_target_text_residency_conflict_retains_surface_and_restarts(
+    cx: &mut gpui::TestAppContext,
+) {
+    cx.update(ensure_text_input_bindings);
+    let source = "x".repeat(120);
+    let (input, cx) = cx.add_window_view(|window, cx| {
+        let input = RangeTextInput::new(config(&source, 1), window, cx).unwrap();
+        input.focus(window);
+        input
+    });
+    assert!(drive_pages(&input, cx, &source).is_empty());
+    cx.simulate_keystrokes("ctrl-a");
+    assert!(drive_pages(&input, cx, &source).is_empty());
+    let prior = input.read_with(cx, |input, _| input.surface().unwrap().geometry_key());
+    input.update(cx, |input, cx| {
+        input.request_absolute_scroll(px(0.), cx).unwrap()
+    });
+    let first_request = loop {
+        match input.update(cx, |input, _| input.take_request()).unwrap() {
+            RangeTextInputRequest::Page(request) => break request,
+            RangeTextInputRequest::ReleasePage(_) | RangeTextInputRequest::ReleaseObjectPage(_) => {
+            }
+            other => panic!("unexpected target text-conflict request: {other:?}"),
+        }
+    };
+    assert_eq!(first_request.key().purpose(), PagePurpose::GeometryTarget);
+    let resident_atom = AtomId::new(952);
+    let first_page =
+        page_for_with_local_atom(&source, 98_100, first_request, resident_atom, "resident");
+    cx.update(|window, app| {
+        input.update(app, |input, cx| {
+            input.deliver_page(first_page, window, cx).unwrap()
+        })
+    });
+    let object_request = loop {
+        match input.update(cx, |input, _| input.take_request()).unwrap() {
+            RangeTextInputRequest::ObjectPage(request) => break request,
+            RangeTextInputRequest::ReleasePage(_) | RangeTextInputRequest::ReleaseObjectPage(_) => {
+            }
+            other => panic!("unexpected target text-conflict object request: {other:?}"),
+        }
+    };
+    assert_eq!(
+        object_request.key().purpose(),
+        ObjectPurpose::GeometryTarget
+    );
+    let object_page = restoration_object_page(object_request, &[], 98_101);
+    cx.update(|window, app| {
+        input.update(app, |input, cx| {
+            input
+                .deliver_object_page_in_window(object_page, window, cx)
+                .unwrap()
+        })
+    });
+    let conflict_request = loop {
+        match input.update(cx, |input, _| input.take_request()).unwrap() {
+            RangeTextInputRequest::Page(request) => break request,
+            RangeTextInputRequest::ReleasePage(_) | RangeTextInputRequest::ReleaseObjectPage(_) => {
+            }
+            other => panic!("unexpected target text-conflict successor request: {other:?}"),
+        }
+    };
+    assert_eq!(
+        conflict_request.key().purpose(),
+        PagePurpose::GeometryTarget
+    );
+    let malformed = page_for_with_local_atom(
+        &source,
+        98_102,
+        conflict_request,
+        resident_atom,
+        "conflicting",
+    );
+    let late = malformed.clone();
+    let error = cx.update(|window, app| {
+        input.update(app, |input, cx| input.deliver_page(malformed, window, cx))
+    });
+    assert!(matches!(
+        error,
+        Err(gpui_text_input::RangeTextInputError::Geometry(
+            gpui_text_input::ExactGeometryError::SourceContract
+        ))
+    ));
+    input.read_with(cx, |input, _| {
+        assert_eq!(input.surface().unwrap().geometry_key(), prior);
+    });
+    let mut releases = 0;
+    while let Some(released) = input.update(cx, |input, _| input.take_request()) {
+        match released {
+            RangeTextInputRequest::ReleasePage(key) if key == conflict_request.key() => {
+                releases += 1
+            }
+            RangeTextInputRequest::ReleasePage(_) | RangeTextInputRequest::ReleaseObjectPage(_) => {
+            }
+            other => panic!("unexpected target text-conflict settlement request: {other:?}"),
+        }
+    }
+    assert_eq!(releases, 1);
+    input.read_with(cx, |input, _| assert!(input.is_quiescent()));
+    assert!(matches!(
+        cx.update(|window, app| {
+            input.update(app, |input, cx| input.deliver_page(late, window, cx))
+        }),
+        Err(gpui_text_input::RangeTextInputError::Stale)
+    ));
+    assert!(matches!(
+        input.update(cx, |input, _| input.take_request()),
+        Some(RangeTextInputRequest::ReleasePage(key)) if key == conflict_request.key()
+    ));
+    input.update(cx, |input, cx| {
+        input.request_absolute_scroll(px(0.), cx).unwrap()
+    });
+    assert!(drive_pages(&input, cx, &source).is_empty());
+    input.read_with(cx, |input, _| {
+        assert!(input.surface().is_some());
+        assert!(input.is_quiescent());
+    });
+}
+
+#[gpui::test]
 fn malformed_exact_geometry_index_object_page_terminates_and_can_restart(
     cx: &mut gpui::TestAppContext,
 ) {
@@ -4142,6 +4621,169 @@ fn malformed_exact_geometry_target_object_page_retains_prior_surface_and_can_res
         assert_ne!(input.surface().unwrap().geometry_key(), prior);
         assert!(input.is_quiescent());
     });
+}
+
+fn malformed_geometry_object_residency_conflict(cx: &mut gpui::TestAppContext, target: bool) {
+    cx.update(ensure_text_input_bindings);
+    let source = "x".repeat(120);
+    let configuration = config(&source, 1);
+    let layout = configuration.layout.clone();
+    let style = configuration.style.clone();
+    let (input, cx) = cx.add_window_view(|window, cx| {
+        let input = RangeTextInput::new(configuration, window, cx).unwrap();
+        input.focus(window);
+        input
+    });
+    assert!(drive_pages(&input, cx, &source).is_empty());
+    if target {
+        cx.simulate_keystrokes("ctrl-a");
+        assert!(drive_pages(&input, cx, &source).is_empty());
+        input.update(cx, |input, cx| {
+            input.request_absolute_scroll(px(0.), cx).unwrap()
+        });
+    } else {
+        input.update(cx, |input, cx| {
+            input.set_layout(layout.clone(), style.clone(), cx).unwrap()
+        });
+    }
+    let prior = input.read_with(cx, |input, _| input.surface().unwrap().geometry_key());
+    let text_purpose = if target {
+        PagePurpose::GeometryTarget
+    } else {
+        PagePurpose::GeometryIndex
+    };
+    let object_purpose = if target {
+        ObjectPurpose::GeometryTarget
+    } else {
+        ObjectPurpose::GeometryIndex
+    };
+    let first_text = loop {
+        match input.update(cx, |input, _| input.take_request()).unwrap() {
+            RangeTextInputRequest::Page(request) => break request,
+            RangeTextInputRequest::ReleasePage(_) | RangeTextInputRequest::ReleaseObjectPage(_) => {
+            }
+            other => panic!("unexpected first object-conflict text request: {other:?}"),
+        }
+    };
+    assert_eq!(first_text.key().purpose(), text_purpose);
+    let page = page_for(&source, 98_200, first_text);
+    cx.update(|window, app| {
+        input.update(app, |input, cx| {
+            input.deliver_page(page, window, cx).unwrap()
+        })
+    });
+    let first_object = loop {
+        match input.update(cx, |input, _| input.take_request()).unwrap() {
+            RangeTextInputRequest::ObjectPage(request) => break request,
+            RangeTextInputRequest::ReleasePage(_) | RangeTextInputRequest::ReleaseObjectPage(_) => {
+            }
+            other => panic!("unexpected first object-conflict request: {other:?}"),
+        }
+    };
+    assert_eq!(first_object.key().purpose(), object_purpose);
+    let page = restoration_object_page(first_object, &[], 98_201);
+    cx.update(|window, app| {
+        input.update(app, |input, cx| {
+            input
+                .deliver_object_page_in_window(page, window, cx)
+                .unwrap()
+        })
+    });
+    let second_text = loop {
+        match input.update(cx, |input, _| input.take_request()).unwrap() {
+            RangeTextInputRequest::Page(request) => break request,
+            RangeTextInputRequest::ReleasePage(_) | RangeTextInputRequest::ReleaseObjectPage(_) => {
+            }
+            other => panic!("unexpected second object-conflict text request: {other:?}"),
+        }
+    };
+    assert_eq!(second_text.key().purpose(), text_purpose);
+    let page = page_for(&source, 98_202, second_text);
+    cx.update(|window, app| {
+        input.update(app, |input, cx| {
+            input.deliver_page(page, window, cx).unwrap()
+        })
+    });
+    let conflict_request = loop {
+        match input.update(cx, |input, _| input.take_request()).unwrap() {
+            RangeTextInputRequest::ObjectPage(request) => break request,
+            RangeTextInputRequest::ReleasePage(_) | RangeTextInputRequest::ReleaseObjectPage(_) => {
+            }
+            other => panic!("unexpected conflicting object request: {other:?}"),
+        }
+    };
+    assert_eq!(conflict_request.key().purpose(), object_purpose);
+    let conflict_anchor = match conflict_request.key().demand() {
+        ObjectDemandEnvelope::Range { range, .. } => range.start().get(),
+        ObjectDemandEnvelope::Anchor { anchor, .. } => anchor.get(),
+    };
+    let malformed = restoration_object_page(
+        conflict_request,
+        &[object_fact(998, conflict_anchor, 10)],
+        98_201,
+    );
+    let late = malformed.clone();
+    let error = cx.update(|window, app| {
+        input.update(app, |input, cx| {
+            input.deliver_object_page_in_window(malformed, window, cx)
+        })
+    });
+    assert!(matches!(
+        error,
+        Err(gpui_text_input::RangeTextInputError::Geometry(
+            gpui_text_input::ExactGeometryError::SourceContract
+        ))
+    ));
+    input.read_with(cx, |input, _| {
+        assert_eq!(input.surface().unwrap().geometry_key(), prior);
+    });
+    let mut releases = 0;
+    while let Some(released) = input.update(cx, |input, _| input.take_request()) {
+        match released {
+            RangeTextInputRequest::ReleaseObjectPage(key) if key == conflict_request.key() => {
+                releases += 1
+            }
+            RangeTextInputRequest::ReleasePage(_) | RangeTextInputRequest::ReleaseObjectPage(_) => {
+            }
+            other => panic!("unexpected object-conflict settlement request: {other:?}"),
+        }
+    }
+    assert_eq!(releases, 1);
+    input.read_with(cx, |input, _| assert!(input.is_quiescent()));
+    assert!(matches!(
+        input.update(cx, |input, cx| input.deliver_object_page(late, cx)),
+        Err(gpui_text_input::RangeTextInputError::Stale)
+    ));
+    assert!(matches!(
+        input.update(cx, |input, _| input.take_request()),
+        Some(RangeTextInputRequest::ReleaseObjectPage(key)) if key == conflict_request.key()
+    ));
+    if target {
+        input.update(cx, |input, cx| {
+            input.request_absolute_scroll(px(0.), cx).unwrap()
+        });
+    } else {
+        input.update(cx, |input, cx| input.set_layout(layout, style, cx).unwrap());
+    }
+    assert!(drive_pages(&input, cx, &source).is_empty());
+    input.read_with(cx, |input, _| {
+        assert!(input.surface().is_some());
+        assert!(input.is_quiescent());
+    });
+}
+
+#[gpui::test]
+fn malformed_geometry_index_object_residency_conflict_terminates_and_can_restart(
+    cx: &mut gpui::TestAppContext,
+) {
+    malformed_geometry_object_residency_conflict(cx, false);
+}
+
+#[gpui::test]
+fn malformed_geometry_target_object_residency_conflict_retains_surface_and_restarts(
+    cx: &mut gpui::TestAppContext,
+) {
+    malformed_geometry_object_residency_conflict(cx, true);
 }
 
 #[gpui::test]
@@ -4671,26 +5313,9 @@ fn eligible_keyboard_activation_admission_rejection_is_inert_for_enter_and_space
     let source = "ab";
     let facts = [object_fact(211, 1, 10)];
 
-    let (probe, cx) = cx.add_window_view(|window, cx| {
-        let input = RangeTextInput::new(config(source, 1), window, cx).unwrap();
-        input.focus(window);
-        input
-    });
-    drive_pages_with_objects(&probe, cx, source, &facts);
-    cx.simulate_keystrokes("right right");
-    drive_pages_with_objects(&probe, cx, source, &facts);
-    let active_admission = probe.read_with(cx, |input, _| {
-        assert!(input.active_inline_object().is_some());
-        input.last_surface_admission_charge().unwrap()
-    });
-    cx.simulate_keystrokes("enter");
-    let activation_admission = probe.read_with(cx, |input, _| {
-        input.last_surface_admission_charge().unwrap()
-    });
-    assert!(activation_admission.items > active_admission.items);
-
     let mut rejected_config = config(source, 1);
-    rejected_config.limits.max_surface_items = active_admission.items;
+    rejected_config.mutation_limits = MutationLimits::new(128, 256).unwrap();
+    rejected_config.limits.max_surface_items = 345;
     let (rejected, cx) = cx.add_window_view(|window, cx| {
         let input = RangeTextInput::new(rejected_config, window, cx).unwrap();
         input.focus(window);
@@ -4698,14 +5323,14 @@ fn eligible_keyboard_activation_admission_rejection_is_inert_for_enter_and_space
     });
     drive_pages_with_objects(&rejected, cx, source, &facts);
     let events = restoration_events(&rejected, cx);
-    cx.simulate_keystrokes("right right");
+    cx.simulate_keystrokes("right");
     drive_pages_with_objects(&rejected, cx, source, &facts);
+    cx.simulate_keystrokes("right");
+    drive_pages_with_objects(&rejected, cx, source, &facts);
+    retain_mutation_request_queue_capacity(&rejected, cx, source);
     let before = range_publication_fingerprint(&rejected, cx);
-    assert!(rejected.read_with(cx, |input, _| {
-        input
-            .active_inline_object()
-            .is_some_and(|active| active.object_id == InlineObjectId::new(211))
-    }));
+    let active = rejected.read_with(cx, |input, _| input.active_inline_object().unwrap());
+    assert_eq!(active.object_id, InlineObjectId::new(211));
 
     for key in ["enter", "space"] {
         let event_count = events.borrow().len();
@@ -4716,6 +5341,10 @@ fn eligible_keyboard_activation_admission_rejection_is_inert_for_enter_and_space
                 .is_none()
         );
         assert_eq!(range_publication_fingerprint(&rejected, cx), before);
+        assert_eq!(
+            rejected.read_with(cx, |input, _| input.active_inline_object()),
+            Some(active)
+        );
         assert_eq!(events.borrow().len(), event_count);
     }
 }
@@ -4724,16 +5353,23 @@ fn eligible_keyboard_activation_admission_rejection_is_inert_for_enter_and_space
 fn boundary_overlapping_object_pages_realize_wrapped_adjacent_objects_once(
     cx: &mut gpui::TestAppContext,
 ) {
+    cx.update(ensure_text_input_bindings);
     let source = "x".repeat(40);
-    let facts = [
-        object_fact_with_width_and_activation(221, 32, 10, px(160.), true),
-        object_fact_with_width_and_activation(222, 32, 20, px(160.), true),
-    ];
     let mut configuration = config(&source, 1);
     configuration.layout.wrap_width = px(240.);
     configuration.viewport_extent = px(480.);
-    let (input, cx) =
-        cx.add_window_view(|window, cx| RangeTextInput::new(configuration, window, cx).unwrap());
+    let (input, cx) = cx.add_window_view(|window, cx| {
+        let input = RangeTextInput::new(configuration, window, cx).unwrap();
+        input.focus(window);
+        input
+    });
+    let object_width = cx.update(|window, _| window.viewport_size().width * 0.6);
+    let facts = [
+        object_fact_with_width_and_activation(221, 32, 10, object_width, true),
+        object_fact_with_width_and_activation(222, 32, 20, object_width, true),
+    ];
+    drive_pages_with_objects(&input, cx, &source, &facts);
+    cx.simulate_keystrokes("end");
     drive_pages_with_objects(&input, cx, &source, &facts);
 
     input.read_with(cx, |input, _| {
@@ -4751,7 +5387,47 @@ fn boundary_overlapping_object_pages_realize_wrapped_adjacent_objects_once(
                 matches!(object.id(), id if id == InlineObjectId::new(221) || id == InlineObjectId::new(222))
             })
             .count();
-        assert!(retained_occurrences > realized.len());
+        let retained = surface.object_pages();
+        assert_eq!(retained.len(), 2);
+        let first = &retained[0];
+        let second = &retained[1];
+        let ObjectDemandEnvelope::Range {
+            range: first_range,
+            cursor: first_cursor,
+            ..
+        } = first.key().demand()
+        else {
+            panic!("first retained object page uses a range envelope")
+        };
+        assert_eq!(
+            first_range,
+            ByteRange::from_u64(0, 32).unwrap()
+        );
+        assert_eq!(first_cursor, None);
+        assert_eq!(
+            first
+                .objects()
+                .iter()
+                .map(|object| object.id())
+                .collect::<Vec<_>>(),
+            vec![InlineObjectId::new(221), InlineObjectId::new(222)]
+        );
+        let ObjectDemandEnvelope::Range {
+            range: second_range,
+            cursor: second_cursor,
+            ..
+        } = second.key().demand()
+        else {
+            panic!("second retained object page uses a range envelope")
+        };
+        assert_eq!(second_range, ByteRange::from_u64(32, 40).unwrap());
+        let cursor = second_cursor.unwrap();
+        assert_eq!(cursor.anchor(), ByteOffset::new(32));
+        assert_eq!(cursor.order(), InlineObjectOrder::new(20));
+        assert_eq!(cursor.id(), InlineObjectId::new(222));
+        assert!(second.objects().is_empty());
+        assert_eq!(first_range.end(), second_range.start());
+        assert_eq!(retained_occurrences, 2);
 
         let shared = SourcePosition::new(
             ByteOffset::new(32),
@@ -4768,7 +5444,6 @@ fn boundary_overlapping_object_pages_realize_wrapped_adjacent_objects_once(
             .collect::<Vec<_>>();
         assert_eq!(gaps.len(), 1);
         assert_eq!(gaps[0].caret_bounds(), realized[1].leading_caret_bounds());
-        assert_ne!(gaps[0].caret_bounds(), realized[0].trailing_caret_bounds());
     });
 }
 
@@ -4848,7 +5523,7 @@ fn off_origin_document_commands_use_exact_before_all_and_after_all_gaps(
 }
 
 #[gpui::test]
-fn resident_utf16_mapping_rejects_off_origin_and_holed_surfaces_then_accepts_origin_prefix(
+fn resident_utf16_mapping_rejects_off_origin_and_incomplete_origin_prefix_then_accepts_complete_prefix(
     cx: &mut gpui::TestAppContext,
 ) {
     cx.update(ensure_text_input_bindings);
@@ -4886,7 +5561,9 @@ fn resident_utf16_mapping_rejects_off_origin_and_holed_surfaces_then_accepts_ori
 
     cx.simulate_keystrokes("ctrl-shift-home");
     drive_pages(&input, cx, &source);
-    let has_hole = input.read_with(cx, |input, _| {
+    input.read_with(cx, |input, _| {
+        let surface = input.surface().unwrap();
+        let selection = surface.selection().range().unwrap();
         let mut ranges = input
             .surface()
             .unwrap()
@@ -4895,11 +5572,11 @@ fn resident_utf16_mapping_rejects_off_origin_and_holed_surfaces_then_accepts_ori
             .map(|page| page.range())
             .collect::<Vec<_>>();
         ranges.sort_by_key(|range| range.start());
-        ranges
-            .windows(2)
-            .any(|pair| pair[0].end() < pair[1].start())
+        assert_eq!(selection.start().byte_offset.get(), 0);
+        assert_eq!(selection.end().byte_offset.get(), source.len() as u64);
+        assert_eq!(ranges.first().unwrap().start().get(), 0);
+        assert!(ranges.last().unwrap().end() < selection.end().byte_offset);
     });
-    assert!(has_hole);
     assert!(
         cx.update(|window, app| {
             input.update(app, |input, cx| {
@@ -4918,14 +5595,15 @@ fn resident_utf16_mapping_rejects_off_origin_and_holed_surfaces_then_accepts_ori
             page.range().start().get() == 0 && page.range().end().get() >= "🙂".len() as u64
         }));
     });
-    assert_eq!(
-        cx.update(|window, app| {
+    let selection = cx
+        .update(|window, app| {
             input.update(app, |input, cx| {
                 input.selected_text_range(false, window, cx)
             })
-        }),
-        Some(2..2)
-    );
+        })
+        .unwrap();
+    assert_eq!(selection.range, 2..2);
+    assert!(!selection.reversed);
 }
 
 #[gpui::test]
@@ -5959,8 +6637,8 @@ fn repeated_wheel_retarget_rejection_preserves_full_publication_fingerprint(
         .map(|line| format!("line-{line:03}\n"))
         .collect::<String>();
     let mut rejected_config = config(&source, 1);
-    rejected_config.limits.max_surface_bytes = 29_000;
-    rejected_config.limits.max_surface_items = 650;
+    rejected_config.limits.max_surface_bytes = 39_536;
+    rejected_config.limits.max_surface_items = 436;
     let (rejected, cx) =
         cx.add_window_view(|window, cx| RangeTextInput::new(rejected_config, window, cx).unwrap());
     drive_pages(&rejected, cx, &source);
@@ -5976,8 +6654,16 @@ fn repeated_wheel_retarget_rejection_preserves_full_publication_fingerprint(
     else {
         panic!("first wheel retarget request")
     };
-    assert_eq!(first_retarget.key().id(), PageRequestId::new(68));
-    assert_eq!(first_retarget.key().purpose(), PagePurpose::GeometryTarget);
+    let first_retarget_key = first_retarget.key();
+    let first_retarget_demand = first_retarget_key.demand();
+    assert_eq!(first_retarget_key.purpose(), PagePurpose::GeometryTarget);
+    assert!(matches!(
+        first_retarget_demand,
+        PageDemandEnvelope::Adjacent {
+            direction: PageDirection::Forward,
+            ..
+        }
+    ));
     let committed = range_publication_fingerprint(&rejected, cx);
     assert_ne!(committed.admission, before.admission);
     assert_eq!(committed.surface, before.surface);
@@ -6016,8 +6702,8 @@ fn repeated_rendered_scrollbar_retarget_rejection_preserves_full_publication_fin
         .map(|line| format!("line-{line:03}\n"))
         .collect::<String>();
     let mut configuration = config(&source, 1);
-    configuration.limits.max_surface_bytes = 29_000;
-    configuration.limits.max_surface_items = 650;
+    configuration.limits.max_surface_bytes = 40_000;
+    configuration.limits.max_surface_items = 430;
     let (input, cx) =
         cx.add_window_view(|window, cx| RangeTextInput::new(configuration, window, cx).unwrap());
     drive_pages(&input, cx, &source);
@@ -6032,7 +6718,16 @@ fn repeated_rendered_scrollbar_retarget_rejection_preserves_full_publication_fin
     else {
         panic!("scrollbar activation retarget request")
     };
-    assert_eq!(first_retarget.key().id(), PageRequestId::new(68));
+    let first_retarget_key = first_retarget.key();
+    let first_retarget_demand = first_retarget_key.demand();
+    assert_eq!(first_retarget_key.purpose(), PagePurpose::GeometryTarget);
+    assert!(matches!(
+        first_retarget_demand,
+        PageDemandEnvelope::Adjacent {
+            direction: PageDirection::Forward,
+            ..
+        }
+    ));
     let committed = range_publication_fingerprint(&input, cx);
     let event_count = events.borrow().len();
     let viewport = cx.update(|window, _| window.viewport_size());
@@ -6115,9 +6810,9 @@ fn layout_presentation_and_rebind_candidates_use_fixed_exact_caps_and_reject_one
 ) {
     const SOURCE: &str = "candidate cap source";
     let cases = [
-        (FixedCandidateKind::Layout, 181_088usize, 524usize),
-        (FixedCandidateKind::Presentation, 181_092, 525),
-        (FixedCandidateKind::Rebind, 147_812, 396),
+        (FixedCandidateKind::Layout, 181_600usize, 525usize),
+        (FixedCandidateKind::Presentation, 181_604, 526),
+        (FixedCandidateKind::Rebind, 148_324, 397),
     ];
     for (kind, exact_bytes, exact_items) in cases {
         for (bytes, items, succeeds) in [

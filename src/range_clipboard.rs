@@ -1,5 +1,3 @@
-//! Capped clipboard collection over exact range-source pages.
-
 use crate::{
     AtomId, BindingId, ByteOffset, ByteRange, InlineObjectFact, MutationKey, MutationKind,
     MutationProposal, ObjectCursor, ObjectDemandEnvelope, ObjectDirection, ObjectPage,
@@ -12,7 +10,6 @@ use crate::{
 mod collection;
 mod lifecycle;
 
-/// Unique identity of one copy or cut collection.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ClipboardId(u64);
 
@@ -20,12 +17,12 @@ impl ClipboardId {
     pub const fn new(value: u64) -> Self {
         Self(value)
     }
+
     pub const fn get(self) -> u64 {
         self.0
     }
 }
 
-/// Exact immutable identity of one captured selection.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct ClipboardKey {
     id: ClipboardId,
@@ -48,28 +45,30 @@ impl ClipboardKey {
             selection,
         }
     }
+
     pub const fn id(self) -> ClipboardId {
         self.id
     }
+
     pub const fn binding(self) -> BindingId {
         self.binding
     }
+
     pub const fn revision(self) -> SourceRevision {
         self.revision
     }
+
     pub const fn selection(self) -> SourceRange {
         self.selection
     }
 }
 
-/// Whether a completed selection is copied or copied before deletion.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ClipboardKind {
     Copy,
     Cut,
 }
 
-/// Hard bounds for the contiguous result and each requested/retained source page.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ClipboardLimits {
     max_bytes: usize,
@@ -79,12 +78,10 @@ pub struct ClipboardLimits {
 }
 
 impl ClipboardLimits {
-    /// Creates finite clipboard limits with one bounded default object-page envelope.
     pub fn new(max_bytes: usize, max_text_page_bytes: u64) -> Result<Self, ClipboardError> {
         Self::new_composite(max_bytes, max_text_page_bytes, 32, 64 * 1024)
     }
 
-    /// Creates fully configured text- and object-page limits.
     pub fn new_composite(
         max_bytes: usize,
         max_text_page_bytes: u64,
@@ -107,18 +104,20 @@ impl ClipboardLimits {
     pub const fn max_bytes(self) -> usize {
         self.max_bytes
     }
+
     pub const fn max_text_page_bytes(self) -> u64 {
         self.max_text_page_bytes
     }
+
     pub const fn max_object_page_objects(self) -> usize {
         self.max_object_page_objects
     }
+
     pub const fn max_object_page_retained_bytes(self) -> usize {
         self.max_object_page_retained_bytes
     }
 }
 
-/// Observable state of the single clipboard collection.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ClipboardState {
     Idle,
@@ -129,7 +128,6 @@ pub enum ClipboardState {
     AwaitingWrite,
 }
 
-/// Exact locally retained clipboard counts.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ClipboardCounts {
     pub staged_bytes: usize,
@@ -138,7 +136,6 @@ pub struct ClipboardCounts {
     pub retained_object_facts: usize,
 }
 
-/// The next action after starting or admitting a clipboard page.
 #[derive(Debug, Eq, PartialEq)]
 pub enum ClipboardProgress {
     NeedTextPage {
@@ -154,7 +151,6 @@ pub enum ClipboardProgress {
     Terminal(ClipboardCompletion),
 }
 
-/// Complete contiguous value to pass to the platform clipboard boundary.
 #[derive(Debug, Eq, PartialEq)]
 pub struct ClipboardWriteRequest {
     key: ClipboardKey,
@@ -165,15 +161,16 @@ impl ClipboardWriteRequest {
     pub const fn key(&self) -> ClipboardKey {
         self.key
     }
+
     pub fn text(&self) -> &str {
         &self.text
     }
+
     pub fn into_text(self) -> String {
         self.text
     }
 }
 
-/// Platform clipboard acknowledgement; no platform API is called by this crate.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ClipboardWriteOutcome {
     Written,
@@ -181,7 +178,6 @@ pub enum ClipboardWriteOutcome {
     Cancelled,
 }
 
-/// Terminal clipboard result or the deletion authorized by a successful cut write.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ClipboardCompletion {
     Copied,
@@ -195,7 +191,6 @@ pub enum ClipboardCompletion {
     Malformed,
 }
 
-/// A cut deletion token that can exist only after a successful clipboard write.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CutDeletion {
     binding: RangeBinding,
@@ -207,12 +202,15 @@ impl CutDeletion {
     pub const fn binding(self) -> RangeBinding {
         self.binding
     }
+
     pub const fn selection(self) -> SourceRange {
         self.selection
     }
+
     pub const fn selection_line_breaks(self) -> u64 {
         self.selection_line_breaks
     }
+
     pub fn proposal(
         self,
         operation: OperationId,
@@ -230,7 +228,6 @@ impl CutDeletion {
     }
 }
 
-/// Rejected clipboard transition or response.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum ClipboardError {
@@ -262,7 +259,6 @@ pub enum ClipboardError {
     ObsoleteObjectPage(ObjectRequestKey),
 }
 
-/// Lifecycle cancellation details, including an exact pending host request.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ClipboardCancellation {
     key: ClipboardKey,
@@ -275,12 +271,15 @@ impl ClipboardCancellation {
     pub const fn key(self) -> ClipboardKey {
         self.key
     }
+
     pub const fn pending_text_page(self) -> Option<PageRequestKey> {
         self.pending_text_page
     }
+
     pub const fn pending_object_page(self) -> Option<ObjectRequestKey> {
         self.pending_object_page
     }
+
     pub const fn awaiting_write(self) -> bool {
         self.awaiting_write
     }
@@ -324,7 +323,6 @@ struct ActiveClipboard {
     source_line_breaks: u64,
 }
 
-/// Collects one complete selection in logical order under a hard byte cap.
 #[derive(Debug)]
 pub struct RangeClipboardCoordinator {
     binding: RangeBinding,
@@ -337,12 +335,10 @@ pub struct RangeClipboardCoordinator {
 }
 
 impl RangeClipboardCoordinator {
-    /// Creates a coordinator for presentation generation zero.
     pub const fn new(binding: RangeBinding, limits: ClipboardLimits) -> Self {
         Self::new_composite(binding, PresentationGeneration::new(0), limits)
     }
 
-    /// Creates a coordinator bound to one exact object-presentation generation.
     pub const fn new_composite(
         binding: RangeBinding,
         presentation_generation: PresentationGeneration,
@@ -358,17 +354,21 @@ impl RangeClipboardCoordinator {
             highest_object_request: None,
         }
     }
+
     pub const fn binding(&self) -> RangeBinding {
         self.binding
     }
+
     pub const fn presentation_generation(&self) -> PresentationGeneration {
         self.presentation_generation
     }
+
     pub fn state(&self) -> ClipboardState {
         self.active
             .as_ref()
             .map_or(ClipboardState::Idle, |active| active.state)
     }
+
     pub fn counts(&self) -> ClipboardCounts {
         self.active
             .as_ref()
@@ -438,7 +438,6 @@ impl RangeClipboardCoordinator {
         }
     }
 
-    /// Captures directional endpoints and normalizes only their proven composite order.
     pub fn begin_selection(
         &mut self,
         id: ClipboardId,
@@ -455,7 +454,6 @@ impl RangeClipboardCoordinator {
         self.begin(id, kind, selection)
     }
 
-    /// Creates the next bounded text-page demand from the proven collection edge.
     pub fn request_text_page(
         &mut self,
         key: ClipboardKey,
@@ -482,7 +480,6 @@ impl RangeClipboardCoordinator {
         Ok(PageRequest::new(page_key))
     }
 
-    /// Creates the next bounded object-page demand for the captured composite range.
     pub fn request_object_page(
         &mut self,
         key: ClipboardKey,

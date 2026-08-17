@@ -107,10 +107,12 @@ replacement synchronously, and only then exposes drag cancellation or other effe
 
 Host text-page and object-page delivery also prepares residency, geometry deltas, dispatched-key
 removal, terminal target construction, and coherent-surface replacement before changing an owner.
-Malformed input or insufficient capacity leaves the complete pending and resident fingerprint
-unchanged, so a corrected response for the same exact request may be retried. Pending Select All is
-resolved from the completed index's bounded exact document endpoints and is published inside that
-terminal surface, never by a second fallible transition.
+Malformed text-page, object-page, or residency-backed geometry delivery terminally settles the
+named request or job step and releases its payload and reservation; that key cannot be retried.
+A well-formed exact-key delivery rejected only by candidate or terminal-publication capacity leaves
+the complete pending and resident fingerprint unchanged and may be retried with that exact key.
+Pending Select All is resolved from the completed index's bounded exact document endpoints and is
+published inside that terminal surface, never by a second fallible transition.
 
 # Interaction
 
@@ -281,6 +283,12 @@ range, caret, selection, and bounded overscan. Its resident page, object, presen
 work limits remain fixed as logical text and object counts grow. It never concatenates the source,
 selection, object collection, undo payload, or requested range into a whole-value buffer;
 nonresident layout advances through bounded source metadata and page requests.
+
+Prepaint may spend one configured bounded work quantum advancing already admitted geometry only
+while every required text, object, and continuation input is resident. It stops before dispatching
+a request, calling the host, or performing other external work. Reaching terminal object work in
+prepaint does not publish it: the ordinary widget service path performs terminal object publication
+and its observable effects through the staged-publication boundary.
 
 Source-zero-width objects enter inline layout at their exact UTF-8 anchor and in authoritative
 same-anchor order. They contribute measured inline geometry without advancing the UTF-8 cursor.

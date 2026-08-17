@@ -1,24 +1,24 @@
-use std::{mem::size_of, sync::Arc};
+use std::{collections::VecDeque, mem::size_of, sync::Arc};
 
 use gpui::{StreamingLayoutFragment, WindowTextSystem};
 
 use crate::{
-    ByteOffset, ObjectDemandEnvelope, ObjectDirection, ObjectPage, ObjectRequest, ObjectRequestId,
-    ObjectRequestKey, PageDemandEnvelope, PageDirection, PageEdgeFact, PageRequest, PageRequestId,
-    PageRequestKey, RangePage,
+    ByteOffset, GeometryJobId, InlineObjectGap, ObjectDemandEnvelope, ObjectDirection, ObjectPage,
+    ObjectRequest, ObjectRequestId, ObjectRequestKey, PageDemandEnvelope, PageDirection,
+    PageEdgeFact, PageRequest, PageRequestId, PageRequestKey, RangePage, RangeSourceSelection,
+    SourcePosition,
 };
 
 use super::{
-    ActiveJob, ActiveKind, ActivePageUse, ActiveTextPage, AdmissionBudget, BlockTargetPublication,
-    DeferredObject, ExactGeometryAdmission, ExactGeometryCounts, ExactGeometryError,
-    ExactGeometryFailure, ExactGeometryFailureStage, ExactGeometryOwner, ExactGeometryProgress,
-    ExactGeometryRelease, PendingInput, Scanner, accounting,
+    ActiveJob, ActiveKind, ActivePageUse, ActiveTextPage, AdmissionBudget, BlockTarget,
+    BlockTargetPublication, DeferredObject, ExactGeometryAdmission, ExactGeometryAggregate,
+    ExactGeometryCheckpoint, ExactGeometryCounts, ExactGeometryError, ExactGeometryFailure,
+    ExactGeometryFailureStage, ExactGeometryIndex, ExactGeometryOwner, ExactGeometryProgress,
+    ExactGeometryRelease, PendingInput, PreparedGeometryTransition, Scanner, accounting,
 };
 
-/// One non-mutating, fully prepared target-job page response.
-///
-/// The candidate owns only a manually reconstructed bounded scanner continuation and compact
-/// fragment-record destination. It never clones the geometry owner, index, or publication graph.
+mod publication;
+
 #[derive(Debug)]
 pub(crate) struct PreparedTargetResponse {
     state: PreparedTargetResponseState,
@@ -33,10 +33,14 @@ pub(crate) struct PreparedTargetResponse {
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct TargetResponseSuccessor {
+    pub(crate) target_job_id: GeometryJobId,
     pub(crate) page_id: PageRequestId,
     pub(crate) object_id: ObjectRequestId,
     pub(crate) max_objects: usize,
     pub(crate) max_object_bytes: usize,
+    pub(crate) target: BlockTarget,
+    pub(crate) anchor: Option<SourcePosition>,
+    pub(crate) select_all: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -51,13 +55,18 @@ pub(crate) enum PreparedTargetSuccessor {
 #[derive(Debug)]
 enum PreparedTargetResponseState {
     Active(PreparedActiveTarget),
-    Complete(Box<BlockTargetPublication>),
+    CompleteTarget(Box<BlockTargetPublication>),
+    CompleteIndex {
+        index: Box<ExactGeometryIndex>,
+        target: PreparedGeometryTransition,
+    },
 }
 
 #[derive(Debug)]
 struct PreparedActiveTarget {
     delta: Box<ActiveJob>,
     fragments: Vec<StreamingLayoutFragment>,
+    checkpoints: VecDeque<ExactGeometryCheckpoint>,
     output_charge: gpui::StreamingLayoutCharge,
     output_item_charge: gpui::StreamingLayoutItemCharge,
 }
@@ -66,7 +75,8 @@ impl PreparedTargetResponse {
     pub(crate) const fn key(&self) -> crate::GeometryJobKey {
         match &self.state {
             PreparedTargetResponseState::Active(active) => active.delta.key,
-            PreparedTargetResponseState::Complete(target) => target.key,
+            PreparedTargetResponseState::CompleteTarget(target) => target.key,
+            PreparedTargetResponseState::CompleteIndex { target, .. } => target.key(),
         }
     }
 
@@ -80,8 +90,16 @@ impl PreparedTargetResponse {
 
     pub(crate) fn terminal_target(&self) -> Option<&BlockTargetPublication> {
         match &self.state {
-            PreparedTargetResponseState::Complete(target) => Some(target),
+            PreparedTargetResponseState::CompleteTarget(target) => Some(target),
+            PreparedTargetResponseState::CompleteIndex { target, .. } => target.terminal_target(),
             PreparedTargetResponseState::Active(_) => None,
+        }
+    }
+
+    pub(crate) fn terminal_index(&self) -> Option<&ExactGeometryIndex> {
+        match &self.state {
+            PreparedTargetResponseState::CompleteIndex { index, .. } => Some(index),
+            _ => None,
         }
     }
 
@@ -89,12 +107,10 @@ impl PreparedTargetResponse {
         self.successor
     }
 
-    /// Candidate-owned bytes that coexist with the unchanged current geometry owner.
     pub(crate) const fn retained_bytes(&self) -> usize {
         self.retained_bytes
     }
 
-    /// Candidate-owned semantic records that coexist with the unchanged current geometry owner.
     pub(crate) const fn retained_items(&self) -> usize {
         self.retained_items
     }
@@ -107,13 +123,13 @@ struct SharedOutput {
     fragment_records: usize,
 }
 
-fn copy_target_continuation(
+fn copy_response_continuation(
     active: &ActiveJob,
 ) -> Result<(Box<ActiveJob>, SharedOutput), ExactGeometryError> {
-    if !matches!(active.kind, ActiveKind::Target { .. }) {
-        return Err(ExactGeometryError::WrongInputKind);
-    }
-    if !active.scanner.checkpoints.is_empty() {
+    let is_target = matches!(active.kind, ActiveKind::Target { .. });
+    if is_target && !active.scanner.checkpoints.is_empty()
+        || !is_target && !active.scanner.fragments.is_empty()
+    {
         return Err(ExactGeometryError::SourceContract);
     }
     let scanner = Scanner {
@@ -146,10 +162,18 @@ fn copy_target_continuation(
             })
         }),
     };
-    let shared = SharedOutput {
-        payload_bytes: active.scanner.output_charge.total()?,
-        semantic_items: active.scanner.output_item_charge.total()?,
-        fragment_records: active.scanner.fragments.len(),
+    let shared = if is_target {
+        SharedOutput {
+            payload_bytes: active.scanner.output_charge.total()?,
+            semantic_items: active.scanner.output_item_charge.total()?,
+            fragment_records: active.scanner.fragments.len(),
+        }
+    } else {
+        SharedOutput {
+            payload_bytes: 0,
+            semantic_items: 0,
+            fragment_records: 0,
+        }
     };
     Ok((
         Box::new(ActiveJob {
@@ -166,6 +190,34 @@ fn copy_target_continuation(
     ))
 }
 
+fn exact_document_selection(scanner: &Scanner, extent: u64) -> RangeSourceSelection {
+    let anchor = scanner
+        .first_object_cursor
+        .filter(|cursor| cursor.anchor().get() == 0)
+        .map_or_else(
+            || SourcePosition::new(ByteOffset::new(0), InlineObjectGap::NoObjects),
+            |cursor| {
+                SourcePosition::new(
+                    ByteOffset::new(0),
+                    InlineObjectGap::before(cursor.neighbor()),
+                )
+            },
+        );
+    let head = scanner
+        .object_cursor
+        .filter(|cursor| cursor.anchor().get() == extent)
+        .map_or_else(
+            || SourcePosition::new(ByteOffset::new(extent), InlineObjectGap::NoObjects),
+            |cursor| {
+                SourcePosition::new(
+                    ByteOffset::new(extent),
+                    InlineObjectGap::after(cursor.neighbor()),
+                )
+            },
+        );
+    RangeSourceSelection { anchor, head }
+}
+
 impl ExactGeometryOwner {
     pub(crate) fn prepare_target_page(
         &self,
@@ -174,7 +226,7 @@ impl ExactGeometryOwner {
         text_system: &WindowTextSystem,
         successor: TargetResponseSuccessor,
     ) -> Result<PreparedTargetResponse, ExactGeometryFailure> {
-        self.prepare_target_page_inner(key, page, text_system, false, successor)
+        self.prepare_response_page_inner(key, page, text_system, false, false, successor)
     }
 
     pub(crate) fn prepare_target_resident_page(
@@ -184,18 +236,39 @@ impl ExactGeometryOwner {
         text_system: &WindowTextSystem,
         successor: TargetResponseSuccessor,
     ) -> Result<PreparedTargetResponse, ExactGeometryFailure> {
-        self.prepare_target_page_inner(key, page, text_system, true, successor)
+        self.prepare_response_page_inner(key, page, text_system, true, false, successor)
     }
 
-    fn prepare_target_page_inner(
+    pub(crate) fn prepare_index_page(
+        &self,
+        key: crate::GeometryJobKey,
+        page: &RangePage,
+        text_system: &WindowTextSystem,
+        successor: TargetResponseSuccessor,
+    ) -> Result<PreparedTargetResponse, ExactGeometryFailure> {
+        self.prepare_response_page_inner(key, page, text_system, false, true, successor)
+    }
+
+    pub(crate) fn prepare_index_resident_page(
+        &self,
+        key: crate::GeometryJobKey,
+        page: &RangePage,
+        text_system: &WindowTextSystem,
+        successor: TargetResponseSuccessor,
+    ) -> Result<PreparedTargetResponse, ExactGeometryFailure> {
+        self.prepare_response_page_inner(key, page, text_system, true, true, successor)
+    }
+
+    fn prepare_response_page_inner(
         &self,
         key: crate::GeometryJobKey,
         page: &RangePage,
         text_system: &WindowTextSystem,
         resident: bool,
+        index: bool,
         successor: TargetResponseSuccessor,
     ) -> Result<PreparedTargetResponse, ExactGeometryFailure> {
-        let active = self.target_active(key)?;
+        let active = self.response_active(key, index)?;
         let Some(PendingInput::Text(expected)) = active.pending.as_deref().copied() else {
             return Err(self.prepared_validation_failure(ExactGeometryError::NoActiveJob));
         };
@@ -204,7 +277,7 @@ impl ExactGeometryOwner {
         {
             return Err(self.prepared_validation_failure(ExactGeometryError::WrongPage(page.key())));
         }
-        let (mut candidate, shared) = copy_target_continuation(active)
+        let (mut candidate, shared) = copy_response_continuation(active)
             .map_err(|error| self.prepared_validation_failure(error))?;
         let mut budget = self.prepared_budget(
             &candidate,
@@ -287,9 +360,10 @@ impl ExactGeometryOwner {
         )
     }
 
-    fn target_active(
+    fn response_active(
         &self,
         key: crate::GeometryJobKey,
+        index: bool,
     ) -> Result<&ActiveJob, ExactGeometryFailure> {
         let Some(active) = self.active.as_deref() else {
             return Err(self.prepared_validation_failure(ExactGeometryError::ObsoleteJob(key)));
@@ -297,7 +371,7 @@ impl ExactGeometryOwner {
         if active.key != key {
             return Err(self.prepared_validation_failure(ExactGeometryError::ObsoleteJob(key)));
         }
-        if !matches!(active.kind, ActiveKind::Target { .. }) {
+        if matches!(active.kind, ActiveKind::Index) != index {
             return Err(self.prepared_validation_failure(ExactGeometryError::WrongInputKind));
         }
         Ok(active)
@@ -311,7 +385,86 @@ impl ExactGeometryOwner {
         text_system: &WindowTextSystem,
         successor: TargetResponseSuccessor,
     ) -> Result<PreparedTargetResponse, ExactGeometryFailure> {
-        let active = self.target_active(key)?;
+        self.prepare_response_object_page(
+            key,
+            text_page,
+            object_page,
+            text_system,
+            false,
+            false,
+            successor,
+        )
+    }
+
+    pub(crate) fn prepare_target_resident_object_page(
+        &self,
+        key: crate::GeometryJobKey,
+        text_page: &RangePage,
+        object_page: &ObjectPage,
+        text_system: &WindowTextSystem,
+        successor: TargetResponseSuccessor,
+    ) -> Result<PreparedTargetResponse, ExactGeometryFailure> {
+        self.prepare_response_object_page(
+            key,
+            text_page,
+            object_page,
+            text_system,
+            false,
+            true,
+            successor,
+        )
+    }
+
+    pub(crate) fn prepare_index_object_page(
+        &self,
+        key: crate::GeometryJobKey,
+        text_page: &RangePage,
+        object_page: &ObjectPage,
+        text_system: &WindowTextSystem,
+        successor: TargetResponseSuccessor,
+    ) -> Result<PreparedTargetResponse, ExactGeometryFailure> {
+        self.prepare_response_object_page(
+            key,
+            text_page,
+            object_page,
+            text_system,
+            true,
+            false,
+            successor,
+        )
+    }
+
+    pub(crate) fn prepare_index_resident_object_page(
+        &self,
+        key: crate::GeometryJobKey,
+        text_page: &RangePage,
+        object_page: &ObjectPage,
+        text_system: &WindowTextSystem,
+        successor: TargetResponseSuccessor,
+    ) -> Result<PreparedTargetResponse, ExactGeometryFailure> {
+        self.prepare_response_object_page(
+            key,
+            text_page,
+            object_page,
+            text_system,
+            true,
+            true,
+            successor,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_response_object_page(
+        &self,
+        key: crate::GeometryJobKey,
+        text_page: &RangePage,
+        object_page: &ObjectPage,
+        text_system: &WindowTextSystem,
+        index: bool,
+        resident: bool,
+        successor: TargetResponseSuccessor,
+    ) -> Result<PreparedTargetResponse, ExactGeometryFailure> {
+        let active = self.response_active(key, index)?;
         let Some(PendingInput::Object(expected)) = active.pending.as_deref().copied() else {
             return Err(self.prepared_validation_failure(ExactGeometryError::WrongInputKind));
         };
@@ -320,7 +473,11 @@ impl ExactGeometryOwner {
         };
         if text_page.id() != active_page.id
             || text_page.range() != active_page.range
-            || !resident_object_page_satisfies(object_page, expected)
+            || if resident {
+                !resident_object_payload_satisfies(object_page, expected)
+            } else {
+                !resident_object_page_satisfies(object_page, expected)
+            }
         {
             return Err(
                 self.prepared_validation_failure(ExactGeometryError::WrongObjectPage(
@@ -343,7 +500,7 @@ impl ExactGeometryOwner {
             .ok_or_else(|| {
                 self.prepared_validation_failure(ExactGeometryError::CapacityExceeded)
             })?;
-        let (mut candidate, shared) = copy_target_continuation(active)
+        let (mut candidate, shared) = copy_response_continuation(active)
             .map_err(|error| self.prepared_validation_failure(error))?;
         let mut budget = self.prepared_budget(&candidate, shared, page_bytes, page_items)?;
         observe_prepared(&mut budget, &candidate, 0, 0)?;
@@ -402,7 +559,7 @@ impl ExactGeometryOwner {
             );
         }
         candidate.text_page = None;
-        self.finish_target_text_page(
+        self.finish_response_text_page(
             candidate,
             active_page.range.end(),
             release,
@@ -411,462 +568,6 @@ impl ExactGeometryOwner {
             budget,
             successor,
         )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn finish_target_text_page(
-        &self,
-        mut candidate: Box<ActiveJob>,
-        page_end: ByteOffset,
-        release: ExactGeometryRelease,
-        text_system: &WindowTextSystem,
-        shared: SharedOutput,
-        mut budget: AdmissionBudget,
-        successor: TargetResponseSuccessor,
-    ) -> Result<PreparedTargetResponse, ExactGeometryFailure> {
-        let inputs = self.inputs.as_deref().expect("active owner retains inputs");
-        let source_end = inputs.binding.extent().byte_len();
-        let reached_source_end = page_end.get() == source_end;
-        let ActiveKind::Target {
-            target,
-            predecessor,
-        } = candidate.kind
-        else {
-            unreachable!("prepared target response retains target kind");
-        };
-        let target_ready = super::checkpoint::target_scan_ready(&candidate.scanner, target);
-        if reached_source_end {
-            super::scan::finalize_source(
-                &mut candidate,
-                text_system,
-                &inputs.layout,
-                &inputs.style,
-                self.limits,
-                source_end,
-                &mut budget,
-            )
-            .map_err(|error| {
-                prepared_failure(
-                    error,
-                    budget
-                        .failure_stage
-                        .unwrap_or(ExactGeometryFailureStage::Finalize),
-                    &budget,
-                )
-            })?;
-        }
-        candidate.page_use = ActivePageUse::Traverse { anchor: page_end };
-        if !reached_source_end && !target_ready {
-            observe_prepared(&mut budget, &candidate, 0, 0)?;
-            return self.finish_active_target_response(
-                candidate,
-                ExactGeometryProgress::Scanning,
-                release,
-                shared,
-                budget,
-                successor,
-            );
-        }
-        self.finish_target_publication(candidate, predecessor, release, shared, budget)
-    }
-
-    fn finish_target_publication(
-        &self,
-        mut delta: Box<ActiveJob>,
-        predecessor: crate::SourcePosition,
-        mut release: ExactGeometryRelease,
-        shared: SharedOutput,
-        mut budget: AdmissionBudget,
-    ) -> Result<PreparedTargetResponse, ExactGeometryFailure> {
-        let current = self.target_active(delta.key)?;
-        let record_count = current
-            .scanner
-            .fragments
-            .len()
-            .checked_add(delta.scanner.fragments.len())
-            .ok_or_else(|| prepared_capacity_failure(&budget))?;
-        let conversion_bytes = size_of::<BlockTargetPublication>()
-            .checked_add(
-                record_count
-                    .checked_mul(size_of::<StreamingLayoutFragment>())
-                    .ok_or_else(|| prepared_capacity_failure(&budget))?,
-            )
-            .ok_or_else(|| prepared_capacity_failure(&budget))?;
-        let conversion_items = record_count
-            .checked_add(1)
-            .ok_or_else(|| prepared_capacity_failure(&budget))?;
-        observe_prepared(&mut budget, &delta, conversion_bytes, conversion_items)?;
-        let output_charge = accounting::add_fragment_charge(
-            current.scanner.output_charge,
-            delta.scanner.output_charge,
-        )
-        .map_err(|error| {
-            prepared_failure(error, ExactGeometryFailureStage::Publication, &budget)
-        })?;
-        let output_item_charge = accounting::add_fragment_item_charge(
-            current.scanner.output_item_charge,
-            delta.scanner.output_item_charge,
-        )
-        .map_err(|error| {
-            prepared_failure(error, ExactGeometryFailureStage::Publication, &budget)
-        })?;
-        let target_source = delta
-            .scanner
-            .target_source
-            .unwrap_or(delta.scanner.target_line_position);
-        let source_end = delta
-            .scanner
-            .continuation
-            .next_position
-            .try_into()
-            .map_err(|_| {
-                prepared_failure(
-                    ExactGeometryError::SourceContract,
-                    ExactGeometryFailureStage::Publication,
-                    &budget,
-                )
-            })?;
-        let fragments = Arc::from(
-            current
-                .scanner
-                .fragments
-                .iter()
-                .cloned()
-                .chain(delta.scanner.fragments.drain(..))
-                .collect::<Vec<_>>(),
-        );
-        let target = Box::new(BlockTargetPublication {
-            key: delta.key,
-            predecessor,
-            target_source,
-            source_end,
-            fragments,
-            charge: output_charge,
-            item_charge: output_item_charge,
-        });
-        let final_counts = accounting::counts(
-            self.inputs.as_deref(),
-            None,
-            self.desired_target.as_deref(),
-            self.index.as_deref(),
-            Some(&target),
-        );
-        if checked_total_bytes(final_counts).is_err_and(|_| true)
-            || checked_total_items(final_counts).is_err_and(|_| true)
-            || checked_total_bytes(final_counts).unwrap_or(usize::MAX)
-                > self.limits.max_retained_bytes
-            || checked_total_items(final_counts).unwrap_or(usize::MAX)
-                > self.limits.max_retained_items
-        {
-            return Err(prepared_failure(
-                ExactGeometryError::CapacityExceeded,
-                ExactGeometryFailureStage::Publication,
-                &budget,
-            ));
-        }
-        release.jobs.push(delta.key);
-        release.counts = checked_add_counts(release.counts, completion_release_counts(&delta))
-            .map_err(|_| prepared_capacity_failure(&budget))?;
-        self.finish_target_response(
-            PreparedTargetResponseState::Complete(target),
-            None,
-            ExactGeometryProgress::TargetComplete,
-            release,
-            shared,
-            budget,
-        )
-    }
-
-    fn finish_active_target_response(
-        &self,
-        mut delta: Box<ActiveJob>,
-        progress: ExactGeometryProgress,
-        release: ExactGeometryRelease,
-        shared: SharedOutput,
-        mut budget: AdmissionBudget,
-        successor: TargetResponseSuccessor,
-    ) -> Result<PreparedTargetResponse, ExactGeometryFailure> {
-        let successor = self
-            .prepare_target_successor(&mut delta, progress, successor)
-            .map_err(|error| prepared_failure(error, ExactGeometryFailureStage::Scan, &budget))?;
-        let current = self.target_active(delta.key)?;
-        let capacity = current
-            .scanner
-            .fragments
-            .len()
-            .checked_add(delta.scanner.fragments.len())
-            .ok_or_else(|| prepared_capacity_failure(&budget))?;
-        let fragments = Vec::with_capacity(capacity);
-        let destination_bytes = fragments
-            .capacity()
-            .checked_mul(size_of::<StreamingLayoutFragment>())
-            .ok_or_else(|| prepared_capacity_failure(&budget))?;
-        observe_prepared(&mut budget, &delta, destination_bytes, fragments.capacity())?;
-        let output_charge = accounting::add_fragment_charge(
-            current.scanner.output_charge,
-            delta.scanner.output_charge,
-        )
-        .map_err(|error| prepared_failure(error, ExactGeometryFailureStage::Scan, &budget))?;
-        let output_item_charge = accounting::add_fragment_item_charge(
-            current.scanner.output_item_charge,
-            delta.scanner.output_item_charge,
-        )
-        .map_err(|error| prepared_failure(error, ExactGeometryFailureStage::Scan, &budget))?;
-        self.finish_target_response(
-            PreparedTargetResponseState::Active(PreparedActiveTarget {
-                delta,
-                fragments,
-                output_charge,
-                output_item_charge,
-            }),
-            Some(successor),
-            progress,
-            release,
-            shared,
-            budget,
-        )
-    }
-
-    fn prepare_target_successor(
-        &self,
-        active: &mut ActiveJob,
-        progress: ExactGeometryProgress,
-        successor: TargetResponseSuccessor,
-    ) -> Result<PreparedTargetSuccessor, ExactGeometryError> {
-        if active.pending.is_some() {
-            return Err(ExactGeometryError::PageAlreadyPending);
-        }
-        let inputs = self.inputs()?;
-        match progress {
-            ExactGeometryProgress::Scanning => {
-                if active.text_page.is_some()
-                    || self
-                        .highest_request
-                        .is_some_and(|highest| successor.page_id <= highest)
-                {
-                    return Err(if active.text_page.is_some() {
-                        ExactGeometryError::PageAlreadyPending
-                    } else {
-                        ExactGeometryError::IdNotMonotonic
-                    });
-                }
-                let (anchor, direction) = match active.page_use {
-                    ActivePageUse::Traverse { anchor } => (anchor, PageDirection::Forward),
-                    ActivePageUse::Context { required_end, .. } => {
-                        (required_end, PageDirection::Backward)
-                    }
-                };
-                let key = PageRequestKey::adjacent(
-                    successor.page_id,
-                    inputs.binding.binding(),
-                    inputs.binding.revision(),
-                    crate::PagePurpose::GeometryTarget,
-                    anchor,
-                    direction,
-                    self.limits.max_page_bytes,
-                )
-                .map_err(|_| ExactGeometryError::InvalidLimits)?;
-                active.pending = Some(Box::new(PendingInput::Text(key)));
-                Ok(PreparedTargetSuccessor::Page(PageRequest::new(key)))
-            }
-            ExactGeometryProgress::NeedObjects => {
-                if self
-                    .highest_object_request
-                    .is_some_and(|highest| successor.object_id <= highest)
-                {
-                    return Err(ExactGeometryError::IdNotMonotonic);
-                }
-                let page = active.text_page.ok_or(ExactGeometryError::WrongInputKind)?;
-                let cursor = active
-                    .scanner
-                    .object_cursor
-                    .filter(|cursor| page.range.contains_offset(cursor.anchor()));
-                let demand = ObjectDemandEnvelope::range(
-                    page.range,
-                    cursor,
-                    ObjectDirection::Forward,
-                    successor.max_objects,
-                    successor.max_object_bytes,
-                )
-                .map_err(|_| ExactGeometryError::SourceContract)?;
-                let key = ObjectRequestKey::new(
-                    successor.object_id,
-                    inputs.binding.binding(),
-                    inputs.binding.revision(),
-                    inputs.presentation_generation,
-                    crate::ObjectPurpose::GeometryTarget,
-                    demand,
-                )
-                .map_err(|_| ExactGeometryError::SourceContract)?;
-                active.pending = Some(Box::new(PendingInput::Object(key)));
-                Ok(PreparedTargetSuccessor::Object {
-                    request: ObjectRequest::new(key),
-                    text_page: page.id,
-                })
-            }
-            _ => Err(ExactGeometryError::WrongInputKind),
-        }
-    }
-
-    fn prepared_budget(
-        &self,
-        _candidate: &ActiveJob,
-        _shared: SharedOutput,
-        page_payload_bytes: usize,
-        page_items: usize,
-    ) -> Result<AdmissionBudget, ExactGeometryFailure> {
-        let counts = self.counts();
-        Ok(AdmissionBudget {
-            fixed_bytes: checked_total_bytes(counts).map_err(|_| {
-                self.prepared_validation_failure(ExactGeometryError::CapacityExceeded)
-            })?,
-            fixed_items: checked_total_items(counts).map_err(|_| {
-                self.prepared_validation_failure(ExactGeometryError::CapacityExceeded)
-            })?,
-            page_payload_bytes,
-            page_items,
-            max_bytes: self.limits.max_retained_bytes,
-            max_items: self.limits.max_retained_items,
-            peak_bytes: 0,
-            peak_items: 0,
-            failure_stage: None,
-        })
-    }
-
-    fn finish_target_response(
-        &self,
-        state: PreparedTargetResponseState,
-        successor: Option<PreparedTargetSuccessor>,
-        progress: ExactGeometryProgress,
-        release: ExactGeometryRelease,
-        shared: SharedOutput,
-        budget: AdmissionBudget,
-    ) -> Result<PreparedTargetResponse, ExactGeometryFailure> {
-        let (state_bytes, state_items) = match &state {
-            PreparedTargetResponseState::Active(active) => {
-                let counts = accounting::active_counts(&active.delta);
-                let destination_bytes = active
-                    .fragments
-                    .capacity()
-                    .checked_mul(size_of::<StreamingLayoutFragment>())
-                    .ok_or_else(|| prepared_capacity_failure(&budget))?;
-                (
-                    checked_total_bytes(counts)
-                        .and_then(|bytes| bytes.checked_add(destination_bytes).ok_or(())),
-                    checked_total_items(counts)
-                        .and_then(|items| items.checked_add(active.fragments.capacity()).ok_or(())),
-                )
-            }
-            PreparedTargetResponseState::Complete(target) => {
-                let counts = accounting::target_counts(target);
-                (
-                    checked_total_bytes(counts)
-                        .and_then(|bytes| bytes.checked_sub(shared.payload_bytes).ok_or(())),
-                    checked_total_items(counts)
-                        .and_then(|items| items.checked_sub(shared.semantic_items).ok_or(()))
-                        .and_then(|items| items.checked_add(shared.fragment_records).ok_or(())),
-                )
-            }
-        };
-        let release_bytes =
-            release_storage_bytes(&release).map_err(|_| prepared_capacity_failure(&budget))?;
-        let release_items =
-            release_storage_items(&release).map_err(|_| prepared_capacity_failure(&budget))?;
-        let retained_bytes = state_bytes
-            .and_then(|bytes| bytes.checked_add(release_bytes).ok_or(()))
-            .map_err(|_| prepared_capacity_failure(&budget))?;
-        let retained_items = state_items
-            .and_then(|items| items.checked_add(release_items).ok_or(()))
-            .map_err(|_| prepared_capacity_failure(&budget))?;
-        Ok(PreparedTargetResponse {
-            state,
-            successor,
-            progress,
-            release,
-            retained_bytes,
-            retained_items,
-            admission_required_bytes: budget.peak_bytes,
-            admission_required_items: budget.peak_items,
-        })
-    }
-
-    fn prepared_validation_failure(&self, error: ExactGeometryError) -> ExactGeometryFailure {
-        ExactGeometryFailure {
-            error,
-            stage: ExactGeometryFailureStage::Validation,
-            release: ExactGeometryRelease::default(),
-            admission_required_bytes: self.counts().total_bytes(),
-            admission_required_items: self.counts().total_items(),
-        }
-    }
-
-    pub(crate) fn commit_prepared_target_response(
-        &mut self,
-        prepared: PreparedTargetResponse,
-    ) -> ExactGeometryAdmission {
-        let PreparedTargetResponse {
-            state,
-            successor,
-            progress,
-            release,
-            admission_required_bytes,
-            admission_required_items,
-            ..
-        } = prepared;
-        match state {
-            PreparedTargetResponseState::Active(mut prepared) => {
-                let current = self
-                    .active
-                    .take()
-                    .expect("prepared target response retains a current active job");
-                debug_assert_eq!(current.key, prepared.delta.key);
-                let mut current = *current;
-                let required = current
-                    .scanner
-                    .fragments
-                    .len()
-                    .checked_add(prepared.delta.scanner.fragments.len())
-                    .expect("prepared fragment count was checked");
-                debug_assert!(prepared.fragments.capacity() >= required);
-                prepared
-                    .fragments
-                    .extend(current.scanner.fragments.drain(..));
-                prepared
-                    .fragments
-                    .extend(prepared.delta.scanner.fragments.drain(..));
-                prepared.delta.scanner.fragments = prepared.fragments;
-                prepared.delta.scanner.output_charge = prepared.output_charge;
-                prepared.delta.scanner.output_item_charge = prepared.output_item_charge;
-                self.active = Some(prepared.delta);
-            }
-            PreparedTargetResponseState::Complete(target) => {
-                let current = self
-                    .active
-                    .take()
-                    .expect("prepared terminal target retains a current active job");
-                debug_assert_eq!(current.key, target.key);
-                debug_assert!(self.target.is_none());
-                self.target = Some(target);
-            }
-        }
-        match successor {
-            Some(PreparedTargetSuccessor::Page(request)) => {
-                self.highest_request = Some(request.key().id());
-            }
-            Some(PreparedTargetSuccessor::Object { request, .. }) => {
-                self.highest_object_request = Some(request.key().id());
-            }
-            None => {}
-        }
-        self.high_water_bytes = self.high_water_bytes.max(admission_required_bytes);
-        self.high_water_items = self.high_water_items.max(admission_required_items);
-        self.observe_current();
-        ExactGeometryAdmission {
-            progress,
-            release,
-            admission_required_bytes,
-            admission_required_items,
-        }
     }
 }
 
@@ -984,6 +685,14 @@ fn resident_object_page_satisfies(page: &ObjectPage, expected: ObjectRequestKey)
         && actual.revision() == expected.revision()
         && actual.presentation_generation() == expected.presentation_generation()
         && actual.purpose() == expected.purpose()
+        && actual.demand() == expected.demand()
+}
+
+fn resident_object_payload_satisfies(page: &ObjectPage, expected: ObjectRequestKey) -> bool {
+    let actual = page.key();
+    actual.binding() == expected.binding()
+        && actual.revision() == expected.revision()
+        && actual.presentation_generation() == expected.presentation_generation()
         && actual.demand() == expected.demand()
 }
 

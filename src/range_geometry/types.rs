@@ -2,17 +2,14 @@ use crate::{BindingId, PresentationGeneration, SourceRevision};
 
 macro_rules! opaque_id {
     ($name:ident, $doc:literal) => {
-        #[doc = $doc]
         #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
         pub struct $name(u64);
 
         impl $name {
-            /// Wraps an opaque monotonic value.
             pub const fn new(value: u64) -> Self {
                 Self(value)
             }
 
-            /// Returns the opaque value for host-side correlation.
             pub const fn get(self) -> u64 {
                 self.0
             }
@@ -29,7 +26,6 @@ opaque_id!(
     "Unique monotonic identity of one exact geometry job."
 );
 
-/// Exact layout identity shared by every exact job and accepted result.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct GeometryKey {
     binding: BindingId,
@@ -70,7 +66,6 @@ impl GeometryKey {
     }
 }
 
-/// Exact immutable identity of one geometry job.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct GeometryJobKey {
     geometry: GeometryKey,
@@ -91,7 +86,6 @@ impl GeometryJobKey {
     }
 }
 
-/// Whether published aggregate geometry is estimated or exact.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GeometryQuality {
     Estimated,

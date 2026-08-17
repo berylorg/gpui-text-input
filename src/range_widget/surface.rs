@@ -11,21 +11,18 @@ use crate::{
 
 use super::{DesiredSurface, RangeSelection};
 
-/// Exact retained byte and semantic-record charge for one coherent surface.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct RangeSurfaceCharge {
     pub bytes: usize,
     pub items: usize,
 }
 
-/// One source-order entry for the bounded text-page ownership already moved into a surface.
 #[derive(Clone, Copy, Debug)]
 struct SurfacePageIndex {
     index: u32,
     start: ByteOffset,
 }
 
-/// One temporary source-order locator into admitted object-page storage.
 #[derive(Clone, Copy, Debug)]
 struct SurfaceObjectIndex {
     anchor: ByteOffset,
@@ -44,7 +41,6 @@ impl RangeSurfaceCharge {
     }
 }
 
-/// Exact bounded geometry for one realized source-zero-width object.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RealizedInlineObjectGeometry {
     id: InlineObjectId,
@@ -59,7 +55,6 @@ pub struct RealizedInlineObjectGeometry {
     object_index: u32,
 }
 
-/// One immutable realized object publication borrowing its already-admitted presentation facts.
 #[derive(Clone, Copy, Debug)]
 pub struct RealizedInlineObjectPresentation<'a> {
     geometry: RealizedInlineObjectGeometry,
@@ -110,7 +105,6 @@ impl RealizedInlineObjectGeometry {
     }
 }
 
-/// Exact caret geometry for one realized adjacent-object gap.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RealizedObjectGapGeometry {
     position: SourcePosition,
@@ -127,14 +121,12 @@ impl RealizedObjectGapGeometry {
     }
 }
 
-/// Exact composite result of a hit against the bounded coherent surface.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum RangeSurfaceHit {
     Gap(SourcePosition),
     Object(RealizedInlineObjectGeometry),
 }
 
-/// One atomically published logical and visual range-backed widget surface.
 #[derive(Debug)]
 pub struct CoherentRangeSurface {
     binding: RangeBinding,
@@ -164,7 +156,6 @@ pub struct CoherentRangeSurface {
     charge: RangeSurfaceCharge,
 }
 
-/// Fully validated and allocated surface state awaiting clone-free owner transfer.
 pub(super) struct PreparedCoherentRangeSurface {
     binding: RangeBinding,
     geometry: GeometryKey,
@@ -608,7 +599,6 @@ impl CoherentRangeSurface {
     pub const fn caret(&self) -> SourcePosition {
         self.selection.head
     }
-    /// Returns the byte-only platform projection when no endpoint is object-gap ambiguous.
     pub fn platform_selection(&self) -> Option<RangeSelection> {
         matches!(self.selection.anchor.gap, crate::InlineObjectGap::NoObjects).then_some(())?;
         matches!(self.selection.head.gap, crate::InlineObjectGap::NoObjects).then_some(())?;
@@ -651,7 +641,6 @@ impl CoherentRangeSurface {
         &self.pages
     }
 
-    /// Iterates the bounded resident text pages in the source order prepared with this surface.
     pub(super) fn pages_in_source_order(&self) -> impl ExactSizeIterator<Item = &RangePage> {
         self.page_order
             .iter()
@@ -663,7 +652,6 @@ impl CoherentRangeSurface {
     pub fn realized_objects(&self) -> &[RealizedInlineObjectGeometry] {
         &self.realized_objects
     }
-    /// Iterates presentation facts only for this exact coherent publication.
     pub fn realized_presentations(
         &self,
         publication: crate::GeometryJobKey,
@@ -683,7 +671,6 @@ impl CoherentRangeSurface {
         self.target.key()
     }
 
-    /// Resolves surface-owned indices carried only through internal coherent interaction paths.
     pub(super) fn presentation_for_geometry(
         &self,
         geometry: RealizedInlineObjectGeometry,
@@ -808,7 +795,6 @@ impl CoherentRangeSurface {
         object_selected_by(&self.realized_objects, selection)
     }
 
-    /// Resolves a byte boundary only through exact maps/gaps already in this coherent surface.
     pub(super) fn source_position_for_byte(
         &self,
         offset: ByteOffset,
@@ -1259,11 +1245,6 @@ fn bounds_for_composite_selection_from_maps(
     bounds
 }
 
-/// Computes the first and last selection rectangles from GPUI's ordered fragment maps.
-///
-/// The target output is the append-only sequence of GPUI admissions, whose session rejects an
-/// out-of-order ordinal or logical start. Returning `None` on a violated ordering keeps a bad
-/// publication from producing an approximate platform bound.
 fn first_last_bounds_for_fragment_maps(
     fragments: &[StreamingLayoutFragment],
     selected: ByteRange,

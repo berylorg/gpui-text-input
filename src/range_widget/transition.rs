@@ -1,5 +1,3 @@
-//! Widget-owned bounded transition preparation and ordered publication.
-
 use std::{collections::VecDeque, mem::size_of};
 
 use gpui::Context;
@@ -48,11 +46,57 @@ pub(super) struct WidgetTransitionCandidate {
     )>,
 }
 
-impl WidgetTransitionCandidate {
-    #[cfg(test)]
-    pub(super) const fn admission_charge(&self) -> crate::RangeSurfaceCharge {
-        self.admission_charge
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct WidgetAdmissionComponents {
+    pub(super) prior_surface: crate::RangeSurfaceCharge,
+    pub(super) current_request_storage: crate::RangeSurfaceCharge,
+    pub(super) candidate_record: crate::RangeSurfaceCharge,
+    pub(super) geometry: crate::RangeSurfaceCharge,
+    pub(super) resident_payload: crate::RangeSurfaceCharge,
+    pub(super) publication_allocation: crate::RangeSurfaceCharge,
+    pub(super) effect_storage: crate::RangeSurfaceCharge,
+    pub(super) event_storage: crate::RangeSurfaceCharge,
+    pub(super) page_demand: crate::RangeSurfaceCharge,
+    pub(super) object_rebind: crate::RangeSurfaceCharge,
+    pub(super) residency_rebind: crate::RangeSurfaceCharge,
+    pub(super) detached_edit_storage: crate::RangeSurfaceCharge,
+    pub(super) destination_request_storage: crate::RangeSurfaceCharge,
+    pub(super) proof_storage: crate::RangeSurfaceCharge,
+}
+
+impl WidgetAdmissionComponents {
+    pub(super) fn checked_total(self) -> Option<crate::RangeSurfaceCharge> {
+        [
+            self.prior_surface,
+            self.current_request_storage,
+            self.candidate_record,
+            self.geometry,
+            self.resident_payload,
+            self.publication_allocation,
+            self.effect_storage,
+            self.event_storage,
+            self.page_demand,
+            self.object_rebind,
+            self.residency_rebind,
+            self.detached_edit_storage,
+            self.destination_request_storage,
+            self.proof_storage,
+        ]
+        .into_iter()
+        .try_fold(crate::RangeSurfaceCharge::default(), |total, charge| {
+            Some(crate::RangeSurfaceCharge {
+                bytes: total.bytes.checked_add(charge.bytes)?,
+                items: total.items.checked_add(charge.items)?,
+            })
+        })
     }
+}
+
+pub(super) struct PreparedIndexResponseTarget {
+    pub(super) job: crate::GeometryJobKey,
+    pub(super) desired: DesiredSurface,
+    pub(super) surface_candidate: SurfaceCandidate,
+    pub(super) committed_next_id: u64,
 }
 
 pub(super) struct ActiveObjectTransitionCandidate {
@@ -97,6 +141,51 @@ pub(super) struct CommittedWidgetTransition {
 }
 
 impl RangeTextInput {
+    pub(super) fn prepare_index_response_target(
+        &self,
+        geometry: &crate::range_geometry::PreparedTargetResponse,
+    ) -> Result<PreparedIndexResponseTarget, RangeTextInputError> {
+        let index = geometry
+            .terminal_index()
+            .ok_or(RangeTextInputError::Stale)?;
+        let restoration = self
+            .surface_candidate
+            .as_ref()
+            .and_then(|candidate| candidate.restoration)
+            .or(self.restoration_seed);
+        let mut desired = self.desired;
+        if self.pending_select_all {
+            desired.source_selection = Some(index.document_selection());
+            desired.composition = None;
+            desired.target_block = index.aggregate().content_height();
+            desired.reveal_caret = true;
+            desired.inline_object_interaction = self.active_object.map(|_| {
+                super::DesiredInlineObjectInteraction::Clear(
+                    crate::InlineObjectRealizationLossReason::SelectionChanged,
+                )
+            });
+        }
+        let committed_next_id = self
+            .next_id
+            .checked_add(2)
+            .ok_or(RangeTextInputError::Busy)?;
+        let job = crate::GeometryJobKey::new(
+            geometry.key().geometry(),
+            crate::GeometryJobId::new(self.next_id),
+        );
+        Ok(PreparedIndexResponseTarget {
+            job,
+            desired,
+            surface_candidate: SurfaceCandidate {
+                job,
+                binding: self.config.binding,
+                desired,
+                restoration,
+            },
+            committed_next_id,
+        })
+    }
+
     pub(super) fn prepare_active_object_transition(
         &self,
         transition: ActiveObjectTransition,
@@ -283,11 +372,23 @@ impl RangeTextInput {
         interaction: ActiveObjectTransition,
     ) -> Result<WidgetTransitionCandidate, RangeTextInputError> {
         let (job_id, request_id, committed_next_id) = self.transition_ids()?;
+        let target_anchor = restoration.map(|seed| seed.scroll.position).or_else(|| {
+            desired
+                .reveal_caret
+                .then_some(desired.source_selection)
+                .flatten()
+                .map(|selection| selection.head)
+                .filter(|position| {
+                    let offset = position.byte_offset.get();
+                    (offset == 0 || offset == self.config.binding.extent().byte_len())
+                        && !matches!(position.gap, crate::InlineObjectGap::NoObjects)
+                })
+        });
         let geometry = self.geometry.prepare_target_replacement(
             job_id,
             request_id,
             desired.target(),
-            restoration.map(|seed| seed.scroll.position),
+            target_anchor,
         )?;
         let state = SurfaceCandidate {
             job: geometry.key(),
@@ -776,79 +877,88 @@ impl RangeTextInput {
                 .map_or(0, |(_, proofs)| proofs.capacity()),
             size_of::<crate::range_edit::SourcePositionProof>(),
         )?;
-        let candidate_bytes = checked_capacity_sum([
-            size_of::<WidgetTransitionCandidate>(),
-            geometry.retained_bytes(),
-            target_publication
-                .as_ref()
-                .map_or(0, |publication| publication.resident_payload_charge().bytes),
-            target_publication.as_ref().map_or(0, |publication| {
-                publication.prepared_allocation_charge().bytes
-            }),
-            effect_bytes,
-            event_bytes,
-            page.as_ref().map_or(0, PreparedPageDemand::retained_bytes),
-            object_rebind
-                .as_ref()
-                .map_or(0, PreparedObjectRebind::retained_bytes),
-            residency_rebind
-                .as_ref()
-                .map_or(0, PreparedResidencyRebind::retained_bytes),
-            detached_edit_bytes,
-            destination_request_bytes,
-            proof_bytes,
-        ])?;
         let proof_items = adopted_mutation
             .as_ref()
             .map_or(0, |(_, proofs)| proofs.capacity());
-        let candidate_items = checked_capacity_sum([
-            1,
-            geometry.retained_items(),
-            target_publication
-                .as_ref()
-                .map_or(0, |publication| publication.resident_payload_charge().items),
-            target_publication.as_ref().map_or(0, |publication| {
-                publication.prepared_allocation_charge().items
-            }),
-            effects.capacity(),
-            events.capacity(),
-            page.as_ref().map_or(0, PreparedPageDemand::retained_items),
-            object_rebind
-                .as_ref()
-                .map_or(0, PreparedObjectRebind::retained_items),
-            residency_rebind
-                .as_ref()
-                .map_or(0, PreparedResidencyRebind::retained_items),
-            replacement_detached_edits.as_ref().map_or(0, Vec::capacity),
-            requests.capacity(),
-            proof_items,
-        ])?;
         let current_request_bytes = self
             .requests
             .capacity()
             .checked_mul(size_of::<RangeTextInputRequest>())
             .ok_or(RangeTextInputError::SurfaceCapacity)?;
-        let current_request_items = self.requests.capacity();
         let prior_charge = self
             .surface
             .as_ref()
             .map_or(crate::RangeSurfaceCharge::default(), |surface| {
                 surface.charge()
             });
-        let peak_bytes = prior_charge
-            .bytes
-            .checked_add(current_request_bytes)
-            .ok_or(RangeTextInputError::SurfaceCapacity)?
-            .checked_add(candidate_bytes)
+        let admission_components = WidgetAdmissionComponents {
+            prior_surface: prior_charge,
+            current_request_storage: crate::RangeSurfaceCharge {
+                bytes: current_request_bytes,
+                items: self.requests.capacity(),
+            },
+            candidate_record: crate::RangeSurfaceCharge {
+                bytes: size_of::<WidgetTransitionCandidate>(),
+                items: 1,
+            },
+            geometry: crate::RangeSurfaceCharge {
+                bytes: geometry.retained_bytes(),
+                items: geometry.retained_items(),
+            },
+            resident_payload: target_publication.as_ref().map_or(
+                crate::RangeSurfaceCharge::default(),
+                PreparedTargetPublication::resident_payload_charge,
+            ),
+            publication_allocation: target_publication.as_ref().map_or(
+                crate::RangeSurfaceCharge::default(),
+                PreparedTargetPublication::prepared_allocation_charge,
+            ),
+            effect_storage: crate::RangeSurfaceCharge {
+                bytes: effect_bytes,
+                items: effects.capacity(),
+            },
+            event_storage: crate::RangeSurfaceCharge {
+                bytes: event_bytes,
+                items: events.capacity(),
+            },
+            page_demand: crate::RangeSurfaceCharge {
+                bytes: page.as_ref().map_or(0, PreparedPageDemand::retained_bytes),
+                items: page.as_ref().map_or(0, PreparedPageDemand::retained_items),
+            },
+            object_rebind: crate::RangeSurfaceCharge {
+                bytes: object_rebind
+                    .as_ref()
+                    .map_or(0, PreparedObjectRebind::retained_bytes),
+                items: object_rebind
+                    .as_ref()
+                    .map_or(0, PreparedObjectRebind::retained_items),
+            },
+            residency_rebind: crate::RangeSurfaceCharge {
+                bytes: residency_rebind
+                    .as_ref()
+                    .map_or(0, PreparedResidencyRebind::retained_bytes),
+                items: residency_rebind
+                    .as_ref()
+                    .map_or(0, PreparedResidencyRebind::retained_items),
+            },
+            detached_edit_storage: crate::RangeSurfaceCharge {
+                bytes: detached_edit_bytes,
+                items: replacement_detached_edits.as_ref().map_or(0, Vec::capacity),
+            },
+            destination_request_storage: crate::RangeSurfaceCharge {
+                bytes: destination_request_bytes,
+                items: requests.capacity(),
+            },
+            proof_storage: crate::RangeSurfaceCharge {
+                bytes: proof_bytes,
+                items: proof_items,
+            },
+        };
+        let admission_charge = admission_components
+            .checked_total()
             .ok_or(RangeTextInputError::SurfaceCapacity)?;
-        let peak_items = prior_charge
-            .items
-            .checked_add(current_request_items)
-            .ok_or(RangeTextInputError::SurfaceCapacity)?
-            .checked_add(candidate_items)
-            .ok_or(RangeTextInputError::SurfaceCapacity)?;
-        if peak_bytes > self.config.limits.max_surface_bytes
-            || peak_items > self.config.limits.max_surface_items
+        if admission_charge.bytes > self.config.limits.max_surface_bytes
+            || admission_charge.items > self.config.limits.max_surface_items
             || target_publication.as_ref().is_some_and(|publication| {
                 publication.final_charge().bytes > self.config.limits.max_surface_bytes
                     || publication.final_charge().items > self.config.limits.max_surface_items
@@ -856,6 +966,9 @@ impl RangeTextInput {
         {
             return Err(RangeTextInputError::SurfaceCapacity);
         }
+        #[cfg(test)]
+        self.last_widget_admission_components
+            .set(Some(admission_components));
         Ok(WidgetTransitionCandidate {
             expected_next_id: self.next_id,
             committed_next_id,
@@ -877,10 +990,7 @@ impl RangeTextInput {
             active_object,
             pointer_anchor: None,
             requests,
-            admission_charge: crate::RangeSurfaceCharge {
-                bytes: peak_bytes,
-                items: peak_items,
-            },
+            admission_charge,
             reject_restoration,
             settling_mutation,
             adopted_mutation,

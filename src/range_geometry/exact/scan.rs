@@ -294,7 +294,14 @@ fn admit_inline_object(
     if leading.byte_offset > object.anchor() {
         return Err(ExactGeometryError::SourceContract);
     }
-    let expected_leading = if leading.byte_offset == object.anchor() {
+    let pristine_object_origin =
+        leading.byte_offset == object.anchor() && matches!(leading.gap, InlineObjectGap::NoObjects);
+    let expected_leading = if pristine_object_origin {
+        SourcePosition::new(
+            object.anchor(),
+            InlineObjectGap::before(object.cursor().neighbor()),
+        )
+    } else if leading.byte_offset == object.anchor() {
         leading
     } else {
         SourcePosition::new(
@@ -326,6 +333,24 @@ fn admit_inline_object(
             true,
             budget,
         )?;
+    }
+    if pristine_object_origin {
+        job.scanner.continuation.next_position = expected_leading.into();
+        for checkpoint in job
+            .scanner
+            .checkpoints
+            .iter_mut()
+            .filter(|checkpoint| checkpoint.source == leading)
+        {
+            checkpoint.source = expected_leading;
+            checkpoint.continuation.next_position = expected_leading.into();
+        }
+        if job.scanner.target_line_position == leading {
+            job.scanner.target_line_position = expected_leading;
+        }
+        if job.scanner.target_source == Some(leading) {
+            job.scanner.target_source = Some(expected_leading);
+        }
     }
     if SourcePosition::try_from(job.scanner.continuation.next_position)
         .map_err(|_| ExactGeometryError::SourceContract)?

@@ -11,7 +11,6 @@ impl ExactGeometryOwner {
         self.request_block_target_inner(id, target, None)
     }
 
-    /// Requests a bounded block target whose retained geometry includes an exact composite anchor.
     pub fn request_block_target_anchored(
         &mut self,
         id: GeometryJobId,

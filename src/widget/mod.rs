@@ -31,43 +31,30 @@ pub use theme::TextInputTheme;
 
 use layout::InputLineLayout;
 
-/// Policy for the unmodified Enter key.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TextInputEnterKey {
-    /// Insert a newline when the field is multiline.
     InsertNewline,
-    /// Let the host handle Enter through an ancestor action listener.
     Propagate,
 }
 
-/// Policy for Up and Down when the field is single-line.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TextInputSingleLineVerticalKey {
-    /// Treat Up and Down as handled text-input commands.
     Handle,
-    /// Let the host handle Up and Down through ancestor action listeners.
     Propagate,
 }
 
-/// Policy for copy and cut commands when the selection contains atoms.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TextInputAtomClipboardPolicy {
-    /// Write atom fallback text as ordinary plain text.
     PlainText,
-    /// Let the host handle atom clipboard data through an ancestor listener.
     Propagate,
 }
 
-/// Policy for paste commands carrying non-plain or metadata-rich clipboard data.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TextInputRichPastePolicy {
-    /// Insert the clipboard's plain text projection when one exists.
     PlainText,
-    /// Let the host inspect rich clipboard entries before falling back to text.
     Propagate,
 }
 
-/// Reusable app-neutral GPUI text input.
 pub struct TextInput {
     focus_handle: FocusHandle,
     state: TextInputState,
@@ -105,42 +92,34 @@ enum PendingScrollbarRequest {
 }
 
 impl TextInput {
-    /// Returns the current plain text.
     pub fn text(&self) -> &str {
         self.state.text()
     }
 
-    /// Returns the current cursor offset.
     pub fn cursor_offset(&self) -> usize {
         self.state.cursor_offset()
     }
 
-    /// Returns the current selection range.
     pub fn selection(&self) -> Range<usize> {
         self.state.selection()
     }
 
-    /// Returns opaque inline atom ranges.
     pub fn atoms(&self) -> &[TextInputAtom] {
         self.state.atoms()
     }
 
-    /// Returns whether IME marked text is active.
     pub fn has_marked_text(&self) -> bool {
         self.state.marked_range().is_some()
     }
 
-    /// Returns selection export with atom fallback text.
     pub fn selection_export(&self) -> Option<TextInputSelectionExport> {
         self.state.selection_export()
     }
 
-    /// Returns the current model state.
     pub fn state(&self) -> &TextInputState {
         &self.state
     }
 
-    /// Returns lower-bound retained byte and item counts for diagnostics.
     pub fn retained_counts(&self) -> TextInputRetainedCounts {
         let mut counts = self.state.retained_counts();
         counts.widget_layout_line_count = Some(self.last_layout.len());
@@ -155,17 +134,14 @@ impl TextInput {
         counts
     }
 
-    /// Clears undo and redo snapshots without changing the current buffer.
     pub fn clear_edit_history(&mut self) {
         self.state.clear_edit_history();
     }
 
-    /// Returns the current visible byte range from the last rendered layout.
     pub fn visible_range(&self) -> Range<usize> {
         self.visible_range.clone()
     }
 
-    /// Returns the current scroll offset from the last rendered layout.
     pub fn scroll_offset(&self) -> Point<Pixels> {
         point(self.scroll_x, self.scroll_y)
     }
@@ -202,12 +178,10 @@ impl TextInput {
         self.note_vertical_scrollbar_activity(window, cx);
     }
 
-    /// Returns whether the widget accepts focus and text input.
     pub fn is_enabled(&self) -> bool {
         self.enabled
     }
 
-    /// Enables or disables the widget.
     pub fn set_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
         if self.enabled == enabled {
             return;
@@ -217,7 +191,6 @@ impl TextInput {
         cx.notify();
     }
 
-    /// Sets visual colors used by the text renderer.
     pub fn set_theme(&mut self, theme: TextInputTheme, cx: &mut Context<Self>) {
         if self.theme == theme {
             return;
@@ -227,32 +200,26 @@ impl TextInput {
         cx.notify();
     }
 
-    /// Sets the unmodified Enter-key policy.
     pub fn set_enter_key(&mut self, enter_key: TextInputEnterKey) {
         self.enter_key = enter_key;
     }
 
-    /// Sets the single-line Up/Down key policy.
     pub fn set_single_line_vertical_key(&mut self, key: TextInputSingleLineVerticalKey) {
         self.single_line_vertical_key = key;
     }
 
-    /// Sets atom clipboard propagation policy.
     pub fn set_atom_clipboard_policy(&mut self, policy: TextInputAtomClipboardPolicy) {
         self.atom_clipboard_policy = policy;
     }
 
-    /// Sets rich clipboard paste propagation policy.
     pub fn set_rich_paste_policy(&mut self, policy: TextInputRichPastePolicy) {
         self.rich_paste_policy = policy;
     }
 
-    /// Returns a clone of the GPUI focus handle.
     pub fn tab_focus_handle(&self) -> FocusHandle {
         self.focus_handle.clone()
     }
 
-    /// Focuses the input.
     pub fn focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.enabled {
             window.focus(&self.focus_handle);
@@ -260,7 +227,6 @@ impl TextInput {
         }
     }
 
-    /// Replaces all text from host state and clears transient edit history.
     pub fn set_text(&mut self, text: impl Into<String>, cx: &mut Context<Self>) -> bool {
         let changed = self.state.reset_text(text);
         self.scroll_x = px(0.0);
@@ -270,14 +236,12 @@ impl TextInput {
         changed
     }
 
-    /// Replaces all text and selects it.
     pub fn set_text_and_select(&mut self, text: impl Into<String>, cx: &mut Context<Self>) -> bool {
         let changed = self.set_text(text, cx) | self.state.select_all();
         self.finish_selection_change(changed, cx);
         changed
     }
 
-    /// Replaces the atom set without changing display text.
     pub fn set_atoms(
         &mut self,
         atoms: impl IntoIterator<Item = TextInputAtom>,
@@ -288,14 +252,12 @@ impl TextInput {
         Ok(changed)
     }
 
-    /// Selects all text.
     pub fn select_all_text(&mut self, cx: &mut Context<Self>) -> bool {
         let changed = self.state.select_all();
         self.finish_selection_change(changed, cx);
         changed
     }
 
-    /// Sets selection to an explicit byte range.
     pub fn set_selection(
         &mut self,
         range: Range<usize>,
@@ -307,13 +269,11 @@ impl TextInput {
         changed
     }
 
-    /// Inserts text at the current selection.
     pub fn replace_selected_text(&mut self, text: &str, cx: &mut Context<Self>) -> bool {
         let changed = self.state.paste(text);
         self.finish_change(changed, cx)
     }
 
-    /// Inserts text at a byte offset without using the current selection.
     pub fn insert_text_at_offset(
         &mut self,
         offset: usize,
@@ -324,13 +284,11 @@ impl TextInput {
         self.finish_change(changed, cx)
     }
 
-    /// Inserts a newline if this is a multiline field.
     pub fn insert_newline(&mut self, cx: &mut Context<Self>) -> bool {
         let changed = self.state.insert_newline();
         self.finish_change(changed, cx)
     }
 
-    /// Replaces an explicit range with one opaque atom.
     pub fn replace_text_range_with_atom(
         &mut self,
         range: Range<usize>,
@@ -348,7 +306,6 @@ impl TextInput {
         Ok(self.finish_change(changed, cx))
     }
 
-    /// Replaces the active selection with text containing opaque atoms.
     pub fn replace_selected_text_with_atoms(
         &mut self,
         display_text: &str,
@@ -361,7 +318,6 @@ impl TextInput {
         Ok(self.finish_change(changed, cx))
     }
 
-    /// Cuts selected text and returns atom metadata for host clipboard handling.
     pub fn cut_selection_export(
         &mut self,
         cx: &mut Context<Self>,
@@ -371,7 +327,6 @@ impl TextInput {
         Some(selection)
     }
 
-    /// Removes the first atom with the host-owned id.
     pub fn remove_atom_by_id(&mut self, atom_id: &str, cx: &mut Context<Self>) -> bool {
         let changed = self.state.remove_atom_by_id(atom_id);
         self.finish_change(changed, cx)

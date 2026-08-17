@@ -17,7 +17,6 @@ mod counts;
 pub use counts::ExactGeometryCounts;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-/// Independent byte and semantic-record limits for exact geometry ownership.
 pub struct ExactGeometryLimits {
     pub(super) max_page_bytes: u64,
     pub(super) max_checkpoints: usize,
@@ -59,7 +58,6 @@ impl ExactGeometryLimits {
         self.max_retained_bytes
     }
 
-    /// Maximum semantic records live at any owner or admission peak.
     pub const fn max_retained_items(self) -> usize {
         self.max_retained_items
     }
@@ -182,7 +180,6 @@ impl ExactGeometryCheckpoint {
         self.block_offset
     }
 
-    /// First block position whose output can be reconstructed without prior fragments.
     pub fn resume_block_offset(&self) -> Pixels {
         self.continuation.block_offset + self.continuation.line_block_extent
     }
@@ -305,12 +302,10 @@ impl BlockTargetPublication {
         &self.fragments
     }
 
-    /// Exact GPUI payload retained by the published fragments; continuation is always zero.
     pub const fn charge(&self) -> StreamingLayoutCharge {
         self.charge
     }
 
-    /// Exact GPUI semantic records retained by the published fragments; continuation is zero.
     pub const fn item_charge(&self) -> StreamingLayoutItemCharge {
         self.item_charge
     }
@@ -347,7 +342,6 @@ impl ExactGeometryStart {
         &self.release
     }
 
-    /// Peak retained bytes required to admit this start operation.
     pub const fn admission_required_bytes(&self) -> usize {
         self.admission_required_bytes
     }
@@ -357,7 +351,6 @@ impl ExactGeometryStart {
     }
 }
 
-/// One successfully admitted page step and its observable releases.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExactGeometryAdmission {
     pub(super) progress: ExactGeometryProgress,
@@ -375,7 +368,6 @@ impl ExactGeometryAdmission {
         &self.release
     }
 
-    /// Peak live bytes required by this page admission.
     pub const fn admission_required_bytes(&self) -> usize {
         self.admission_required_bytes
     }
@@ -419,7 +411,6 @@ pub enum ExactGeometryError {
     Layout(StreamingLayoutError),
 }
 
-/// A rejected page admission together with every owner-held resource it released.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ExactGeometryFailure {
     pub(super) error: ExactGeometryError,
@@ -442,7 +433,6 @@ impl ExactGeometryFailure {
         &self.release
     }
 
-    /// Peak live bytes observed or required by the rejected admission.
     pub const fn admission_required_bytes(&self) -> usize {
         self.admission_required_bytes
     }
@@ -452,7 +442,6 @@ impl ExactGeometryFailure {
     }
 }
 
-/// Owner boundary at which a page admission was rejected.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExactGeometryFailureStage {
     Validation,

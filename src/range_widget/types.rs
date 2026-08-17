@@ -5,12 +5,10 @@ use crate::{
     BlockTarget, ByteOffset, ByteRange, ClipboardKey, ClipboardLimits, ClipboardWriteRequest,
     ExactGeometryError, ExactGeometryLimits, MutationError, MutationFragment, MutationKey,
     MutationLimits, MutationOutcome, MutationProposal, ObjectRequest, ObjectRequestKey,
-    ObjectResidencyLimits, PageRequest, PageRequestKey,
-    PresentationGeneration, RangeBinding, ResidencyLimits, SegmentationLimits,
-    StreamingGeometryStyle,
+    ObjectResidencyLimits, PageRequest, PageRequestKey, PresentationGeneration, RangeBinding,
+    ResidencyLimits, SegmentationLimits, StreamingGeometryStyle,
 };
 
-/// Exact hard limits owned by one mounted range-backed widget.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RangeTextInputLimits {
     pub max_surface_bytes: usize,
@@ -51,7 +49,6 @@ impl RangeTextInputLimits {
     }
 }
 
-/// Complete construction inputs for one exact range-backed widget.
 #[derive(Clone)]
 pub struct RangeTextInputConfig {
     pub binding: RangeBinding,
@@ -72,10 +69,6 @@ pub struct RangeTextInputConfig {
     pub scrollbar_style: ScrollbarStyle,
 }
 
-/// Explicit byte-only projection used solely by platform text APIs.
-///
-/// The mounted widget's authoritative caret and selection use [`RangeSourceSelection`]. This
-/// projection exists only when both endpoints are proven ordinary text positions.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RangeSelection {
     pub anchor: ByteOffset,
@@ -96,19 +89,15 @@ impl RangeSelection {
     }
 }
 
-/// Compact desired logical vertical position, internal to one mounted surface.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct RangeScrollAnchor {
     pub source: ByteOffset,
     pub intra_anchor: Pixels,
 }
 
-/// Directional composite selection carried by compact restoration only.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RangeSourceSelection {
-    /// Fixed composite anchor endpoint.
     pub anchor: crate::SourcePosition,
-    /// Fixed composite active endpoint.
     pub head: crate::SourcePosition,
 }
 
@@ -128,16 +117,12 @@ impl RangeSourceSelection {
     }
 }
 
-/// Compact logical scroll position with a fixed-size same-anchor continuation witness.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RangeRestorationScrollAnchor {
-    /// Logical source position and bounded same-anchor continuation.
     pub position: crate::SourcePosition,
-    /// Bounded block displacement from the logical anchor.
     pub intra_anchor: Pixels,
 }
 
-/// Optional opaque host-owned undo/redo frontier carried by restoration only.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RangeHistoryFrontier {
     pub id: u64,
@@ -145,7 +130,6 @@ pub struct RangeHistoryFrontier {
     pub redo_available: bool,
 }
 
-/// Exact host-owned undo or redo intent emitted before any mutation proposal exists.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RangeHistoryIntent {
     key: MutationKey,
@@ -164,7 +148,6 @@ impl RangeHistoryIntent {
     }
 }
 
-/// Exact logical result plan returned by the host-owned history authority.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RangeHistoryPlan {
     intent: RangeHistoryIntent,
@@ -195,22 +178,15 @@ impl RangeHistoryPlan {
     }
 }
 
-/// Compact state exported only at a fully quiescent cut.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RangeRestorationSeed {
-    /// Exact host binding, revision, and logical extent.
     pub binding: RangeBinding,
-    /// Exact active caret position.
     pub caret: crate::SourcePosition,
-    /// Exact directional selection endpoints.
     pub selection: RangeSourceSelection,
-    /// Exact logical vertical anchor.
     pub scroll: RangeRestorationScrollAnchor,
-    /// Optional opaque host history frontier identity and availability.
     pub history: Option<RangeHistoryFrontier>,
 }
 
-/// Exact immutable anchor facts for one currently realized inline object.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RealizedInlineObjectAnchor {
     pub binding: RangeBinding,
@@ -221,28 +197,24 @@ pub struct RealizedInlineObjectAnchor {
     pub bounds: gpui::Bounds<Pixels>,
 }
 
-/// Keyboard key that requested ordinary inline-object activation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InlineObjectActivationKey {
     Enter,
     Space,
 }
 
-/// Exact origin of one ordinary inline-object activation request.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum InlineObjectInputOrigin {
     Pointer { point: gpui::Point<Pixels> },
     Keyboard { key: InlineObjectActivationKey },
 }
 
-/// App-neutral activation emitted only from the current exact coherent realization.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct InlineObjectActivation {
     pub anchor: RealizedInlineObjectAnchor,
     pub origin: InlineObjectInputOrigin,
 }
 
-/// Why a formerly active exact object no longer has a usable realized anchor.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InlineObjectRealizationLossReason {
     SelectionChanged,
@@ -255,7 +227,6 @@ pub enum InlineObjectRealizationLossReason {
     Disposed,
 }
 
-/// Terminal loss of one exact active inline-object realization.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct InlineObjectRealizationLoss {
     pub anchor: RealizedInlineObjectAnchor,
@@ -270,7 +241,6 @@ pub(super) struct ActiveInlineObject {
     pub activation_eligible: bool,
 }
 
-/// App-neutral typed work emitted to the host.
 #[derive(Debug)]
 pub enum RangeTextInputRequest {
     Page(PageRequest),
@@ -293,7 +263,6 @@ pub enum RangeTextInputRequest {
     CancelClipboardWrite(ClipboardKey),
 }
 
-/// App-neutral mounted interaction outcomes that do not require host work.
 #[derive(Clone, Debug, PartialEq)]
 pub enum RangeTextInputEvent {
     InlineAtomClicked(crate::AtomId),
@@ -307,14 +276,12 @@ pub enum RangeTextInputEvent {
     InlineObjectRealizationLost(InlineObjectRealizationLoss),
 }
 
-/// Result of a platform query that may require bounded replay first.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PlatformRangeResult {
     Pending(PageRequestKey),
     Ready(String),
 }
 
-/// Terminal or contract failure at the widget boundary.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum RangeTextInputError {
@@ -384,7 +351,6 @@ pub(super) enum DesiredInlineObjectInteraction {
     Clear(InlineObjectRealizationLossReason),
 }
 
-/// Frozen logical and visual facts owned by one exact realization job.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct SurfaceCandidate {
     pub job: crate::GeometryJobKey,

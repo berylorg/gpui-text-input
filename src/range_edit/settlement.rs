@@ -1,7 +1,6 @@
 use super::*;
 
 impl RangeEditCoordinator {
-    /// Validates and settles one committed successor from admitted bounded source projections.
     pub fn settle_committed(
         &mut self,
         key: MutationKey,
@@ -14,7 +13,6 @@ impl RangeEditCoordinator {
         self.settle(key, MutationOutcome::Committed(commit))
     }
 
-    /// Admits the host's one exact terminal outcome and validates a committed successor extent.
     pub fn settle(
         &mut self,
         key: MutationKey,

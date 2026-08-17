@@ -1,5 +1,3 @@
-//! Mounted range-backed multiline widget lifecycle.
-
 mod clipboard;
 mod geometry;
 mod history;
@@ -42,7 +40,6 @@ use crate::{
     RangeEditCoordinator, RangeResidency, SegmentationContinuation,
 };
 
-/// GPUI entity implementing the app-neutral range-backed multiline editor.
 pub struct RangeTextInput {
     focus_handle: FocusHandle,
     enabled: bool,
@@ -61,6 +58,9 @@ pub struct RangeTextInput {
     dispatched_clipboard_write: Option<crate::ClipboardKey>,
     surface: Option<CoherentRangeSurface>,
     last_surface_admission: Option<RangeSurfaceCharge>,
+    #[cfg(test)]
+    last_widget_admission_components:
+        std::cell::Cell<Option<transition::WidgetAdmissionComponents>>,
     desired: DesiredSurface,
     requests: VecDeque<RangeTextInputRequest>,
     dispatched_pages: HashSet<crate::PageRequestKey>,
@@ -125,7 +125,6 @@ impl Focusable for RangeTextInput {
 impl EventEmitter<RangeTextInputEvent> for RangeTextInput {}
 
 impl RangeTextInput {
-    /// Creates a range-backed widget and starts its exact background index.
     pub fn new(
         config: RangeTextInputConfig,
         window: &mut Window,
@@ -226,6 +225,8 @@ impl RangeTextInput {
             dispatched_clipboard_write: None,
             surface: None,
             last_surface_admission: None,
+            #[cfg(test)]
+            last_widget_admission_components: std::cell::Cell::new(None),
             desired: DesiredSurface::origin(config.viewport_extent, config.overscan),
             requests: VecDeque::new(),
             dispatched_pages: HashSet::new(),
@@ -280,12 +281,10 @@ impl RangeTextInput {
         Ok(this)
     }
 
-    /// Returns the currently painted coherent surface, if realization has completed.
     pub fn surface(&self) -> Option<&CoherentRangeSurface> {
         self.surface.as_ref()
     }
 
-    /// Returns the publication that belongs to the exact mounted binding and layout epoch.
     pub(super) fn interactive_surface(&self) -> Option<&CoherentRangeSurface> {
         self.surface.as_ref().filter(|surface| {
             surface.binding() == self.config.binding
@@ -294,17 +293,14 @@ impl RangeTextInput {
         })
     }
 
-    /// Returns presentation-only lower bounds while the current exact index is scanning.
     pub fn geometry_estimate(&self) -> Option<crate::StreamingGeometryEstimate> {
         self.geometry.estimate()
     }
 
-    /// Returns the exact byte and semantic-item peak of the last published surface admission.
     pub const fn last_surface_admission_charge(&self) -> Option<RangeSurfaceCharge> {
         self.last_surface_admission
     }
 
-    /// Removes and returns the next exact request for host dispatch.
     pub fn take_request(&mut self) -> Option<RangeTextInputRequest> {
         let request = self.requests.pop_front()?;
         match &request {
@@ -329,7 +325,6 @@ impl RangeTextInput {
         Some(request)
     }
 
-    /// Returns whether the widget has no unpublished or externally pending work.
     pub fn is_quiescent(&self) -> bool {
         self.active_geometry.is_none()
             && self.pending_geometry_page.is_none()
@@ -351,14 +346,12 @@ impl RangeTextInput {
             && self.requests.is_empty()
     }
 
-    /// Focuses the mounted widget.
     pub fn focus(&self, window: &mut Window) {
         if self.mounted && self.enabled {
             window.focus(&self.focus_handle);
         }
     }
 
-    /// Enables or disables mounted interaction without discarding the coherent surface.
     pub fn set_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
         if self.enabled != enabled {
             let active = if !enabled && self.active_object.is_some() {
@@ -377,7 +370,6 @@ impl RangeTextInput {
         }
     }
 
-    /// Selects editable or read-only behavior.
     pub fn set_read_only(&mut self, read_only: bool, cx: &mut Context<Self>) {
         if self.read_only != read_only {
             self.read_only = read_only;
@@ -385,7 +377,6 @@ impl RangeTextInput {
         }
     }
 
-    /// Replaces every shaping input under a fresh layout epoch while retaining the prior surface.
     pub fn set_layout(
         &mut self,
         layout: gpui::StreamingLayoutBinding,
@@ -401,7 +392,6 @@ impl RangeTextInput {
         Ok(())
     }
 
-    /// Invalidates object presentation under a new generation while retaining the prior surface.
     pub fn set_presentation_generation(
         &mut self,
         presentation_generation: crate::PresentationGeneration,
@@ -419,7 +409,6 @@ impl RangeTextInput {
         Ok(())
     }
 
-    /// Records an absolute block target; source positioning waits for the complete exact index.
     pub fn request_absolute_scroll(
         &mut self,
         block_offset: Pixels,

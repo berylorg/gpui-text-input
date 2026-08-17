@@ -1,7 +1,6 @@
 use super::*;
 
 impl RangeEditCoordinator {
-    /// Admits one exact next fragment while retaining no joined source value.
     pub fn stage(&mut self, fragment: MutationFragment) -> Result<(), MutationError> {
         let key = fragment.key();
         self.active_mut(key, MutationState::Staging)?;

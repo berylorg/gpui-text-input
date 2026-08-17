@@ -1,6 +1,5 @@
 use gpui::{App, Global, KeyBinding, actions};
 
-/// Key context used by the reusable text-input widget.
 pub const TEXT_INPUT_KEY_CONTEXT: &str = "GpuiTextInput";
 
 actions!(
@@ -46,7 +45,6 @@ struct TextInputBindingsInstalled;
 
 impl Global for TextInputBindingsInstalled {}
 
-/// Installs the default app-neutral key bindings for text inputs.
 pub fn ensure_text_input_bindings(cx: &mut App) {
     if cx.has_global::<TextInputBindingsInstalled>() {
         return;

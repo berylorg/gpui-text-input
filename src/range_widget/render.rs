@@ -235,6 +235,9 @@ impl Element for RangeTextInputElement {
         window: &mut Window,
         cx: &mut App,
     ) -> RangePrepaint {
+        self.input.update(cx, |input, cx| {
+            let _ = input.service_admitted_geometry_for_prepaint(window, cx);
+        });
         let input = self.input.read(cx);
         let Some(surface) = input.surface() else {
             return RangePrepaint {

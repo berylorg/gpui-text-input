@@ -1,5 +1,3 @@
-//! Bounded exact clipboard collection and settlement.
-
 use gpui::{Context, Window};
 
 use super::{RangeTextInput, RangeTextInputError, RangeTextInputRequest};
@@ -206,7 +204,6 @@ impl RangeTextInput {
         cx.notify();
     }
 
-    /// Starts bounded exact copy or cut collection for the current coherent selection.
     pub fn begin_clipboard(
         &mut self,
         kind: crate::ClipboardKind,
@@ -249,7 +246,6 @@ impl RangeTextInput {
         self.begin_composite_clipboard_with_proofs(kind, selection, proofs, cx)
     }
 
-    /// Starts a clipboard task over one exact already-proven composite selection.
     pub fn begin_composite_clipboard(
         &mut self,
         kind: crate::ClipboardKind,
@@ -305,14 +301,20 @@ impl RangeTextInput {
         Ok(key)
     }
 
-    /// Delivers one exact bounded object page to the active composite clipboard task.
     pub fn deliver_object_page(
         &mut self,
         page: ObjectPage,
         cx: &mut Context<Self>,
     ) -> Result<(), RangeTextInputError> {
         let key = page.key();
-        if key.purpose() == crate::ObjectPurpose::GeometryTarget {
+        if matches!(
+            key.purpose(),
+            crate::ObjectPurpose::GeometryIndex | crate::ObjectPurpose::GeometryTarget
+        ) {
+            if !self.dispatched_object_pages.contains(&key) {
+                self.requests
+                    .push_back(RangeTextInputRequest::ReleaseObjectPage(key));
+            }
             return Err(RangeTextInputError::Stale);
         }
         if !self.dispatched_object_pages.contains(&key) {
@@ -321,24 +323,6 @@ impl RangeTextInput {
             return Err(RangeTextInputError::Stale);
         }
         let purpose = key.purpose();
-        if purpose == crate::ObjectPurpose::GeometryIndex {
-            let requests = std::collections::VecDeque::with_capacity(
-                self.requests
-                    .len()
-                    .checked_add(1)
-                    .ok_or(RangeTextInputError::SurfaceCapacity)?,
-            );
-            self.deliver_geometry_object_page(page)?;
-            self.dispatched_object_pages.remove(&key);
-            let mut prior = std::mem::replace(&mut self.requests, requests);
-            while let Some(request) = prior.pop_front() {
-                self.requests.push_back(request);
-            }
-            self.requests
-                .push_back(RangeTextInputRequest::ReleaseObjectPage(key));
-            cx.notify();
-            return Ok(());
-        }
         self.dispatched_object_pages.remove(&key);
         let result = match purpose {
             crate::ObjectPurpose::Clipboard => {
@@ -359,22 +343,34 @@ impl RangeTextInput {
         result
     }
 
-    /// Delivers an object page and immediately services any exact geometry work that needs this
-    /// window's text system. Non-geometry object purposes retain their ordinary delivery behavior.
     pub fn deliver_object_page_in_window(
         &mut self,
         page: crate::ObjectPage,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), RangeTextInputError> {
-        if page.key().purpose() == crate::ObjectPurpose::GeometryTarget {
-            return self.deliver_geometry_target_object_page(page, window, cx);
+        if matches!(
+            page.key().purpose(),
+            crate::ObjectPurpose::GeometryIndex | crate::ObjectPurpose::GeometryTarget
+        ) && !self.dispatched_object_pages.contains(&page.key())
+        {
+            self.requests
+                .push_back(RangeTextInputRequest::ReleaseObjectPage(page.key()));
+            return Err(RangeTextInputError::Stale);
+        }
+        match page.key().purpose() {
+            crate::ObjectPurpose::GeometryTarget => {
+                return self.deliver_geometry_target_object_page(page, window, cx);
+            }
+            crate::ObjectPurpose::GeometryIndex => {
+                return self.deliver_geometry_object_page(page, window, cx);
+            }
+            _ => {}
         }
         self.deliver_object_page(page, cx)?;
         self.service_geometry_until_external_boundary(window, cx)
     }
 
-    /// Settles the exact pending composite clipboard object page without payload.
     pub fn fail_object_page(
         &mut self,
         key: crate::ObjectRequestKey,
@@ -403,7 +399,6 @@ impl RangeTextInput {
         }
     }
 
-    /// Delivers the exact result of the platform clipboard write.
     pub fn settle_clipboard_write(
         &mut self,
         key: crate::ClipboardKey,

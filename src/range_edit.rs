@@ -1,5 +1,3 @@
-//! Exact, bounded coordination for one host-owned range mutation.
-
 use crate::{
     AtomId, BindingId, ByteRange, InlineObjectGap, InlineObjectId, InlineObjectOrder,
     LogicalExtent, ObjectResidency, RangeBinding, RangeResidency, SourcePosition, SourceRange,
@@ -18,16 +16,14 @@ pub use proof::*;
 
 macro_rules! opaque_id {
     ($name:ident, $doc:literal) => {
-        #[doc = $doc]
         #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
         pub struct $name(u64);
 
         impl $name {
-            /// Wraps a host-assigned opaque value.
             pub const fn new(value: u64) -> Self {
                 Self(value)
             }
-            /// Returns the opaque value for host-side correlation.
+
             pub const fn get(self) -> u64 {
                 self.0
             }
@@ -37,7 +33,6 @@ macro_rules! opaque_id {
 
 opaque_id!(OperationId, "Unique identity of one range-backed mutation.");
 
-/// The host-owned operation requested through the shared mutation boundary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MutationKind {
     Edit,
@@ -45,7 +40,6 @@ pub enum MutationKind {
     Redo,
 }
 
-/// Exact immutable identity of one mutation transaction.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct MutationKey {
     binding: BindingId,
@@ -65,18 +59,20 @@ impl MutationKey {
             operation,
         }
     }
+
     pub const fn binding(self) -> BindingId {
         self.binding
     }
+
     pub const fn base_revision(self) -> SourceRevision {
         self.base_revision
     }
+
     pub const fn operation(self) -> OperationId {
         self.operation
     }
 }
 
-/// A checked proposal for replacing one exact range at one base revision.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MutationProposal {
     key: MutationKey,
@@ -86,7 +82,6 @@ pub struct MutationProposal {
 }
 
 impl MutationProposal {
-    /// Creates a proposal with the exact normalized `\n` count removed by the replacement.
     pub const fn new(
         key: MutationKey,
         kind: MutationKind,
@@ -100,15 +95,19 @@ impl MutationProposal {
             replacement_line_breaks,
         }
     }
+
     pub const fn key(self) -> MutationKey {
         self.key
     }
+
     pub const fn kind(self) -> MutationKind {
         self.kind
     }
+
     pub const fn replacement(self) -> SourceRange {
         self.replacement
     }
+
     pub fn replacement_bytes(self) -> ByteRange {
         ByteRange::new(
             self.replacement.start().byte_offset,
@@ -116,12 +115,12 @@ impl MutationProposal {
         )
         .expect("source range byte offsets are ordered")
     }
+
     pub const fn replacement_line_breaks(self) -> u64 {
         self.replacement_line_breaks
     }
 }
 
-/// Hard retained-capacity limits for one staged mutation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MutationLimits {
     max_fragments: usize,
@@ -144,14 +143,15 @@ impl MutationLimits {
             max_presentation_bytes: max_staged_bytes,
         })
     }
+
     pub const fn max_fragments(self) -> usize {
         self.max_fragments
     }
+
     pub const fn max_staged_bytes(self) -> usize {
         self.max_staged_bytes
     }
 
-    /// Refines the independent object-count and retained-byte envelopes.
     pub fn with_object_limits(
         mut self,
         max_objects: usize,
@@ -180,10 +180,6 @@ impl MutationLimits {
     }
 }
 
-/// One host-significant atom change carried alongside inserted UTF-8.
-///
-/// Insert and remove sets are independently unique and ordered. Exactly one remove and one insert
-/// may share an [`AtomId`], representing a stable-identity move within the atomic replacement.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AtomChange {
     Insert {
@@ -197,7 +193,6 @@ pub enum AtomChange {
     },
 }
 
-/// One exact source-zero-width object isolated by adjacent composite gaps.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ObjectTarget {
     range: SourceRange,
@@ -247,7 +242,6 @@ impl ObjectTarget {
     }
 }
 
-/// Authoritative successor occurrence of one source-zero-width object.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SuccessorObject {
     id: InlineObjectId,
@@ -277,21 +271,24 @@ impl SuccessorObject {
     pub const fn id(self) -> InlineObjectId {
         self.id
     }
+
     pub const fn anchor(self) -> crate::ByteOffset {
         self.anchor
     }
+
     pub const fn order(self) -> InlineObjectOrder {
         self.order
     }
+
     pub const fn retained_bytes(self) -> usize {
         self.retained_bytes
     }
+
     pub const fn presentation_bytes(self) -> usize {
         self.presentation_bytes
     }
 }
 
-/// One source-zero-width object mutation carried by the shared staged transaction.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ObjectChange {
     Insert {
@@ -312,7 +309,6 @@ pub enum ObjectChange {
     },
 }
 
-/// The payload of one ordered staging fragment.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MutationFragmentPayload {
     Utf8 { inserted_offset: u64, text: String },
@@ -321,7 +317,6 @@ pub enum MutationFragmentPayload {
     Terminal { intended: MutationPositions },
 }
 
-/// One exactly keyed, ordered mutation fragment.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MutationFragment {
     key: MutationKey,
@@ -337,18 +332,20 @@ impl MutationFragment {
             payload: std::sync::Arc::new(payload),
         }
     }
+
     pub const fn key(&self) -> MutationKey {
         self.key
     }
+
     pub const fn ordinal(&self) -> usize {
         self.ordinal
     }
+
     pub fn payload(&self) -> &MutationFragmentPayload {
         self.payload.as_ref()
     }
 }
 
-/// Observable phase of the coordinator's single active transaction.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MutationState {
     Idle,
@@ -358,7 +355,6 @@ pub enum MutationState {
     DetachedCommit,
 }
 
-/// Exact retained staging counts.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct MutationCounts {
     pub fragments: usize,
@@ -388,7 +384,6 @@ impl MutationCounts {
     }
 }
 
-/// The host's one exact terminal result.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MutationOutcome {
     Committed(MutationCommit),
@@ -398,30 +393,24 @@ pub enum MutationOutcome {
     Error,
 }
 
-/// Whether a valid terminal result still belongs to the current binding.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MutationSettlement {
     Current(MutationOutcome),
     Obsolete(MutationOutcome),
 }
 
-/// Result of requesting cancellation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MutationCancellation {
     Cancelled,
     AwaitingHostSettlement,
 }
 
-/// Lifecycle disposition for the active transaction.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MutationDisposal {
-    /// Pre-admission work was cancelled without mutation.
     Cancelled(MutationKey),
-    /// An admitted commit was detached and must still settle at the host.
     Detached(MutationKey),
 }
 
-/// A rejected state transition or malformed fragment/result.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum MutationError {
@@ -522,7 +511,6 @@ struct ActiveMutation {
     source_proofs: Vec<SourcePositionProof>,
 }
 
-/// Coordinates exactly one edit, undo, or redo transaction at a time.
 #[derive(Debug)]
 pub struct RangeEditCoordinator {
     binding: RangeBinding,

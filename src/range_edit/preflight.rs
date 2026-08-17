@@ -1,7 +1,6 @@
 use super::*;
 
 impl RangeEditCoordinator {
-    /// Opens one checked proposal without publishing any authoritative change.
     pub fn begin(&mut self, proposal: MutationProposal) -> Result<(), MutationError> {
         if let Some(active) = &self.active {
             return Err(MutationError::Busy(active.proposal.key()));
@@ -78,7 +77,6 @@ impl RangeEditCoordinator {
         Ok(self.finish(key, MutationOutcome::Rejected, false))
     }
 
-    /// Settles a host-rejected staged proposal or fragment without publication.
     pub fn reject_staging(
         &mut self,
         key: MutationKey,

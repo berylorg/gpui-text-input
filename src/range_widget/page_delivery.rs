@@ -69,7 +69,6 @@ impl RangeTextInput {
             _ => Err(RangeTextInputError::Stale),
         }
     }
-    /// Delivers one exact page result using the current window's shaping system.
     pub fn deliver_page(
         &mut self,
         page: RangePage,
@@ -90,6 +89,9 @@ impl RangeTextInput {
             self.requests
                 .push_back(RangeTextInputRequest::ReleasePage(key));
             return Err(RangeTextInputError::Stale);
+        }
+        if key.purpose() == PagePurpose::GeometryIndex {
+            return self.deliver_geometry_page(page, window, cx);
         }
         let aliases = self.take_page_aliases(key);
         if !aliases.is_empty() {
@@ -113,7 +115,7 @@ impl RangeTextInput {
         let coalesced_clipboard = self.clipboard_waits_on(key).then(|| page.clone());
         let result = match key.purpose() {
             PagePurpose::GeometryIndex | PagePurpose::GeometryTarget => {
-                self.deliver_geometry_page(page, window, cx)
+                unreachable!("geometry page purposes were routed before generic delivery")
             }
             PagePurpose::PlatformRange => self.deliver_platform_page(page, cx),
             PagePurpose::Restoration => self.deliver_restoration_page(page, cx),
@@ -222,7 +224,6 @@ impl RangeTextInput {
         Ok(())
     }
 
-    /// Settles a keyed page request as a terminal host failure.
     pub fn fail_page(
         &mut self,
         key: crate::PageRequestKey,

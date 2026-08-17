@@ -1,10 +1,6 @@
 use super::*;
 use crate::{ObjectPageId, ObjectResidency, PageId, RangeResidency};
 
-/// Constant-size proof that one composite position was observed in coherent bounded sources.
-///
-/// The constructor validates a UTF-8 boundary against one exact text page and the inline gap
-/// against one exact-anchor object page. The proof retains only revision and page identities.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct SourcePositionProof {
     binding: RangeBinding,
@@ -112,7 +108,6 @@ impl SourcePositionProof {
     }
 }
 
-/// Exact successor caret and directed selection positions.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MutationPositions {
     caret: SourcePosition,
@@ -150,7 +145,6 @@ impl MutationPositions {
     }
 }
 
-/// Three bounded coherent-source proofs carried by a committed successor.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct MutationPositionProofs {
     caret: SourcePositionProof,
@@ -190,7 +184,6 @@ impl MutationPositionProofs {
     }
 }
 
-/// One committed successor whose compact positions are proven by coherent bounded sources.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MutationCommit {
     binding: RangeBinding,

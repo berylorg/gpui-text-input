@@ -1,7 +1,6 @@
 use super::*;
 
 impl RangeEditCoordinator {
-    /// Rebinds the coordinator. Pre-admission work is cancelled; an admitted commit is detached.
     pub fn rebind(&mut self, binding: RangeBinding) -> Option<MutationDisposal> {
         let mut disposal = None;
         let mut released = MutationCounts::default();
@@ -26,7 +25,6 @@ impl RangeEditCoordinator {
         disposal
     }
 
-    /// Releases all staged capacity while retaining only an admitted key for late settlement.
     pub fn dispose(&mut self) -> Option<MutationDisposal> {
         let key = self.active_key()?;
         let mut released = MutationCounts::default();

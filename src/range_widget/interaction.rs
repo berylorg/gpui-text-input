@@ -151,10 +151,6 @@ impl RangeTextInput {
         ActiveObjectActivationAttempt::Activated
     }
 
-    /// Validates one host-initiated bounded proposal through the ordinary single transaction slot.
-    ///
-    /// No request becomes visible until the proposal, every ordered fragment, its terminal
-    /// intended positions, and commit admission preconditions have all validated atomically.
     pub fn propose_host_mutation(
         &mut self,
         proposal: MutationProposal,
@@ -214,10 +210,6 @@ impl RangeTextInput {
         Ok(proposal.key())
     }
 
-    /// Admits a bounded set of exact composite positions for ordinary mutation leaves.
-    ///
-    /// The positions are accepted only from current text and object pages that already passed
-    /// their normal residency admission. They authorize no movement, geometry, or hit behavior.
     pub fn admit_edit_positions(
         &mut self,
         positions: &[SourcePosition],
@@ -255,7 +247,6 @@ impl RangeTextInput {
         Ok(())
     }
 
-    /// Returns the exact composite positions adopted from the latest committed successor.
     pub const fn adopted_mutation_positions(&self) -> Option<MutationPositions> {
         self.adopted_positions
     }
@@ -405,7 +396,6 @@ impl RangeTextInput {
         Ok(key)
     }
 
-    /// Accepts preflight and emits the exact bounded staging stream.
     pub fn accept_mutation_preflight(
         &mut self,
         key: MutationKey,
@@ -515,7 +505,6 @@ impl RangeTextInput {
         Ok(())
     }
 
-    /// Rejects a preflight without changing the coherent publication.
     pub fn reject_mutation_preflight(
         &mut self,
         key: MutationKey,
@@ -526,7 +515,6 @@ impl RangeTextInput {
         Ok(settlement)
     }
 
-    /// Rejects a host-inspected staged proposal or fragment without publication.
     pub fn reject_mutation_staging(
         &mut self,
         key: MutationKey,
@@ -537,7 +525,6 @@ impl RangeTextInput {
         Ok(settlement)
     }
 
-    /// Records that the host admitted the exact staged commit.
     pub fn admit_mutation_commit(&mut self, key: MutationKey) -> Result<(), RangeTextInputError> {
         if self.detached_edits.len() >= self.config.limits.max_detached_edits {
             return Err(RangeTextInputError::DetachedCapacity);
@@ -603,7 +590,6 @@ impl RangeTextInput {
         cx.notify();
     }
 
-    /// Delivers a committed successor proven only from normally admitted bounded source pages.
     #[allow(clippy::too_many_arguments)]
     pub fn settle_committed_mutation(
         &mut self,
@@ -620,7 +606,6 @@ impl RangeTextInput {
         self.settle_mutation(key, MutationOutcome::Committed(commit), window, cx)
     }
 
-    /// Delivers one exact terminal mutation settlement.
     pub fn settle_mutation(
         &mut self,
         key: MutationKey,

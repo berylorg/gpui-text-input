@@ -40,19 +40,16 @@ impl RangeEditCoordinator {
             .map_or(MutationCounts::default(), ActiveMutation::counts)
     }
 
-    /// Returns cumulative exact reservations released by this coordinator.
     pub const fn released_counts(&self) -> MutationCounts {
         self.released
     }
 
-    /// Returns staged fragments in their exact admitted order without joining their UTF-8.
     pub fn staged_fragments(&self) -> &[MutationFragment] {
         self.active
             .as_ref()
             .map_or(&[], |active| active.fragments.as_slice())
     }
 
-    /// Reserves one bounded set of exact base-source proofs for an external proposal.
     pub fn reserve_source_positions(
         &mut self,
         key: MutationKey,

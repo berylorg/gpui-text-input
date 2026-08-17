@@ -74,7 +74,6 @@ impl ExactGeometryOwner {
         self.high_water_bytes
     }
 
-    /// Highest exact semantic-record residency observed by this owner.
     pub const fn retained_high_water_items(&self) -> usize {
         self.high_water_items
     }

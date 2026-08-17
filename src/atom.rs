@@ -2,7 +2,6 @@ use std::ops::Range;
 
 use crate::boundary::clamp_to_char_boundary;
 
-/// Opaque inline content range owned by a host application.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TextInputAtom {
     pub(crate) id: String,
@@ -10,7 +9,6 @@ pub struct TextInputAtom {
     pub(crate) copy_text: String,
 }
 
-/// Selection export containing display text plus host-defined atom copy text.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TextInputSelectionExport {
     display_text: String,
@@ -18,7 +16,6 @@ pub struct TextInputSelectionExport {
     atoms: Vec<TextInputSelectionAtom>,
 }
 
-/// Atom occurrence inside an exported or inserted selection.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TextInputSelectionAtom {
     pub(crate) id: String,
@@ -27,7 +24,6 @@ pub struct TextInputSelectionAtom {
     pub(crate) copy_text: String,
 }
 
-/// Error returned when host-provided atom ranges are invalid.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TextInputAtomError {
     InvalidRange,
@@ -42,7 +38,6 @@ pub(crate) enum OffsetAffinity {
 }
 
 impl TextInputAtom {
-    /// Creates an opaque atom occupying `range` in the display text.
     pub fn new(id: impl Into<String>, range: Range<usize>, copy_text: impl Into<String>) -> Self {
         Self {
             id: id.into(),
@@ -51,17 +46,14 @@ impl TextInputAtom {
         }
     }
 
-    /// Returns the host-owned atom id.
     pub fn id(&self) -> &str {
         &self.id
     }
 
-    /// Returns the display-text byte range occupied by this atom.
     pub fn range(&self) -> Range<usize> {
         self.range.clone()
     }
 
-    /// Returns fallback copy text for this atom.
     pub fn copy_text(&self) -> &str {
         &self.copy_text
     }
@@ -80,29 +72,24 @@ impl TextInputSelectionExport {
         }
     }
 
-    /// Returns the exact visible text covered by the selection.
     pub fn display_text(&self) -> &str {
         &self.display_text
     }
 
-    /// Returns fallback plain text suitable for the system clipboard.
     pub fn copy_text(&self) -> &str {
         &self.copy_text
     }
 
-    /// Returns selected atom occurrences in display-text order.
     pub fn atoms(&self) -> &[TextInputSelectionAtom] {
         &self.atoms
     }
 
-    /// Returns whether the selection contains any atom occurrence.
     pub fn has_atoms(&self) -> bool {
         !self.atoms.is_empty()
     }
 }
 
 impl TextInputSelectionAtom {
-    /// Creates an atom occurrence relative to an inserted or selected range.
     pub fn new(
         id: impl Into<String>,
         range: Range<usize>,
@@ -117,22 +104,18 @@ impl TextInputSelectionAtom {
         }
     }
 
-    /// Returns the host-owned atom id.
     pub fn id(&self) -> &str {
         &self.id
     }
 
-    /// Returns this atom's range relative to the exported display text.
     pub fn range(&self) -> Range<usize> {
         self.range.clone()
     }
 
-    /// Returns the visible atom text from the selected range.
     pub fn display_text(&self) -> &str {
         &self.display_text
     }
 
-    /// Returns fallback copy text for this atom occurrence.
     pub fn copy_text(&self) -> &str {
         &self.copy_text
     }
