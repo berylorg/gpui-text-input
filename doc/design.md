@@ -35,11 +35,12 @@ undo and redo history, focus integration, layout, scrolling, and app-neutral eve
 
 The range-backed multiline variant does not own authoritative text or storage. Its host owns the
 authoritative revisioned UTF-8 and inline-object sources, opaque binding identity, logical extent,
-bounded page sources, staged edit sink, and any supported undo and redo authority. The widget owns
+bounded page sources, cursor-based staged edit sink, and any supported undo and redo authority. The widget owns
 only its fixed resident text-page and object-page windows, revision-bound viewport and range
 requests, compact cursor and selection source positions, composition state, scroll state, and
-bounded pending-edit coordination. It never concatenates those pages into an authoritative whole
-value or reconstructs host undo history.
+bounded pending-edit coordination. One logical mutation may consume any representable number of
+bounded source and fragment pages over time; the widget never accumulates the complete operation,
+concatenates pages into an authoritative whole value, or reconstructs host undo history.
 
 Every range-backed request names the exact binding identity and source revision. A response applies
 only to that binding and revision; rebinding never lets an old response become current by offset
@@ -146,20 +147,41 @@ the whole document to resolve one continuation.
 
 ## Range-Backed Edit Transactions
 
-An edit, undo, or redo uses one host-owned staged transaction keyed by binding identity, base
-revision, and unique operation identity. The transaction names one exact composite replacement
-range whose endpoints are source positions. It accepts inserted UTF-8, source-covering atom
-changes, and source-zero-width object insertions, removals, replacements, or moves only as bounded
-ordered fragments with checked source positions and a terminal fragment. Staging does not change
-authoritative text or objects, and the host may reject the proposal or a fragment before commit
-without exposing a partial replacement.
+An edit, undo, or redo uses one app-neutral host-owned transaction session keyed by binding
+identity, base revision, and unique operation identity. Begin captures the exact predecessor caret
+and directed selection, including which endpoint is active, and names the exact composite
+replacement range whose endpoints are predecessor source positions. The widget then exchanges
+bounded source pages and canonical proposal fragments through explicit cursors. The session keeps
+only fixed control state, cumulative checked counts and lengths, the next cursor, and a canonical
+cumulative identity; it never retains a whole-operation fragment collection or requires the host
+to return one.
 
-Typing, paste, deletion, cut, undo, redo, and a host-initiated inline-object command all enter the
-same transaction authority. A host-initiated command proposes its exact base binding, revision,
-composite range, operation identity, bounded fragments, and intended successor positions through
-the widget boundary; it cannot mutate widget projection state directly. The widget rejects an
-external proposal when the binding is stale, the editor is not mutable, another mutation owns the
-single transaction slot, or its bounded envelope is invalid.
+Every source or proposal page has a positive item and retained-byte ceiling, an exact cursor and
+ordinal, a canonical page identity, and the prior cumulative identity. Exact replay requires all
+canonical bytes and the cumulative chain to agree. An occupied cursor or operation identity with
+different canonical bytes is a collision, not continuation. `finish-input` is an explicit
+authenticated message that fixes the final cumulative identity and declared totals; absence of
+`finish-input` is never end-of-input, and no arbitrary cumulative fragment-count ceiling such as
+256 or 257 may stand in for it. Per-command, resident-page, queue, and per-frame limits remain
+fixed while total operation work and durable progress may grow.
+
+The protocol carries inserted UTF-8, source-covering atom changes, and source-zero-width object
+insertions, removals, replacements, or moves as bounded ordered fragments. Removal coordinates are
+exact predecessor positions. Every inserted or moved zero-width object carries its authoritative
+successor-relative anchor and same-anchor order key, so an object may be placed in newly inserted
+text without pretending that the successor coordinate existed in the predecessor. Unchanged
+objects retain their relative order unless the transaction explicitly moves them. Staging does
+not change authoritative text or objects, and the host may reject the envelope or a page before
+commit without exposing a partial replacement.
+
+Typing, paste, deletion, cut, undo, redo, and a host-initiated inline-object command all enter this
+same session protocol. Small keystrokes use a low-latency single-page fast path through the same
+begin, cumulative identity, `finish-input`, commit, and settlement rules; it is not a second edit
+authority. A host-initiated command supplies its exact base binding and revision, operation
+identity, predecessor caret and directed selection, composite range, bounded page source, and
+intended successor positions through the widget boundary; it cannot mutate widget projection
+state directly. The widget rejects an external proposal when the binding is stale, the editor is
+not mutable, another mutation owns the single transaction slot, or its bounded envelope is invalid.
 
 Within one transaction, unchanged zero-width objects before the replacement keep their relative
 place before inserted content and unchanged objects after it keep their relative place after that
@@ -181,11 +203,15 @@ outcomes; the widget never retries or infers the outcome.
 it. The committed result supplies the exact successor binding and logical UTF-8 extent plus exact
 successor caret and selection source positions, or an exact host-produced position mapping for the
 captured endpoints. The widget validates those positions against the successor text and object
-sources before adoption. Terminal settlement releases every staged fragment and transaction
-reservation as one cleanup operation; cancellation, failure, or cleanup cannot delete a prefix,
-retain a suffix as visible content, publish only object changes, or partially apply compensating
-work. The widget adopts the successor revision only with a coherent source projection for that
-exact committed result.
+sources before adoption. The widget releases each consumed source or proposal payload immediately
+after its cumulative identity and bounded effects are durably or synchronously accepted; replay
+retains identities and control state, not payload bytes. Terminal settlement releases all
+remaining session pages, cursors, reservations, and queued work as one cleanup operation.
+Cancellation, failure, late response, collision, or cleanup cannot delete a prefix, retain a
+suffix as visible content, publish only object changes, or partially apply compensating work. One
+logical transaction has exactly one terminal settlement even when it requires many bounded
+commands, and the widget adopts the successor revision only with a coherent source projection for
+that exact committed result.
 
 ## Range-Backed Geometry And Clipboard
 
@@ -195,12 +221,23 @@ identity. The layout epoch changes whenever wrapping width, font or shaping inpu
 atom geometry, or another geometry-affecting input changes. Jobs page through source ranges without
 retaining shaped output for every visited line.
 
-The geometry owner admits byte and semantic-item residency independently. It consumes GPUI's exact
-returned fragment-graph item charge and session continuation charge, then combines them with exact
-crate-owned owner, immutable input, desired and active job, borrowed page, cursor and atom, segment,
-checkpoint, candidate, fragment, and publication records. Admission includes their peak
-coexistence with the prior coherent publication; the exact cap is accepted and one under is rejected
-atomically without replacing that publication.
+The geometry owner admits byte and semantic-item residency independently under a configured
+retained-memory budget and a configured per-frame work budget. Neither budget is derived from raw
+viewport dimensions. Admission consumes GPUI's exact returned fragment-graph item charge and
+session continuation charge, then combines them with exact crate-owned owner, immutable input,
+desired and active job, borrowed page, cursor and atom, segment, checkpoint, candidate, fragment,
+and publication records. Admission includes their peak coexistence with the prior coherent
+publication; the exact cap is accepted and one under is rejected atomically without replacing
+that publication.
+
+Realization is credit- and capacity-gated. It prioritizes caret, IME, and directed-selection
+geometry first, the active interaction or scroll anchor second, and nearby content last. Nominally
+visible regions that cannot be admitted are coalesced into bounded filler coverage rather than one
+demand or placeholder per line, object, or pixel interval. The widget exposes a typed
+capacity-saturated state, including when the nominal viewport exceeds current rendering capacity,
+and retains no unbounded realization-demand queue. Logical scroll extent continues to come from
+the paged sparse index; interaction with filler re-anchors the target and issues only the next
+bounded fetch and realization demand.
 
 Layout uses GPUI's canonical bounded streaming text-layout boundary. The crate derives shaping
 segments from its exact grapheme, logical-line, and opaque-atom cursors independently of page edges
@@ -270,6 +307,11 @@ width objects, caret and selection geometry, hit regions, and reveal facts under
 actual-value capacity admission. Desired interaction state is not current presentation state.
 Pending, failed, cancelled, stale, or over-cap replacement work leaves the complete prior coherent
 publication unchanged.
+
+The widget owns only its retained projection. The containing shell and renderer own rejection or
+clamping when an OS drawable surface, framebuffer, or renderer allocation is itself
+unrepresentable; the widget does not reinterpret that external surface limit as a document, edit,
+selection, or undo limit.
 
 Restoration validates the seed's binding, revision, extent, bounded intra-anchor offset, and every
 distinct caret, selection, scroll, viewport, and overscan range through bounded source and layout
@@ -430,8 +472,8 @@ At a quiescent range-backed cut with no active composition, pre-commit edit, or 
 host may synchronously request one compact restoration seed before rebind or unmount. The seed
 contains only the exact binding identity, source revision and logical extent, caret and selection
 source positions with their constant-size inline-gap witnesses, a logical vertical-scroll anchor
-with its bounded intra-anchor object continuation, and an optional opaque host-owned undo/redo
-frontier identity and availability fact. The widget does not inspect that host-owned frontier. The
+with its bounded intra-anchor object continuation, and optional opaque host-supplied undo/redo
+authority identity and availability facts. The widget does not inspect that authority. The
 seed contains no text, object presentation, resident page, shaped layout, composition, undo
 payload, clipboard payload, pending request, job, or staged mutation. A host that requires exact
 restoration must first fence

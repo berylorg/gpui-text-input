@@ -41,9 +41,10 @@ binding identity, source revision and logical extent, bounded text and source-ze
 page sources, compact caret and selection source positions, fixed resident text-page and object-page
 windows, fixed-capacity pending-request windows, authoritative grapheme, word, logical-line, and
 same-anchor object continuations, a bounded background visual-line index, a bounded streaming-layout
-continuation, an optional exact block-target job, and one bounded staged host mutation. Request and
-job records carry exact keys; host results either carry the exact committed successor or prove a
-non-mutating terminal outcome.
+continuation, an optional exact block-target job, and one cursor-based staged host-mutation session.
+That session retains fixed control state, cumulative identity, and bounded source and proposal
+pages rather than a whole-operation fragment collection. Request and job records carry exact keys;
+host results either carry the exact committed successor or prove a non-mutating terminal outcome.
 
 A source position contains one proven UTF-8 byte offset and one constant-size inline-gap witness.
 The witness proves the adjacent object identities and order keys at that anchor, including the
@@ -78,13 +79,14 @@ plain text, active selection, caret insertion, IME marked text, source-covering 
 source-zero-width inline object, inline-object active, inline-object activation, single-line,
 multiline, range-backed multiline, edit preflight accepted, edit preflight rejected, edit staging,
 edit commit pending, edit committed, edit rejected, edit conflict, edit cancelled, edit failed, text
-page pending, object page pending, platform-range pending, coherent resident range, page failed, page
+source-page pending, edit-fragment-page pending, edit-input finished, object page pending, platform-range pending, coherent resident range, page failed, page
 cancelled, obsolete response, segmentation pending, clipboard pending, clipboard failed, clipboard
 cancelled, geometry-
 index pending, geometry-index refining, geometry-index complete, geometry-index failed, geometry-
 index cancelled, block-target pending, block-target failed, block-target cancelled, oversize layout
 atom, overflowing, non-overflowing, scrollbar estimated, scrollbar exact, scrollbar visible,
-scrollbar animating, and pointer selecting.
+scrollbar animating, capacity-saturated, viewport-exceeds-rendering-capacity, bounded filler, and
+pointer selecting.
 
 Pending work keeps the last coherent surface. Failure and cancellation settle only the named
 operation and expose an app-neutral outcome to the host. Obsolete responses are silently excluded
@@ -215,15 +217,24 @@ bounded continuation steps, but it never grows resident page bytes or retained s
 Navigation, deletion, double-click selection, Home, End, and line selection never cap segment
 length, treat an arbitrary page edge as a boundary, or flatten the document to find one.
 
-Each range-backed edit proposal opens one staged transaction keyed by binding identity, base
-revision, and operation identity. It names one exact composite replacement range and streams
-inserted UTF-8, source-covering atom changes, and source-zero-width object insertions, removals,
-replacements, or moves as bounded ordered fragments. Typing, paste, deletion, cut, undo, redo, and
-host-initiated inline-object commands use this same boundary. A host-initiated command supplies its
-exact base, operation identity, composite range, bounded fragments, and intended successor
-positions; it cannot mutate the resident projection directly. While one transaction is staging or
-commit-pending, the widget retains its coherent prior projection and issues or accepts no
-overlapping mutation.
+Each range-backed edit proposal opens one staged transaction session keyed by binding identity,
+base revision, and operation identity. Begin captures the exact predecessor caret and directed
+selection and names one exact composite replacement range. Bounded source and proposal pages carry
+exact cursors, ordinals, canonical bytes, prior and cumulative identities, positive item and byte
+ceilings, and an explicit authenticated `finish-input`. The widget and host retain only bounded
+current pages and fixed cumulative state; neither accumulates all fragments or treats a hardcoded
+256- or 257-fragment total as end-of-input.
+
+Inserted UTF-8, source-covering atom changes, and source-zero-width object insertions, removals,
+replacements, or moves stream through those pages. Removed objects use predecessor positions;
+inserted and moved objects use authoritative successor-relative anchors and same-anchor order keys,
+including anchors inside newly inserted text. Typing, paste, deletion, cut, undo, redo, and host-
+initiated inline-object commands use this same boundary. Small keystrokes take a single-page fast
+path through the same cumulative identity, finish, commit, and settlement rules. A host-initiated
+command supplies its exact base, operation identity, predecessor positions, page source, and
+intended successor positions; it cannot mutate the resident projection directly. While one
+transaction is staging or commit-pending, the widget retains its coherent prior projection and
+issues or accepts no overlapping mutation.
 
 Text inserted before, between, or after objects sharing one source anchor preserves composite
 order without giving those objects source bytes. Unchanged objects before the insertion remain
@@ -238,7 +249,10 @@ transaction made no change from its base; `Conflict` proves the base is no longe
 transaction applied none of its replacement. After commit admission, cancellation no longer
 overrides the exact terminal result. The widget adopts `Committed` only with corresponding coherent
 text and object source data plus validated successor caret and selection positions, never publishes
-a fragment, retries an uncertain mutation, or treats a missing result as success.
+a fragment, retries an uncertain mutation, or treats a missing result as success. Exact replay
+requires canonical page and cumulative-chain equality; conflicting reuse is a collision. Consumed
+page payloads are released after acceptance, and cancellation, collision, rebind, unmount, or late
+response releases all remaining session custody without creating a second terminal settlement.
 
 Overlapping text-page and object-page demand coalesces into fixed request windows. Revision changes
 cancel stale requests, and new demand waits or replaces obsolete demand when no request slot is
@@ -251,7 +265,7 @@ cannot apply to the detached or replacement widget binding.
 When range-backed state is quiescent, the widget can synchronously export one compact restoration
 seed containing its exact binding, source revision and logical extent, caret and selection source
 positions with constant-size inline-gap witnesses, logical vertical-scroll anchor with its bounded
-object continuation, and optional opaque host-owned undo/redo frontier identity and availability
+object continuation, and optional opaque host-supplied undo/redo authority identity and availability
 fact. Export is unavailable during composition, a pre-commit edit, or an admitted edit. The seed
 contains no source text, object presentation, page, layout, composition, undo payload, request, job,
 or staged capacity and does not keep the widget mounted.
@@ -279,10 +293,21 @@ vertical reveal data with the binding identity, source revision, presentation ge
 epoch, and exact-or-estimated quality of each total.
 
 Range-backed multiline layout shapes only resident text and object pages needed for the visible
-range, caret, selection, and bounded overscan. Its resident page, object, presentation, and shaping
-work limits remain fixed as logical text and object counts grow. It never concatenates the source,
-selection, object collection, undo payload, or requested range into a whole-value buffer;
-nonresident layout advances through bounded source metadata and page requests.
+range, caret, selection, and bounded overscan under configured retained-memory and per-frame work
+budgets. Those budgets are independent of raw viewport pixel dimensions. Credit-gated realization
+prioritizes caret, IME, and directed selection, then the active interaction or scroll anchor, then
+nearby content. Its resident page, object, presentation, and shaping work limits remain fixed as
+logical text and object counts grow. It never concatenates the source, selection, object
+collection, undo payload, or requested range into a whole-value buffer; nonresident layout
+advances through bounded source metadata and page requests.
+
+When capacity cannot cover every nominally visible region, the widget coalesces the unrealized
+regions into bounded filler coverage and exposes `capacity-saturated` or
+`viewport-exceeds-rendering-capacity` without retaining one demand per missing line, object, or
+pixel interval. Logical scroll extent remains derived from the paged sparse index. Pointer,
+keyboard, caret, IME, or scroll interaction on filler re-anchors the target and admits only the
+next bounded fetch and realization work. The containing shell or renderer, not `text-input`, owns
+rejection or clamping of an unrepresentable drawable surface or framebuffer.
 
 Prepaint may spend one configured bounded work quantum advancing already admitted geometry only
 while every required text, object, and continuation input is resident. It stops before dispatching
