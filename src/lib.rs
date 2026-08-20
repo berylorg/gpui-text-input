@@ -40,10 +40,13 @@ pub use range_clipboard::{
     ClipboardWriteOutcome, ClipboardWriteRequest, CutDeletion, RangeClipboardCoordinator,
 };
 pub use range_edit::{
-    AtomChange, MutationCancellation, MutationCommit, MutationCounts, MutationDisposal,
-    MutationError, MutationFragment, MutationFragmentPayload, MutationKey, MutationKind,
-    MutationLimits, MutationOutcome, MutationPositions, MutationProposal, MutationSettlement,
-    MutationState, ObjectChange, ObjectTarget, OperationId, RangeEditCoordinator, SuccessorObject,
+    ActiveObjectEffect, AtomChange, MutationBeginRequest, MutationCancelRequest,
+    MutationCancellation, MutationCommit, MutationCommitRequest, MutationCounts, MutationCursor,
+    MutationDisposal, MutationError, MutationFinishInput, MutationIdentity, MutationKey,
+    MutationKind, MutationLane, MutationLimits, MutationOutcome, MutationPage,
+    MutationPageAcceptance, MutationPageItem, MutationPageKey, MutationPageRequest,
+    MutationPositions, MutationProposal, MutationSettlement, MutationState, MutationStreamFinish,
+    MutationTotals, ObjectChange, ObjectTarget, OperationId, RangeEditCoordinator, SuccessorObject,
 };
 pub use range_geometry::{
     BlockTarget, BlockTargetPublication, ExactGeometryAdmission, ExactGeometryAggregate,
@@ -72,7 +75,7 @@ pub use range_source::{
 pub use range_widget::{
     CoherentRangeSurface, InlineObjectActivation, InlineObjectActivationKey,
     InlineObjectInputOrigin, InlineObjectRealizationLoss, InlineObjectRealizationLossReason,
-    PlatformRangeResult, RangeHistoryFrontier, RangeHistoryIntent, RangeHistoryPlan,
+    PlatformRangeResult, RangeHistoryFrontier, RangeHistoryIntent, RangeHistorySession,
     RangeRestorationScrollAnchor, RangeRestorationSeed, RangeSelection, RangeSourceSelection,
     RangeSurfaceCharge, RangeSurfaceHit, RangeTextInput, RangeTextInputConfig, RangeTextInputError,
     RangeTextInputEvent, RangeTextInputLimits, RangeTextInputRequest, RealizedInlineObjectAnchor,

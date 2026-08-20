@@ -60,8 +60,7 @@ impl RangeTextInput {
             }
             return Ok(key);
         }
-        if self.replacement.is_some() || text.len() > self.config.mutation_limits.max_staged_bytes()
-        {
+        if self.replacement.is_some() || text.len() > self.config.mutation_limits.max_page_bytes() {
             return Err(RangeTextInputError::Busy);
         }
         self.config.binding.extent().check_byte_range(range)?;

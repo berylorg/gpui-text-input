@@ -324,14 +324,16 @@ impl RangeTextInput {
         let Some(surface) = self.interactive_surface() else {
             return;
         };
-        let position = surface.source_position_for_byte(offset, direction).or_else(|| {
-            let endpoints = self.geometry.index()?.document_selection();
-            match direction {
-                SegmentationDirection::Forward => Some(endpoints.anchor),
-                SegmentationDirection::Reverse => Some(endpoints.head),
-            }
-            .filter(|position| position.byte_offset == offset)
-        });
+        let position = surface
+            .source_position_for_byte(offset, direction)
+            .or_else(|| {
+                let endpoints = self.geometry.index()?.document_selection();
+                match direction {
+                    SegmentationDirection::Forward => Some(endpoints.anchor),
+                    SegmentationDirection::Reverse => Some(endpoints.head),
+                }
+                .filter(|position| position.byte_offset == offset)
+            });
         let Some(position) = position else {
             return;
         };
@@ -374,12 +376,7 @@ impl RangeTextInput {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.select_document_offset(
-            ByteOffset::new(0),
-            SegmentationDirection::Forward,
-            true,
-            cx,
-        );
+        self.select_document_offset(ByteOffset::new(0), SegmentationDirection::Forward, true, cx);
     }
     pub(super) fn select_to_end(
         &mut self,
@@ -404,10 +401,8 @@ impl RangeTextInput {
         let extent = self.config.binding.extent().byte_len();
         let surface_selection = self.interactive_surface().and_then(|surface| {
             Some(RangeSourceSelection {
-                anchor: surface.source_position_for_byte(
-                    ByteOffset::new(0),
-                    SegmentationDirection::Forward,
-                )?,
+                anchor: surface
+                    .source_position_for_byte(ByteOffset::new(0), SegmentationDirection::Forward)?,
                 head: surface.source_position_for_byte(
                     ByteOffset::new(extent),
                     SegmentationDirection::Reverse,

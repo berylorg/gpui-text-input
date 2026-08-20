@@ -175,6 +175,24 @@ impl RangeTextInput {
                     InlineObjectGap::NoObjects,
                 ))
             });
+        if let Some(pending) = self
+            .pending_local_mutation
+            .as_mut()
+            .filter(|pending| pending.key == key)
+        {
+            let finish = pending.finish;
+            pending.finish = crate::MutationFinishInput::new(
+                key,
+                finish.source(),
+                finish.proposal(),
+                finish.intended_extent(),
+                crate::MutationPositions::new(
+                    finish.intended().caret(),
+                    selected.anchor,
+                    selected.head,
+                ),
+            );
+        }
         self.mutation_composition = Some((key, composition, selected));
     }
 

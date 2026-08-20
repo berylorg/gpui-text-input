@@ -98,17 +98,9 @@ impl SourcePositionProof {
     pub const fn position(self) -> SourcePosition {
         self.position
     }
-
-    pub const fn text_page(self) -> Option<PageId> {
-        self.text_page
-    }
-
-    pub const fn object_page(self) -> ObjectPageId {
-        self.object_page
-    }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct MutationPositions {
     caret: SourcePosition,
     selection_anchor: SourcePosition,

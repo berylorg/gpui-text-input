@@ -8,11 +8,12 @@ mod coordinator;
 mod lifecycle;
 mod preflight;
 mod proof;
+mod protocol;
 mod settlement;
 mod staging;
 
-pub(crate) use coordinator::required_base_positions;
 pub use proof::*;
+pub use protocol::*;
 
 macro_rules! opaque_id {
     ($name:ident, $doc:literal) => {
@@ -77,6 +78,7 @@ impl MutationKey {
 pub struct MutationProposal {
     key: MutationKey,
     kind: MutationKind,
+    predecessor: MutationPositions,
     replacement: SourceRange,
     replacement_line_breaks: u64,
 }
@@ -85,12 +87,14 @@ impl MutationProposal {
     pub const fn new(
         key: MutationKey,
         kind: MutationKind,
+        predecessor: MutationPositions,
         replacement: SourceRange,
         replacement_line_breaks: u64,
     ) -> Self {
         Self {
             key,
             kind,
+            predecessor,
             replacement,
             replacement_line_breaks,
         }
@@ -102,6 +106,10 @@ impl MutationProposal {
 
     pub const fn kind(self) -> MutationKind {
         self.kind
+    }
+
+    pub const fn predecessor(self) -> MutationPositions {
+        self.predecessor
     }
 
     pub const fn replacement(self) -> SourceRange {
@@ -123,60 +131,60 @@ impl MutationProposal {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MutationLimits {
-    max_fragments: usize,
-    max_staged_bytes: usize,
-    max_objects: usize,
-    max_object_bytes: usize,
-    max_presentation_bytes: usize,
+    max_page_items: usize,
+    max_page_bytes: usize,
+    max_page_objects: usize,
+    max_page_object_bytes: usize,
+    max_page_presentation_bytes: usize,
 }
 
 impl MutationLimits {
-    pub fn new(max_fragments: usize, max_staged_bytes: usize) -> Result<Self, MutationError> {
-        if max_fragments == 0 {
+    pub fn new(max_page_items: usize, max_page_bytes: usize) -> Result<Self, MutationError> {
+        if max_page_items == 0 || max_page_bytes == 0 {
             return Err(MutationError::InvalidLimits);
         }
         Ok(Self {
-            max_fragments,
-            max_staged_bytes,
-            max_objects: max_fragments,
-            max_object_bytes: max_staged_bytes,
-            max_presentation_bytes: max_staged_bytes,
+            max_page_items,
+            max_page_bytes,
+            max_page_objects: max_page_items,
+            max_page_object_bytes: max_page_bytes,
+            max_page_presentation_bytes: max_page_bytes,
         })
     }
 
-    pub const fn max_fragments(self) -> usize {
-        self.max_fragments
+    pub const fn max_page_items(self) -> usize {
+        self.max_page_items
     }
 
-    pub const fn max_staged_bytes(self) -> usize {
-        self.max_staged_bytes
+    pub const fn max_page_bytes(self) -> usize {
+        self.max_page_bytes
     }
 
     pub fn with_object_limits(
         mut self,
-        max_objects: usize,
-        max_object_bytes: usize,
-        max_presentation_bytes: usize,
+        max_page_objects: usize,
+        max_page_object_bytes: usize,
+        max_page_presentation_bytes: usize,
     ) -> Result<Self, MutationError> {
-        if max_objects == 0 {
+        if max_page_objects == 0 {
             return Err(MutationError::InvalidLimits);
         }
-        self.max_objects = max_objects;
-        self.max_object_bytes = max_object_bytes;
-        self.max_presentation_bytes = max_presentation_bytes;
+        self.max_page_objects = max_page_objects;
+        self.max_page_object_bytes = max_page_object_bytes;
+        self.max_page_presentation_bytes = max_page_presentation_bytes;
         Ok(self)
     }
 
-    pub const fn max_objects(self) -> usize {
-        self.max_objects
+    pub const fn max_page_objects(self) -> usize {
+        self.max_page_objects
     }
 
-    pub const fn max_object_bytes(self) -> usize {
-        self.max_object_bytes
+    pub const fn max_page_object_bytes(self) -> usize {
+        self.max_page_object_bytes
     }
 
-    pub const fn max_presentation_bytes(self) -> usize {
-        self.max_presentation_bytes
+    pub const fn max_page_presentation_bytes(self) -> usize {
+        self.max_page_presentation_bytes
     }
 }
 
@@ -185,7 +193,7 @@ pub enum AtomChange {
     Insert {
         id: AtomId,
         inserted_range: ByteRange,
-        fallback_copy: String,
+        fallback_copy: Box<str>,
     },
     Remove {
         id: AtomId,
@@ -292,7 +300,6 @@ impl SuccessorObject {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ObjectChange {
     Insert {
-        at: SourcePosition,
         object: SuccessorObject,
     },
     Remove {
@@ -304,61 +311,24 @@ pub enum ObjectChange {
     },
     Move {
         target: ObjectTarget,
-        to: SourcePosition,
         object: SuccessorObject,
     },
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum MutationFragmentPayload {
-    Utf8 { inserted_offset: u64, text: String },
-    Atom(AtomChange),
-    Object(ObjectChange),
-    Terminal { intended: MutationPositions },
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MutationFragment {
-    key: MutationKey,
-    ordinal: usize,
-    payload: std::sync::Arc<MutationFragmentPayload>,
-}
-
-impl MutationFragment {
-    pub fn new(key: MutationKey, ordinal: usize, payload: MutationFragmentPayload) -> Self {
-        Self {
-            key,
-            ordinal,
-            payload: std::sync::Arc::new(payload),
-        }
-    }
-
-    pub const fn key(&self) -> MutationKey {
-        self.key
-    }
-
-    pub const fn ordinal(&self) -> usize {
-        self.ordinal
-    }
-
-    pub fn payload(&self) -> &MutationFragmentPayload {
-        self.payload.as_ref()
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MutationState {
     Idle,
-    Preflight,
-    Staging,
+    PreflightPending,
+    InputStreaming,
+    FinishPending,
     CommitPending,
-    DetachedCommit,
+    Settled,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct MutationCounts {
-    pub fragments: usize,
-    pub staged_bytes: usize,
+    pub current_pages: usize,
+    pub retained_bytes: usize,
     pub objects: usize,
     pub object_bytes: usize,
     pub presentation_bytes: usize,
@@ -370,8 +340,8 @@ pub struct MutationCounts {
 impl MutationCounts {
     fn checked_add(self, other: Self) -> Option<Self> {
         Some(Self {
-            fragments: self.fragments.checked_add(other.fragments)?,
-            staged_bytes: self.staged_bytes.checked_add(other.staged_bytes)?,
+            current_pages: self.current_pages.checked_add(other.current_pages)?,
+            retained_bytes: self.retained_bytes.checked_add(other.retained_bytes)?,
             objects: self.objects.checked_add(other.objects)?,
             object_bytes: self.object_bytes.checked_add(other.object_bytes)?,
             presentation_bytes: self
@@ -431,12 +401,20 @@ pub enum MutationError {
     IncompatibleReplacementPositions,
     MalformedBaseExtent,
     MalformedReplacementLineBreaks,
-    FragmentOutOfOrder {
-        expected: usize,
-        actual: usize,
+    WrongLane,
+    CursorMismatch,
+    OrdinalMismatch {
+        expected: u64,
+        actual: u64,
     },
-    FragmentLimitExceeded,
-    StagedByteLimitExceeded,
+    PriorIdentityMismatch,
+    PageReplay,
+    PageCollision,
+    OperationCollision,
+    MalformedPage,
+    PageItemLimitExceeded,
+    PageByteLimitExceeded,
+    CumulativeOverflow,
     ObjectLimitExceeded,
     ObjectByteLimitExceeded,
     PresentationByteLimitExceeded,
@@ -465,8 +443,9 @@ pub enum MutationError {
         previous: ByteRange,
         actual: ByteRange,
     },
-    MissingTerminalFragment,
-    PostTerminalFragment,
+    MissingFinishInput,
+    PostFinishInput,
+    FinishMismatch,
     MissingTextBoundaryProof,
     InvalidTextBoundaryProof,
     InvalidObjectGapProof,
@@ -494,21 +473,60 @@ struct ActiveMutation {
     proposal: MutationProposal,
     base_extent: LogicalExtent,
     state: MutationState,
-    next_ordinal: usize,
+    source: LaneState,
+    proposal_lane: LaneState,
+    intended: Option<MutationPositions>,
+    intended_extent: Option<LogicalExtent>,
+    initial_source_cursor: MutationCursor,
+    initial_proposal_cursor: MutationCursor,
+    detached: bool,
+    sequence: MutationSequenceState,
+    tracked_active_object: Option<(InlineObjectId, InlineObjectOrder)>,
+    active_object_effect: Option<ActiveObjectEffect>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct LaneState {
+    next_cursor: MutationCursor,
+    next_ordinal: u64,
+    cumulative_identity: MutationIdentity,
+    totals: MutationTotals,
+    last_page: Option<PageReceipt>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PageReceipt {
+    key: MutationPageKey,
+    page_identity: MutationIdentity,
+    cumulative_identity: MutationIdentity,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct MutationSequenceState {
     inserted_bytes: u64,
     inserted_line_breaks: u64,
-    fragment_count: usize,
-    staged_bytes: usize,
-    object_count: usize,
-    object_bytes: usize,
-    presentation_bytes: usize,
-    proof_count: usize,
-    source_page_count: usize,
-    terminal_seen: bool,
-    intended: Option<MutationPositions>,
-    detached: bool,
-    fragments: Vec<MutationFragment>,
-    source_proofs: Vec<SourcePositionProof>,
+    last_inserted_atom: Option<(AtomId, ByteRange)>,
+    last_removed_atom: Option<(AtomId, ByteRange)>,
+    last_object_target: Option<ObjectTarget>,
+    last_successor_object: Option<SuccessorObject>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ProposalPageCandidate {
+    sequence: MutationSequenceState,
+    active_object_effect: Option<ActiveObjectEffect>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ActiveObjectEffect {
+    Removed {
+        id: InlineObjectId,
+        order: InlineObjectOrder,
+    },
+    Replaced {
+        id: InlineObjectId,
+        order: InlineObjectOrder,
+    },
 }
 
 #[derive(Debug)]
@@ -517,5 +535,8 @@ pub struct RangeEditCoordinator {
     limits: MutationLimits,
     active: Option<ActiveMutation>,
     last_terminal: Option<MutationKey>,
+    operation_high_water: Option<OperationId>,
+    high_water_begin_identity: Option<MutationIdentity>,
+    ever_started: bool,
     released: MutationCounts,
 }

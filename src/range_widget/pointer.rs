@@ -52,13 +52,8 @@ impl RangeTextInput {
                     anchor: object.leading(),
                     head: object.trailing(),
                 };
-                let _ = self.publish_pointer_source_selection(
-                    selection,
-                    Some(object),
-                    None,
-                    None,
-                    cx,
-                );
+                let _ =
+                    self.publish_pointer_source_selection(selection, Some(object), None, None, cx);
                 return;
             }
             let RangeSurfaceHit::Gap(position) = hit else {

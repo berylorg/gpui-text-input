@@ -1,49 +1,58 @@
 use super::*;
 
 impl RangeEditCoordinator {
-    pub fn rebind(&mut self, binding: RangeBinding) -> Option<MutationDisposal> {
-        let mut disposal = None;
-        let mut released = MutationCounts::default();
-        if let Some(active) = &mut self.active {
-            if active.state == MutationState::CommitPending {
-                disposal = Some(MutationDisposal::Detached(active.proposal.key()));
-                active.state = MutationState::DetachedCommit;
-                active.detached = true;
-                released = active.release_staging();
-            } else if active.state != MutationState::DetachedCommit {
-                let key = active.proposal.key();
-                disposal = Some(MutationDisposal::Cancelled(key));
-                released = active.counts();
-                self.active = None;
-                self.last_terminal = Some(key);
-            } else {
-                disposal = Some(MutationDisposal::Detached(active.proposal.key()));
+    pub fn cancel(&mut self, key: MutationKey) -> Result<MutationCancellation, MutationError> {
+        let state = self.active_for_key(key)?.state;
+        match state {
+            MutationState::PreflightPending
+            | MutationState::InputStreaming
+            | MutationState::FinishPending => {
+                self.finish(key, MutationOutcome::Cancelled, false);
+                Ok(MutationCancellation::Cancelled)
             }
+            MutationState::CommitPending => Ok(MutationCancellation::AwaitingHostSettlement),
+            MutationState::Idle | MutationState::Settled => Err(MutationError::NoActive),
         }
-        self.record_release(released);
+    }
+
+    pub fn rebind(&mut self, binding: RangeBinding) -> Option<MutationDisposal> {
+        let binding_changed = self.binding.binding() != binding.binding()
+            || self.binding.revision() != binding.revision();
+        let disposal = self.active.as_mut().map(|active| {
+            if active.state == MutationState::CommitPending {
+                active.detached = true;
+                MutationDisposal::Detached(active.proposal.key())
+            } else {
+                MutationDisposal::Cancelled(active.proposal.key())
+            }
+        });
+        if matches!(disposal, Some(MutationDisposal::Cancelled(_))) {
+            let active = self
+                .active
+                .take()
+                .expect("cancelled active mutation exists");
+            let key = active.proposal.key();
+            self.record_release(active.counts());
+            self.last_terminal = Some(key);
+        }
         self.binding = binding;
+        if binding_changed {
+            self.operation_high_water = None;
+            self.high_water_begin_identity = None;
+        }
         disposal
     }
 
     pub fn dispose(&mut self) -> Option<MutationDisposal> {
-        let key = self.active_key()?;
-        let mut released = MutationCounts::default();
-        if let Some(active) = &mut self.active {
-            if matches!(
-                active.state,
-                MutationState::CommitPending | MutationState::DetachedCommit
-            ) {
-                active.state = MutationState::DetachedCommit;
-                active.detached = true;
-                released = active.release_staging();
-                self.record_release(released);
-                return Some(MutationDisposal::Detached(key));
-            }
-            released = active.counts();
-            self.active = None;
-            self.last_terminal = Some(key);
+        let active = self.active.as_mut()?;
+        let key = active.proposal.key();
+        if active.state == MutationState::CommitPending {
+            active.detached = true;
+            return Some(MutationDisposal::Detached(key));
         }
-        self.record_release(released);
+        let active = self.active.take().expect("active mutation exists");
+        self.record_release(active.counts());
+        self.last_terminal = Some(key);
         Some(MutationDisposal::Cancelled(key))
     }
 }

@@ -1,7 +1,7 @@
 use crate::{
     AtomId, BindingId, ByteOffset, ByteRange, InlineObjectFact, MutationKey, MutationKind,
-    MutationProposal, ObjectCursor, ObjectDemandEnvelope, ObjectDirection, ObjectPage,
-    ObjectPageFailure, ObjectPurpose, ObjectRequest, ObjectRequestId, ObjectRequestKey,
+    MutationPositions, MutationProposal, ObjectCursor, ObjectDemandEnvelope, ObjectDirection,
+    ObjectPage, ObjectPageFailure, ObjectPurpose, ObjectRequest, ObjectRequestId, ObjectRequestKey,
     OperationId, PageDirection, PageEdgeFact, PageFailure, PagePurpose, PageRequest, PageRequestId,
     PageRequestKey, PresentationGeneration, RangeBinding, RangePage, SourcePosition, SourceRange,
     SourceRevision,
@@ -29,6 +29,7 @@ pub struct ClipboardKey {
     binding: BindingId,
     revision: SourceRevision,
     selection: SourceRange,
+    predecessor: MutationPositions,
 }
 
 impl ClipboardKey {
@@ -37,12 +38,14 @@ impl ClipboardKey {
         binding: BindingId,
         revision: SourceRevision,
         selection: SourceRange,
+        predecessor: MutationPositions,
     ) -> Self {
         Self {
             id,
             binding,
             revision,
             selection,
+            predecessor,
         }
     }
 
@@ -60,6 +63,10 @@ impl ClipboardKey {
 
     pub const fn selection(self) -> SourceRange {
         self.selection
+    }
+
+    pub const fn predecessor(self) -> MutationPositions {
+        self.predecessor
     }
 }
 
@@ -196,6 +203,7 @@ pub struct CutDeletion {
     binding: RangeBinding,
     selection: SourceRange,
     selection_line_breaks: u64,
+    predecessor: MutationPositions,
 }
 
 impl CutDeletion {
@@ -211,6 +219,10 @@ impl CutDeletion {
         self.selection_line_breaks
     }
 
+    pub const fn predecessor(self) -> MutationPositions {
+        self.predecessor
+    }
+
     pub fn proposal(
         self,
         operation: OperationId,
@@ -222,6 +234,7 @@ impl CutDeletion {
         Ok(MutationProposal::new(
             MutationKey::new(self.binding.binding(), self.binding.revision(), operation),
             MutationKind::Edit,
+            self.predecessor,
             replacement,
             self.selection_line_breaks,
         ))
@@ -386,6 +399,7 @@ impl RangeClipboardCoordinator {
         id: ClipboardId,
         kind: ClipboardKind,
         selection: SourceRange,
+        predecessor: MutationPositions,
     ) -> Result<ClipboardProgress, ClipboardError> {
         if let Some(active) = &self.active {
             return Err(ClipboardError::Busy(active.key));
@@ -401,11 +415,40 @@ impl RangeClipboardCoordinator {
         {
             return Err(ClipboardError::SelectionOutsideExtent);
         }
+        if predecessor.caret() != predecessor.selection_head()
+            || SourceRange::new(
+                if matches!(
+                    predecessor
+                        .selection_anchor()
+                        .compare_in_revision(predecessor.selection_head()),
+                    Some(std::cmp::Ordering::Greater)
+                ) {
+                    predecessor.selection_head()
+                } else {
+                    predecessor.selection_anchor()
+                },
+                if matches!(
+                    predecessor
+                        .selection_anchor()
+                        .compare_in_revision(predecessor.selection_head()),
+                    Some(std::cmp::Ordering::Greater)
+                ) {
+                    predecessor.selection_anchor()
+                } else {
+                    predecessor.selection_head()
+                },
+            )
+            .map_err(|_| ClipboardError::IncompatibleSelection)?
+                != selection
+        {
+            return Err(ClipboardError::IncompatibleSelection);
+        }
         let key = ClipboardKey::new(
             id,
             self.binding.binding(),
             self.binding.revision(),
             selection,
+            predecessor,
         );
         if self.last_terminal == Some(key) {
             return Err(ClipboardError::Obsolete(key));
@@ -451,7 +494,12 @@ impl RangeClipboardCoordinator {
             None => return Err(ClipboardError::IncompatibleSelection),
         }
         .map_err(|_| ClipboardError::IncompatibleSelection)?;
-        self.begin(id, kind, selection)
+        self.begin(
+            id,
+            kind,
+            selection,
+            MutationPositions::new(head, anchor, head),
+        )
     }
 
     pub fn request_text_page(
@@ -601,6 +649,7 @@ impl RangeClipboardCoordinator {
                 binding,
                 selection: key.selection(),
                 selection_line_breaks,
+                predecessor: key.predecessor(),
             }),
         })
     }

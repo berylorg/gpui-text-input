@@ -1,14 +1,22 @@
 use gpui::{Context, Window};
 
 use crate::{
-    ByteOffset, ByteRange, MutationError, MutationFragment, MutationFragmentPayload, MutationKey,
-    MutationKind, MutationOutcome, MutationPositions, MutationProposal, MutationSettlement,
-    ObjectResidency, OperationId, RangeResidency, RangeTextInputError, RangeTextInputEvent,
-    RangeTextInputRequest, SegmentationContinuation, SegmentationDirection, SegmentationKind,
-    SourcePosition, SourceRange,
+    ByteOffset, ByteRange, LogicalExtent, MutationBeginRequest, MutationCursor, MutationError,
+    MutationFinishInput, MutationIdentity, MutationKey, MutationKind, MutationLane,
+    MutationOutcome, MutationPage, MutationPageItem, MutationPageKey, MutationPageRequest,
+    MutationPositions, MutationProposal, MutationSettlement, MutationStreamFinish, ObjectResidency,
+    OperationId, RangeResidency, RangeTextInputError, RangeTextInputEvent, RangeTextInputRequest,
+    SegmentationContinuation, SegmentationDirection, SegmentationKind, SourcePosition, SourceRange,
 };
 
 use super::RangeTextInput;
+
+#[derive(Debug)]
+pub(super) struct PendingLocalMutation {
+    pub key: MutationKey,
+    pub page: Option<MutationPage>,
+    pub finish: MutationFinishInput,
+}
 
 #[derive(Clone, Copy, Debug)]
 pub(super) enum PendingBoundaryAction {
@@ -151,10 +159,10 @@ impl RangeTextInput {
         ActiveObjectActivationAttempt::Activated
     }
 
-    pub fn propose_host_mutation(
+    pub fn begin_host_mutation(
         &mut self,
-        proposal: MutationProposal,
-        fragments: Vec<MutationFragment>,
+        request: MutationBeginRequest,
+        base_positions: &[SourcePosition],
         text: &RangeResidency,
         objects: &ObjectResidency,
         cx: &mut Context<Self>,
@@ -165,49 +173,78 @@ impl RangeTextInput {
         if !self.enabled || self.read_only {
             return Err(RangeTextInputError::ReadOnly);
         }
-        if fragments.len() > self.config.mutation_limits.max_fragments() {
-            return Err(MutationError::FragmentLimitExceeded.into());
+        let proposal = request.proposal();
+        if !self.mutation_queue_has_capacity(proposal.key()) {
+            return Err(RangeTextInputError::Busy);
         }
-        self.edits.begin(proposal)?;
-        self.edits.accept_preflight(proposal.key())?;
-        let required = crate::range_edit::required_base_positions(proposal, &fragments);
-        if let Err(error) =
-            self.edits
-                .reserve_source_positions(proposal.key(), &required, text, objects)
-        {
-            let _ = self.edits.fail_precommit(proposal.key());
-            return Err(error.into());
-        }
-        let mut intended = None;
-        for fragment in &fragments {
-            if let MutationFragmentPayload::Terminal {
-                intended: positions,
-            } = fragment.payload()
-            {
-                intended = Some(*positions);
+        let next_operation_id = proposal
+            .key()
+            .operation()
+            .get()
+            .checked_add(1)
+            .ok_or(RangeTextInputError::Stale)?;
+        for required in [
+            proposal.predecessor().caret(),
+            proposal.predecessor().selection_anchor(),
+            proposal.predecessor().selection_head(),
+            proposal.replacement().start(),
+            proposal.replacement().end(),
+        ] {
+            if !base_positions.contains(&required) {
+                return Err(MutationError::MissingPositionProof(required).into());
             }
-            if let Err(error) = self.edits.stage(fragment.clone()) {
-                let _ = self.edits.fail_precommit(proposal.key());
+        }
+        self.admit_edit_positions(base_positions, text, objects)?;
+        self.edits.begin(request)?;
+        self.next_id = self.next_id.max(next_operation_id);
+        self.push_request(RangeTextInputRequest::MutationBegin(request), cx);
+        Ok(proposal.key())
+    }
+
+    pub fn submit_mutation_page(
+        &mut self,
+        page: MutationPage,
+        cx: &mut Context<Self>,
+    ) -> Result<crate::MutationPageAcceptance, RangeTextInputError> {
+        if !self.mutation_queue_has_capacity(page.key().key()) {
+            return Err(RangeTextInputError::Busy);
+        }
+        let key = page.key().key();
+        let lane = page.key().lane();
+        let request = MutationPageRequest::new(page.clone());
+        let was_active = self.edits.active_key() == Some(key);
+        let acceptance = match self.edits.accept_page(page) {
+            Ok(acceptance) => acceptance,
+            Err(error) => {
+                if was_active && self.edits.is_retired(key) {
+                    self.finish_local_mutation(key, MutationOutcome::Error, cx);
+                }
                 return Err(error.into());
             }
-        }
-        let Some(intended) = intended else {
-            let _ = self.edits.fail_precommit(proposal.key());
-            return Err(MutationError::MissingTerminalFragment.into());
         };
-        self.mutation_positions = Some((proposal.key(), intended));
-        self.push_request(RangeTextInputRequest::MutationPreflight(proposal), cx);
-        for fragment in fragments {
-            self.push_request(
-                RangeTextInputRequest::MutationFragment {
-                    key: proposal.key(),
-                    fragment,
-                },
-                cx,
-            );
+        match lane {
+            MutationLane::Source => {
+                self.push_request(RangeTextInputRequest::MutationSourcePage(request), cx)
+            }
+            MutationLane::Proposal => {
+                self.push_request(RangeTextInputRequest::MutationProposalPage(request), cx)
+            }
         }
-        self.push_request(RangeTextInputRequest::MutationCommit(proposal.key()), cx);
-        Ok(proposal.key())
+        Ok(acceptance)
+    }
+
+    pub fn submit_mutation_finish(
+        &mut self,
+        finish: MutationFinishInput,
+        cx: &mut Context<Self>,
+    ) -> Result<(), RangeTextInputError> {
+        if !self.mutation_queue_has_capacity(finish.key()) {
+            return Err(RangeTextInputError::Busy);
+        }
+        self.edits.finish_input(finish)?;
+        self.mutation_positions = Some((finish.key(), finish.intended()));
+        self.push_request(RangeTextInputRequest::MutationFinishInput(finish), cx);
+        Ok(())
     }
 
     pub fn admit_edit_positions(
@@ -216,13 +253,16 @@ impl RangeTextInput {
         text: &RangeResidency,
         objects: &ObjectResidency,
     ) -> Result<(), RangeTextInputError> {
-        if !matches!(self.edits.state(), crate::MutationState::Idle) {
+        if !matches!(
+            self.edits.state(),
+            crate::MutationState::Idle | crate::MutationState::Settled
+        ) {
             return Err(RangeTextInputError::Busy);
         }
         let max = self
             .config
             .mutation_limits
-            .max_objects()
+            .max_page_objects()
             .checked_mul(3)
             .and_then(|count| count.checked_add(2))
             .ok_or(MutationError::PositionProofLimitExceeded)?;
@@ -292,7 +332,7 @@ impl RangeTextInput {
         if !self.enabled || self.read_only {
             return Err(RangeTextInputError::ReadOnly);
         }
-        if self.pending_insert.is_some() || self.pending_object_remove.is_some() {
+        if self.pending_local_mutation.is_some() {
             return Err(RangeTextInputError::Busy);
         }
         let surface = self
@@ -320,12 +360,11 @@ impl RangeTextInput {
         if selected_object.is_none() && !replacement.is_empty() {
             return Err(RangeTextInputError::Pending);
         }
-        let required_fragments = 1usize
-            .checked_add(usize::from(!text.is_empty()))
-            .and_then(|count| count.checked_add(usize::from(selected_object.is_some())))
+        let required_items = usize::from(!text.is_empty())
+            .checked_add(usize::from(selected_object.is_some()))
             .ok_or(RangeTextInputError::SurfaceCapacity)?;
-        if required_fragments > self.config.mutation_limits.max_fragments()
-            || text.len() > self.config.mutation_limits.max_staged_bytes()
+        if required_items > self.config.mutation_limits.max_page_items()
+            || text.len() > self.config.mutation_limits.max_page_bytes()
         {
             return Err(RangeTextInputError::SurfaceCapacity);
         }
@@ -348,16 +387,28 @@ impl RangeTextInput {
             .map(|object| crate::ObjectTarget::new(replacement, object.id(), object.order()))
             .transpose()?;
         let caret = successor_position(replacement, removed, text.len())?;
+        let selection = surface.selection();
         let key = MutationKey::new(
             self.config.binding.binding(),
             self.config.binding.revision(),
             OperationId::new(self.next_id()),
         );
-        let proposal = MutationProposal::new(key, kind, replacement, 0);
-        self.edits.begin(proposal)?;
-        self.pending_insert = Some((key, text, caret, proofs));
-        self.pending_object_remove = removed.map(|target| (key, target));
-        self.push_request(RangeTextInputRequest::MutationPreflight(proposal), cx);
+        let predecessor = MutationPositions::new(selection.head, selection.anchor, selection.head);
+        let proposal = MutationProposal::new(key, kind, predecessor, replacement, 0);
+        let mut items = Vec::with_capacity(required_items);
+        if let Some(target) = removed {
+            items.push(MutationPageItem::Object(crate::ObjectChange::Remove {
+                target,
+            }));
+        }
+        if !text.is_empty() {
+            items.push(MutationPageItem::Utf8 {
+                inserted_offset: 0,
+                text: text.into_boxed_str(),
+            });
+        }
+        self.begin_local_mutation(proposal, items, MutationPositions::collapsed(caret), cx)?;
+        self.admitted_edit_proofs = proofs;
         Ok(key)
     }
 
@@ -372,10 +423,12 @@ impl RangeTextInput {
         if !self.enabled || self.read_only {
             return Err(RangeTextInputError::ReadOnly);
         }
-        if self.pending_insert.is_some() {
+        if self.pending_local_mutation.is_some() {
             return Err(RangeTextInputError::Busy);
         }
-        if !text.is_empty() && self.config.mutation_limits.max_fragments() < 2 {
+        if usize::from(!text.is_empty()) > self.config.mutation_limits.max_page_items()
+            || text.len() > self.config.mutation_limits.max_page_bytes()
+        {
             return Err(RangeTextInputError::SurfaceCapacity);
         }
         self.config.binding.extent().check_byte_range(range)?;
@@ -385,15 +438,79 @@ impl RangeTextInput {
             self.config.binding.revision(),
             OperationId::new(self.next_id()),
         );
-        let proposal = MutationProposal::new(key, kind, replacement, removed_line_breaks);
-        self.edits.begin(proposal)?;
+        let surface = self
+            .interactive_surface()
+            .ok_or(RangeTextInputError::Busy)?;
+        let selection = surface.selection();
+        let predecessor = MutationPositions::new(selection.head, selection.anchor, selection.head);
+        let proposal =
+            MutationProposal::new(key, kind, predecessor, replacement, removed_line_breaks);
         let caret = SourcePosition::new(
             ByteOffset::new(range.start().get().saturating_add(text.len() as u64)),
             crate::InlineObjectGap::NoObjects,
         );
-        self.pending_insert = Some((key, text, caret, proofs));
-        self.push_request(RangeTextInputRequest::MutationPreflight(proposal), cx);
+        let items = if text.is_empty() {
+            Vec::new()
+        } else {
+            vec![MutationPageItem::Utf8 {
+                inserted_offset: 0,
+                text: text.into_boxed_str(),
+            }]
+        };
+        self.begin_local_mutation(proposal, items, MutationPositions::collapsed(caret), cx)?;
+        self.admitted_edit_proofs = proofs;
         Ok(key)
+    }
+
+    pub(super) fn begin_local_mutation(
+        &mut self,
+        proposal: MutationProposal,
+        items: Vec<MutationPageItem>,
+        intended: MutationPositions,
+        cx: &mut Context<Self>,
+    ) -> Result<(), RangeTextInputError> {
+        let key = proposal.key();
+        let source_cursor = MutationCursor::new(0);
+        let proposal_cursor = MutationCursor::new(0);
+        let page = if items.is_empty() {
+            None
+        } else {
+            Some(MutationPage::new(
+                MutationPageKey::new(
+                    key,
+                    MutationLane::Proposal,
+                    proposal_cursor,
+                    0,
+                    MutationIdentity::ROOT,
+                ),
+                MutationCursor::new(1),
+                items,
+            )?)
+        };
+        let empty = MutationStreamFinish {
+            next_cursor: MutationCursor::new(0),
+            next_ordinal: 0,
+            cumulative_identity: MutationIdentity::ROOT,
+            totals: crate::MutationTotals::default(),
+        };
+        let proposal_finish = page.as_ref().map_or(empty, |page| MutationStreamFinish {
+            next_cursor: page.next_cursor(),
+            next_ordinal: 1,
+            cumulative_identity: page.cumulative_identity(),
+            totals: page.totals(),
+        });
+        let intended_extent = local_successor_extent(
+            self.edits.binding().extent(),
+            proposal,
+            proposal_finish.totals,
+        )?;
+        let finish =
+            MutationFinishInput::new(key, empty, proposal_finish, intended_extent, intended);
+        let begin = MutationBeginRequest::new(proposal, source_cursor, proposal_cursor);
+        self.edits.begin(begin)?;
+        self.pending_local_mutation = Some(PendingLocalMutation { key, page, finish });
+        self.push_request(RangeTextInputRequest::MutationBegin(begin), cx);
+        Ok(())
     }
 
     pub fn accept_mutation_preflight(
@@ -401,107 +518,36 @@ impl RangeTextInput {
         key: MutationKey,
         cx: &mut Context<Self>,
     ) -> Result<(), RangeTextInputError> {
-        let is_insert = self
-            .pending_insert
-            .as_ref()
-            .is_some_and(|(pending, _, _, _)| *pending == key);
-        let is_history = self
-            .pending_history
-            .is_some_and(|pending| pending.intent().key() == key && pending.is_planned());
-        if !is_insert && !is_history {
+        if self.edits.active_key() != Some(key) {
             return Err(RangeTextInputError::Stale);
         }
-        self.edits.accept_preflight(key)?;
-        if is_history {
-            if let Err(error) = self
-                .edits
-                .reserve_owned_source_proofs(key, self.admitted_edit_proofs.clone())
-            {
-                self.fail_invalid_staging(key, cx);
-                return Err(error.into());
-            }
-            return Ok(());
+        let queued_records = self.queued_mutation_requests(key);
+        let required_records = self
+            .pending_local_mutation
+            .as_ref()
+            .filter(|pending| pending.key == key)
+            .map_or(0, |pending| usize::from(pending.page.is_some()) + 1);
+        if queued_records
+            .checked_add(required_records)
+            .is_none_or(|required| required > Self::MAX_QUEUED_MUTATION_REQUESTS)
+        {
+            return Err(RangeTextInputError::Busy);
         }
-        let (pending_key, text, caret, proofs) = self
-            .pending_insert
-            .take()
-            .ok_or(RangeTextInputError::Stale)?;
-        debug_assert_eq!(pending_key, key);
-        if let Err(error) = self.edits.reserve_owned_source_proofs(key, proofs) {
-            self.fail_invalid_staging(key, cx);
-            return Err(error.into());
-        }
-        let cap = self.config.mutation_limits.max_staged_bytes().max(1);
-        let mut ordinal = 0;
-        if let Some((object_key, target)) = self.pending_object_remove.take() {
-            if object_key != key {
-                self.fail_invalid_staging(key, cx);
-                return Err(RangeTextInputError::Stale);
-            }
-            let fragment = MutationFragment::new(
-                key,
-                ordinal,
-                MutationFragmentPayload::Object(crate::ObjectChange::Remove { target }),
-            );
-            if let Err(error) = self.edits.stage(fragment.clone()) {
-                self.fail_invalid_staging(key, cx);
-                return Err(error.into());
-            }
-            self.push_request(
-                RangeTextInputRequest::MutationFragment { key, fragment },
-                cx,
-            );
-            ordinal += 1;
-        }
-        let mut start = 0;
-        while start < text.len() {
-            let mut end = start.saturating_add(cap).min(text.len());
-            while end > start && !text.is_char_boundary(end) {
-                end -= 1;
-            }
-            if end == start {
-                self.fail_invalid_staging(key, cx);
-                return Err(RangeTextInputError::SurfaceCapacity);
-            }
-            let fragment = MutationFragment::new(
-                key,
-                ordinal,
-                MutationFragmentPayload::Utf8 {
-                    inserted_offset: start as u64,
-                    text: text[start..end].to_owned(),
-                },
-            );
-            if let Err(error) = self.edits.stage(fragment.clone()) {
-                self.fail_invalid_staging(key, cx);
-                return Err(error.into());
-            }
-            self.push_request(
-                RangeTextInputRequest::MutationFragment { key, fragment },
-                cx,
-            );
-            ordinal += 1;
-            start = end;
-        }
-        let terminal = MutationFragment::new(
+        self.edits.accept_preflight(
             key,
-            ordinal,
-            MutationFragmentPayload::Terminal {
-                intended: MutationPositions::new(caret, caret, caret),
-            },
-        );
-        if let Err(error) = self.edits.stage(terminal.clone()) {
-            self.fail_invalid_staging(key, cx);
-            return Err(error.into());
+            self.active_object
+                .map(|active| (active.anchor.object_id, active.anchor.order)),
+        )?;
+        if let Some(pending) = self
+            .pending_local_mutation
+            .take()
+            .filter(|pending| pending.key == key)
+        {
+            if let Some(page) = pending.page {
+                self.submit_mutation_page(page, cx)?;
+            }
+            self.submit_mutation_finish(pending.finish, cx)?;
         }
-        self.push_request(
-            RangeTextInputRequest::MutationFragment {
-                key,
-                fragment: terminal,
-            },
-            cx,
-        );
-        self.mutation_positions = Some((key, MutationPositions::collapsed(caret)));
-        self.push_request(RangeTextInputRequest::MutationCommit(key), cx);
         Ok(())
     }
 
@@ -515,34 +561,46 @@ impl RangeTextInput {
         Ok(settlement)
     }
 
-    pub fn reject_mutation_staging(
+    pub fn reject_mutation_input(
         &mut self,
         key: MutationKey,
         cx: &mut Context<Self>,
     ) -> Result<MutationSettlement, RangeTextInputError> {
-        let settlement = self.edits.reject_staging(key)?;
+        let settlement = self.edits.reject_input(key)?;
         self.finish_local_mutation(key, MutationOutcome::Rejected, cx);
         Ok(settlement)
     }
 
-    pub fn admit_mutation_commit(&mut self, key: MutationKey) -> Result<(), RangeTextInputError> {
+    pub fn cancel_mutation(
+        &mut self,
+        key: MutationKey,
+        cx: &mut Context<Self>,
+    ) -> Result<crate::MutationCancellation, RangeTextInputError> {
+        let cancellation = self.edits.cancel(key)?;
+        if cancellation == crate::MutationCancellation::Cancelled {
+            self.finish_local_mutation(key, MutationOutcome::Cancelled, cx);
+            self.push_request(
+                RangeTextInputRequest::CancelMutation(crate::MutationCancelRequest::new(key)),
+                cx,
+            );
+        }
+        Ok(cancellation)
+    }
+
+    pub fn accept_mutation_finish(
+        &mut self,
+        key: MutationKey,
+        cx: &mut Context<Self>,
+    ) -> Result<(), RangeTextInputError> {
         if self.detached_edits.len() >= self.config.limits.max_detached_edits {
             return Err(RangeTextInputError::DetachedCapacity);
         }
-        self.edits.admit_commit(key)?;
-        Ok(())
-    }
-
-    pub(super) fn fail_invalid_staging(&mut self, key: MutationKey, cx: &mut Context<Self>) {
-        let terminalized = match self.edits.fail_precommit(key) {
-            Ok(_) => true,
-            Err(MutationError::ObsoleteOperation(obsolete)) if obsolete == key => true,
-            Err(_) => false,
-        };
-        if terminalized {
-            self.cancel_mutation_dispatch(key, false);
-            self.finish_local_mutation(key, MutationOutcome::Error, cx);
+        if !self.mutation_queue_has_capacity(key) {
+            return Err(RangeTextInputError::Busy);
         }
+        let request = self.edits.admit_commit(key)?;
+        self.push_request(RangeTextInputRequest::MutationCommit(request), cx);
+        Ok(())
     }
 
     fn finish_local_mutation(
@@ -553,21 +611,19 @@ impl RangeTextInput {
     ) {
         self.requests.retain(|request| {
             !matches!(request,
-                RangeTextInputRequest::MutationPreflight(proposal) if proposal.key() == key
+                RangeTextInputRequest::MutationBegin(begin) if begin.proposal().key() == key
             ) && !matches!(request,
-                RangeTextInputRequest::MutationFragment { key: request_key, .. }
-                    | RangeTextInputRequest::MutationCommit(request_key) if *request_key == key
+                RangeTextInputRequest::MutationSourcePage(request)
+                    | RangeTextInputRequest::MutationProposalPage(request)
+                    if request.page().key().key() == key
+            ) && !matches!(request,
+                RangeTextInputRequest::MutationFinishInput(finish) if finish.key() == key
+            ) && !matches!(request,
+                RangeTextInputRequest::MutationCommit(request) if request.key() == key
             )
         });
         self.dispatched_mutations.remove(&key);
-        if self
-            .pending_insert
-            .as_ref()
-            .is_some_and(|(pending, _, _, _)| *pending == key)
-        {
-            self.pending_insert = None;
-            self.pending_object_remove = None;
-        }
+        self.pending_local_mutation = None;
         if self
             .pending_history
             .is_some_and(|pending| pending.intent().key() == key)
@@ -634,33 +690,15 @@ impl RangeTextInput {
                     },
                     |(_, _, selection)| selection,
                 );
-                let active_loss_reason = self.active_object.map_or(
-                    crate::InlineObjectRealizationLossReason::Superseded,
-                    |active| {
-                        self.edits
-                            .staged_fragments()
-                            .iter()
-                            .find_map(|fragment| match fragment.payload() {
-                                MutationFragmentPayload::Object(crate::ObjectChange::Remove {
-                                    target,
-                                }) if target.id() == active.anchor.object_id
-                                    && target.order() == active.anchor.order =>
-                                {
-                                    Some(crate::InlineObjectRealizationLossReason::Removed)
-                                }
-                                MutationFragmentPayload::Object(crate::ObjectChange::Replace {
-                                    target,
-                                    ..
-                                }) if target.id() == active.anchor.object_id
-                                    && target.order() == active.anchor.order =>
-                                {
-                                    Some(crate::InlineObjectRealizationLossReason::Replaced)
-                                }
-                                _ => None,
-                            })
-                            .unwrap_or(crate::InlineObjectRealizationLossReason::Superseded)
-                    },
-                );
+                let active_loss_reason = match self.edits.active_object_effect() {
+                    Some(crate::ActiveObjectEffect::Removed { .. }) => {
+                        crate::InlineObjectRealizationLossReason::Removed
+                    }
+                    Some(crate::ActiveObjectEffect::Replaced { .. }) => {
+                        crate::InlineObjectRealizationLossReason::Replaced
+                    }
+                    None => crate::InlineObjectRealizationLossReason::Superseded,
+                };
                 let proofs = successor.proofs().as_array().to_vec();
                 return self.settle_committed_rebind(
                     key,
@@ -677,8 +715,7 @@ impl RangeTextInput {
             }
             let settlement = self.edits.settle(key, outcome)?;
             self.dispatched_mutations.remove(&key);
-            self.pending_insert = None;
-            self.pending_object_remove = None;
+            self.pending_local_mutation = None;
             if self
                 .pending_history
                 .is_some_and(|pending| pending.intent().key() == key)
@@ -690,6 +727,9 @@ impl RangeTextInput {
             cx.emit(RangeTextInputEvent::MutationSettled { key, outcome });
             cx.notify();
             return Ok(settlement);
+        }
+        if self.edits.is_retired(key) {
+            return Err(MutationError::ObsoleteOperation(key).into());
         }
         let Some(index) = self
             .detached_edits
@@ -974,6 +1014,37 @@ impl RangeTextInput {
         let _ = window;
         Ok(())
     }
+}
+
+fn local_successor_extent(
+    base: LogicalExtent,
+    proposal: MutationProposal,
+    totals: crate::MutationTotals,
+) -> Result<LogicalExtent, MutationError> {
+    let bytes = base
+        .byte_len()
+        .checked_sub(proposal.replacement_bytes().len())
+        .and_then(|bytes| bytes.checked_add(totals.inserted_bytes))
+        .ok_or(MutationError::IncoherentSuccessor)?;
+    let base_breaks = base
+        .line_count()
+        .checked_sub(u64::from(base.byte_len() != 0))
+        .ok_or(MutationError::IncoherentSuccessor)?;
+    let breaks = base_breaks
+        .checked_sub(proposal.replacement_line_breaks())
+        .and_then(|breaks| breaks.checked_add(totals.inserted_line_breaks))
+        .ok_or(MutationError::IncoherentSuccessor)?;
+    let lines = if bytes == 0 {
+        if breaks != 0 {
+            return Err(MutationError::IncoherentSuccessor);
+        }
+        0
+    } else {
+        breaks
+            .checked_add(1)
+            .ok_or(MutationError::IncoherentSuccessor)?
+    };
+    Ok(LogicalExtent::new(bytes, lines))
 }
 
 pub(super) fn successor_position(

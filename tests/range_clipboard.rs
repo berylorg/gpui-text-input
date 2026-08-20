@@ -5,9 +5,10 @@ use gpui_text_input::{
     BindingId, ByteOffset, ByteRange, ClipboardCompletion, ClipboardId, ClipboardKind,
     ClipboardLimits, ClipboardProgress, ClipboardWriteOutcome, InlineObjectFact, InlineObjectGap,
     InlineObjectId, InlineObjectNeighbor, InlineObjectOrder, InlineObjectPresentation,
-    LogicalExtent, ObjectPage, ObjectPageEdgeFact, ObjectPageId, ObjectRequestId, PageDirection,
-    PageEdgeFact, PageId, PageRequestId, PresentationGeneration, RangeBinding,
-    RangeClipboardCoordinator, RangePage, SourcePosition, SourceRange, SourceRevision,
+    LogicalExtent, MutationPositions, ObjectPage, ObjectPageEdgeFact, ObjectPageId,
+    ObjectRequestId, PageDirection, PageEdgeFact, PageId, PageRequestId, PresentationGeneration,
+    RangeBinding, RangeClipboardCoordinator, RangePage, SourcePosition, SourceRange,
+    SourceRevision,
 };
 
 fn binding(source: &str) -> RangeBinding {
@@ -27,6 +28,10 @@ fn neighbor(id: u128, order: u128) -> InlineObjectNeighbor {
 
 fn position(offset: u64) -> SourcePosition {
     SourcePosition::new(ByteOffset::new(offset), InlineObjectGap::NoObjects)
+}
+
+fn predecessor(selection: SourceRange) -> MutationPositions {
+    MutationPositions::new(selection.end(), selection.start(), selection.end())
 }
 
 fn object(id: u128, anchor: u64, order: u128, fallback: &str) -> InlineObjectFact {
@@ -185,13 +190,23 @@ fn empty_text_only_and_reversed_selections_are_exact() {
     let progress = reversed
         .begin_selection(
             ClipboardId::new(2),
-            ClipboardKind::Copy,
+            ClipboardKind::Cut,
             position(source.len() as u64),
             position(0),
         )
         .unwrap();
     let write = collect(&mut reversed, source, &[], progress);
     assert_eq!(write.text(), source);
+    let ClipboardCompletion::Delete(deletion) = reversed
+        .acknowledge_write(write.key(), ClipboardWriteOutcome::Written)
+        .unwrap()
+    else {
+        panic!("successful reversed cut must authorize deletion")
+    };
+    assert_eq!(
+        deletion.predecessor(),
+        MutationPositions::new(position(0), position(source.len() as u64), position(0))
+    );
 }
 
 #[test]
@@ -211,7 +226,12 @@ fn one_object_object_only_and_same_anchor_selection_follow_gap_order() {
     .unwrap();
     let mut collector = coordinator(source, 16, 1);
     let progress = collector
-        .begin(ClipboardId::new(3), ClipboardKind::Copy, only_second)
+        .begin(
+            ClipboardId::new(3),
+            ClipboardKind::Copy,
+            only_second,
+            predecessor(only_second),
+        )
         .unwrap();
     let write = collect(&mut collector, source, &objects, progress);
     assert_eq!(write.text(), "[two]");
@@ -225,7 +245,12 @@ fn one_object_object_only_and_same_anchor_selection_follow_gap_order() {
     .unwrap();
     let mut collector = coordinator("", 6, 1);
     let progress = collector
-        .begin(ClipboardId::new(4), ClipboardKind::Copy, range)
+        .begin(
+            ClipboardId::new(4),
+            ClipboardKind::Copy,
+            range,
+            predecessor(range),
+        )
         .unwrap();
     assert_eq!(collect(&mut collector, "", &one, progress).text(), "object");
 }
@@ -248,7 +273,12 @@ fn mixed_and_exact_boundary_selection_emit_only_selected_objects() {
     .unwrap();
     let mut collector = coordinator(source, 8, 2);
     let progress = collector
-        .begin(ClipboardId::new(5), ClipboardKind::Copy, range)
+        .begin(
+            ClipboardId::new(5),
+            ClipboardKind::Copy,
+            range,
+            predecessor(range),
+        )
         .unwrap();
     assert_eq!(
         collect(&mut collector, source, &objects, progress).text(),
@@ -265,7 +295,12 @@ fn exact_cap_is_accepted_and_one_byte_over_is_terminal_before_write() {
     let selection = SourceRange::new(position(0), position(2)).unwrap();
     let mut exact = coordinator(source, 4, 1);
     let progress = exact
-        .begin(ClipboardId::new(6), ClipboardKind::Copy, selection)
+        .begin(
+            ClipboardId::new(6),
+            ClipboardKind::Copy,
+            selection,
+            predecessor(selection),
+        )
         .unwrap();
     assert_eq!(
         collect(&mut exact, source, &[object.clone()], progress).text(),
@@ -274,7 +309,12 @@ fn exact_cap_is_accepted_and_one_byte_over_is_terminal_before_write() {
 
     let mut over = coordinator(source, 3, 1);
     let mut progress = over
-        .begin(ClipboardId::new(7), ClipboardKind::Copy, selection)
+        .begin(
+            ClipboardId::new(7),
+            ClipboardKind::Copy,
+            selection,
+            predecessor(selection),
+        )
         .unwrap();
     let mut id = 1;
     loop {
@@ -318,7 +358,12 @@ fn object_failure_cancellation_rebind_and_dispose_release_once() {
     ] {
         let mut collector = coordinator("a", 8, 1);
         let ClipboardProgress::NeedObjectPage { key, .. } = collector
-            .begin(ClipboardId::new(8), ClipboardKind::Copy, selection)
+            .begin(
+                ClipboardId::new(8),
+                ClipboardKind::Copy,
+                selection,
+                predecessor(selection),
+            )
             .unwrap()
         else {
             unreachable!()
@@ -337,7 +382,12 @@ fn object_failure_cancellation_rebind_and_dispose_release_once() {
 
     let mut rebound = coordinator("a", 8, 1);
     let ClipboardProgress::NeedObjectPage { key, .. } = rebound
-        .begin(ClipboardId::new(9), ClipboardKind::Copy, selection)
+        .begin(
+            ClipboardId::new(9),
+            ClipboardKind::Copy,
+            selection,
+            predecessor(selection),
+        )
         .unwrap()
     else {
         unreachable!()
@@ -351,7 +401,12 @@ fn object_failure_cancellation_rebind_and_dispose_release_once() {
 
     let mut disposed = coordinator("a", 8, 1);
     let ClipboardProgress::NeedObjectPage { key, .. } = disposed
-        .begin(ClipboardId::new(10), ClipboardKind::Copy, selection)
+        .begin(
+            ClipboardId::new(10),
+            ClipboardKind::Copy,
+            selection,
+            predecessor(selection),
+        )
         .unwrap()
     else {
         unreachable!()
@@ -368,7 +423,12 @@ fn text_failure_and_explicit_cancellation_publish_no_write_or_delete() {
     let selection = SourceRange::new(position(0), position(1)).unwrap();
     let mut failed = coordinator("a", 8, 1);
     let ClipboardProgress::NeedObjectPage { key, .. } = failed
-        .begin(ClipboardId::new(20), ClipboardKind::Cut, selection)
+        .begin(
+            ClipboardId::new(20),
+            ClipboardKind::Cut,
+            selection,
+            predecessor(selection),
+        )
         .unwrap()
     else {
         unreachable!()
@@ -400,7 +460,12 @@ fn text_failure_and_explicit_cancellation_publish_no_write_or_delete() {
 
     let mut cancelled = coordinator("a", 8, 1);
     let ClipboardProgress::NeedObjectPage { key, .. } = cancelled
-        .begin(ClipboardId::new(21), ClipboardKind::Copy, selection)
+        .begin(
+            ClipboardId::new(21),
+            ClipboardKind::Copy,
+            selection,
+            predecessor(selection),
+        )
         .unwrap()
     else {
         unreachable!()
@@ -421,7 +486,12 @@ fn cut_authorizes_exact_deletion_only_after_successful_write() {
     let selection = SourceRange::new(position(0), position(3)).unwrap();
     let mut failed = coordinator(source, 3, 1);
     let progress = failed
-        .begin(ClipboardId::new(11), ClipboardKind::Cut, selection)
+        .begin(
+            ClipboardId::new(11),
+            ClipboardKind::Cut,
+            selection,
+            predecessor(selection),
+        )
         .unwrap();
     let write = collect(&mut failed, source, &[], progress);
     assert_eq!(
@@ -433,7 +503,12 @@ fn cut_authorizes_exact_deletion_only_after_successful_write() {
 
     let mut written = coordinator(source, 3, 1);
     let progress = written
-        .begin(ClipboardId::new(12), ClipboardKind::Cut, selection)
+        .begin(
+            ClipboardId::new(12),
+            ClipboardKind::Cut,
+            selection,
+            predecessor(selection),
+        )
         .unwrap();
     let write = collect(&mut written, source, &[], progress);
     let ClipboardCompletion::Delete(deletion) = written
@@ -444,8 +519,10 @@ fn cut_authorizes_exact_deletion_only_after_successful_write() {
     };
     assert_eq!(deletion.binding(), binding(source));
     assert_eq!(deletion.selection(), selection);
+    assert_eq!(deletion.predecessor(), predecessor(selection));
     let proposal = deletion
         .proposal(gpui_text_input::OperationId::new(99), selection)
         .unwrap();
     assert_eq!(proposal.replacement(), selection);
+    assert_eq!(proposal.predecessor(), predecessor(selection));
 }

@@ -84,13 +84,7 @@ pub struct RangeTextInput {
     adopted_positions: Option<crate::MutationPositions>,
     admitted_edit_proofs: Vec<crate::range_edit::SourcePositionProof>,
     mutation_composition: Option<(crate::MutationKey, ByteRange, RangeSourceSelection)>,
-    pending_insert: Option<(
-        crate::MutationKey,
-        String,
-        crate::SourcePosition,
-        Vec<crate::range_edit::SourcePositionProof>,
-    )>,
-    pending_object_remove: Option<(crate::MutationKey, crate::ObjectTarget)>,
+    pending_local_mutation: Option<interaction::PendingLocalMutation>,
     platform_ready: Option<(std::ops::Range<usize>, String)>,
     next_id: u64,
     mounted: bool,
@@ -125,6 +119,8 @@ impl Focusable for RangeTextInput {
 impl EventEmitter<RangeTextInputEvent> for RangeTextInput {}
 
 impl RangeTextInput {
+    const MAX_QUEUED_MUTATION_REQUESTS: usize = 2;
+
     pub fn new(
         config: RangeTextInputConfig,
         window: &mut Window,
@@ -250,8 +246,7 @@ impl RangeTextInput {
             adopted_positions: None,
             admitted_edit_proofs: Vec::new(),
             mutation_composition: None,
-            pending_insert: None,
-            pending_object_remove: None,
+            pending_local_mutation: None,
             platform_ready: None,
             next_id: 1,
             mounted: true,
@@ -310,12 +305,18 @@ impl RangeTextInput {
             RangeTextInputRequest::ObjectPage(page) => {
                 self.dispatched_object_pages.insert(page.key());
             }
-            RangeTextInputRequest::MutationPreflight(proposal) => {
-                self.dispatched_mutations.insert(proposal.key());
+            RangeTextInputRequest::MutationBegin(begin) => {
+                self.dispatched_mutations.insert(begin.proposal().key());
             }
-            RangeTextInputRequest::MutationFragment { key, .. }
-            | RangeTextInputRequest::MutationCommit(key) => {
-                self.dispatched_mutations.insert(*key);
+            RangeTextInputRequest::MutationSourcePage(request)
+            | RangeTextInputRequest::MutationProposalPage(request) => {
+                self.dispatched_mutations.insert(request.page().key().key());
+            }
+            RangeTextInputRequest::MutationFinishInput(finish) => {
+                self.dispatched_mutations.insert(finish.key());
+            }
+            RangeTextInputRequest::MutationCommit(commit) => {
+                self.dispatched_mutations.insert(commit.key());
             }
             RangeTextInputRequest::ClipboardWrite(write) => {
                 self.dispatched_clipboard_write = Some(write.key());
@@ -341,7 +342,10 @@ impl RangeTextInput {
             && self.pending_history.is_none()
             && matches!(self.clipboard.state(), crate::ClipboardState::Idle)
             && self.dispatched_clipboard_write.is_none()
-            && matches!(self.edits.state(), crate::MutationState::Idle)
+            && matches!(
+                self.edits.state(),
+                crate::MutationState::Idle | crate::MutationState::Settled
+            )
             && self.detached_edits.is_empty()
             && self.requests.is_empty()
     }
@@ -447,5 +451,28 @@ impl RangeTextInput {
     fn push_request(&mut self, request: RangeTextInputRequest, cx: &mut Context<Self>) {
         self.requests.push_back(request);
         cx.notify();
+    }
+
+    fn mutation_queue_has_capacity(&self, key: crate::MutationKey) -> bool {
+        self.queued_mutation_requests(key) < Self::MAX_QUEUED_MUTATION_REQUESTS
+    }
+
+    fn queued_mutation_requests(&self, key: crate::MutationKey) -> usize {
+        self.requests
+            .iter()
+            .filter(|request| match request {
+                RangeTextInputRequest::MutationBegin(begin) => begin.proposal().key() == key,
+                RangeTextInputRequest::MutationSourcePage(page)
+                | RangeTextInputRequest::MutationProposalPage(page) => {
+                    page.page().key().key() == key
+                }
+                RangeTextInputRequest::MutationFinishInput(finish) => finish.key() == key,
+                RangeTextInputRequest::MutationCommit(commit) => commit.key() == key,
+                RangeTextInputRequest::CancelMutation(cancel) => cancel.key() == key,
+                RangeTextInputRequest::DetachedMutation(detached) => *detached == key,
+                _ => false,
+            })
+            .take(Self::MAX_QUEUED_MUTATION_REQUESTS)
+            .count()
     }
 }

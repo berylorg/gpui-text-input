@@ -31,7 +31,7 @@ impl RangeTextInput {
             prior_scrollbar_owner.owner_id,
             gpui_scrollbar::ScrollbarMountGeneration::new(next_mount),
         );
-        let candidate = self.prepare_rebind_transition(
+        let mut candidate = self.prepare_rebind_transition(
             binding,
             Some(selection),
             prior_scrollbar_owner,
@@ -45,6 +45,11 @@ impl RangeTextInput {
             return Err(RangeTextInputError::Stale);
         }
         let settlement = self.edits.settle(key, outcome)?;
+        let settled_edits = std::mem::replace(
+            &mut self.edits,
+            crate::RangeEditCoordinator::new(binding, self.config.mutation_limits),
+        );
+        candidate.retain_settled_edits(settled_edits);
         let committed = self.commit_widget_transition_internal(candidate);
         assert!(self.scrollbar.state.replace_owner(
             prior_scrollbar_owner,
@@ -81,10 +86,7 @@ impl RangeTextInput {
             return self.publish_optional_source_selection(selection, selected_object, None, cx);
         }
         if self.detached_edits.len() >= self.config.limits.max_detached_edits
-            && matches!(
-                self.edits.state(),
-                crate::MutationState::CommitPending | crate::MutationState::DetachedCommit
-            )
+            && matches!(self.edits.state(), crate::MutationState::CommitPending)
         {
             return Err(RangeTextInputError::Busy);
         }
@@ -330,7 +332,7 @@ impl RangeTextInput {
         self.adopted_positions = None;
         self.admitted_edit_proofs.clear();
         self.mutation_composition = None;
-        self.pending_object_remove = None;
+        self.pending_local_mutation = None;
         self.pending_select_all = false;
         self.cancel_history_dispatch();
         self.surface = None;
@@ -351,17 +353,22 @@ impl RangeTextInput {
     pub(super) fn cancel_mutation_dispatch(&mut self, key: crate::MutationKey, detached: bool) {
         self.requests.retain(|request| {
             !matches!(request,
-                RangeTextInputRequest::MutationPreflight(proposal) if proposal.key() == key
+                RangeTextInputRequest::MutationBegin(begin) if begin.proposal().key() == key
             ) && !matches!(request,
-                RangeTextInputRequest::MutationFragment { key: request_key, .. }
-                    | RangeTextInputRequest::MutationCommit(request_key) if *request_key == key
+                RangeTextInputRequest::MutationSourcePage(page)
+                    | RangeTextInputRequest::MutationProposalPage(page)
+                    if page.page().key().key() == key
+            ) && !matches!(request,
+                RangeTextInputRequest::MutationFinishInput(finish) if finish.key() == key
+            ) && !matches!(request,
+                RangeTextInputRequest::MutationCommit(commit) if commit.key() == key
             )
         });
         if self.dispatched_mutations.remove(&key) {
             self.requests.push_back(if detached {
                 RangeTextInputRequest::DetachedMutation(key)
             } else {
-                RangeTextInputRequest::CancelMutation(key)
+                RangeTextInputRequest::CancelMutation(crate::MutationCancelRequest::new(key))
             });
         }
     }
@@ -393,7 +400,7 @@ impl RangeTextInput {
         let Some(pending) = self.pending_history.take() else {
             return;
         };
-        if pending.is_planned() {
+        if pending.is_begun() {
             return;
         }
         let intent = pending.intent();

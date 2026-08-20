@@ -3,10 +3,11 @@ use gpui_scrollbar::ScrollbarStyle;
 
 use crate::{
     BlockTarget, ByteOffset, ByteRange, ClipboardKey, ClipboardLimits, ClipboardWriteRequest,
-    ExactGeometryError, ExactGeometryLimits, MutationError, MutationFragment, MutationKey,
-    MutationLimits, MutationOutcome, MutationProposal, ObjectRequest, ObjectRequestKey,
-    ObjectResidencyLimits, PageRequest, PageRequestKey, PresentationGeneration, RangeBinding,
-    ResidencyLimits, SegmentationLimits, StreamingGeometryStyle,
+    ExactGeometryError, ExactGeometryLimits, MutationBeginRequest, MutationCancelRequest,
+    MutationCommitRequest, MutationError, MutationFinishInput, MutationKey, MutationLimits,
+    MutationOutcome, MutationPageRequest, ObjectRequest, ObjectRequestKey, ObjectResidencyLimits,
+    PageRequest, PageRequestKey, PresentationGeneration, RangeBinding, ResidencyLimits,
+    SegmentationLimits, StreamingGeometryStyle,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -149,32 +150,20 @@ impl RangeHistoryIntent {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct RangeHistoryPlan {
+pub struct RangeHistorySession {
     intent: RangeHistoryIntent,
-    proposal: MutationProposal,
-    positions: crate::MutationPositions,
+    begin: MutationBeginRequest,
 }
 
-impl RangeHistoryPlan {
-    pub const fn new(
-        intent: RangeHistoryIntent,
-        proposal: MutationProposal,
-        positions: crate::MutationPositions,
-    ) -> Self {
-        Self {
-            intent,
-            proposal,
-            positions,
-        }
+impl RangeHistorySession {
+    pub const fn new(intent: RangeHistoryIntent, begin: MutationBeginRequest) -> Self {
+        Self { intent, begin }
     }
     pub const fn intent(self) -> RangeHistoryIntent {
         self.intent
     }
-    pub const fn proposal(self) -> MutationProposal {
-        self.proposal
-    }
-    pub const fn positions(self) -> crate::MutationPositions {
-        self.positions
+    pub const fn begin(self) -> MutationBeginRequest {
+        self.begin
     }
 }
 
@@ -249,13 +238,12 @@ pub enum RangeTextInputRequest {
     ObjectPage(ObjectRequest),
     CancelObjectPage(ObjectRequestKey),
     ReleaseObjectPage(ObjectRequestKey),
-    MutationPreflight(MutationProposal),
-    MutationFragment {
-        key: MutationKey,
-        fragment: MutationFragment,
-    },
-    MutationCommit(MutationKey),
-    CancelMutation(MutationKey),
+    MutationBegin(MutationBeginRequest),
+    MutationSourcePage(MutationPageRequest),
+    MutationProposalPage(MutationPageRequest),
+    MutationFinishInput(MutationFinishInput),
+    MutationCommit(MutationCommitRequest),
+    CancelMutation(MutationCancelRequest),
     DetachedMutation(MutationKey),
     HistoryIntent(RangeHistoryIntent),
     CancelHistoryIntent(RangeHistoryIntent),

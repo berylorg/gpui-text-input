@@ -216,7 +216,7 @@ impl super::RangeTextInput {
         if self.platform.is_some() {
             return Err(crate::RangeTextInputError::Busy);
         }
-        if text.len() > self.config.mutation_limits.max_staged_bytes() {
+        if text.len() > self.config.mutation_limits.max_page_bytes() {
             return Err(crate::RangeTextInputError::SurfaceCapacity);
         }
         let (key, resident) = self.request_platform_page(crate::ByteOffset::new(0), cx)?;
@@ -249,7 +249,7 @@ impl super::RangeTextInput {
         if self.platform.is_some() {
             return Err(crate::RangeTextInputError::Busy);
         }
-        if text.len() > self.config.mutation_limits.max_staged_bytes() {
+        if text.len() > self.config.mutation_limits.max_page_bytes() {
             return Err(crate::RangeTextInputError::SurfaceCapacity);
         }
         let (key, resident) = self.request_platform_page(crate::ByteOffset::new(0), cx)?;

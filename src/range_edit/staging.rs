@@ -1,371 +1,375 @@
 use super::*;
 
 impl RangeEditCoordinator {
-    pub fn stage(&mut self, fragment: MutationFragment) -> Result<(), MutationError> {
-        let key = fragment.key();
-        self.active_mut(key, MutationState::Staging)?;
-        if let Err(error) = self.stage_validated(fragment) {
-            self.finish(key, MutationOutcome::Error, false);
-            return Err(error);
+    pub fn accept_page(
+        &mut self,
+        page: MutationPage,
+    ) -> Result<MutationPageAcceptance, MutationError> {
+        let key = page.key().key();
+        let result = self.accept_page_validated(&page);
+        if matches!(result, Err(MutationError::PageCollision)) {
+            let _ = self.finish(key, MutationOutcome::Error, false);
         }
+        result
+    }
+
+    fn accept_page_validated(
+        &mut self,
+        page: &MutationPage,
+    ) -> Result<MutationPageAcceptance, MutationError> {
+        let limits = self.limits;
+        let key = page.key();
+        let state = self.active_for_key(key.key())?.state;
+        if matches!(
+            state,
+            MutationState::FinishPending | MutationState::CommitPending
+        ) {
+            return Err(MutationError::PostFinishInput);
+        }
+        let active = self.active_mut(key.key(), MutationState::InputStreaming)?;
+        let lane = active.lane(key.lane());
+
+        if key.ordinal() < lane.next_ordinal {
+            let Some(last) = lane.last_page else {
+                return Err(MutationError::ObsoleteOperation(key.key()));
+            };
+            if key == last.key {
+                return if page.page_identity() == last.page_identity
+                    && page.cumulative_identity() == last.cumulative_identity
+                {
+                    Ok(MutationPageAcceptance::Replay)
+                } else {
+                    Err(MutationError::PageCollision)
+                };
+            }
+            return Err(MutationError::ObsoleteOperation(key.key()));
+        }
+        if key.ordinal() != lane.next_ordinal {
+            return Err(MutationError::OrdinalMismatch {
+                expected: lane.next_ordinal,
+                actual: key.ordinal(),
+            });
+        }
+        if key.cursor() != lane.next_cursor {
+            return Err(MutationError::CursorMismatch);
+        }
+        if key.prior() != lane.cumulative_identity {
+            return Err(MutationError::PriorIdentityMismatch);
+        }
+        if page.items().len() > limits.max_page_items() {
+            return Err(MutationError::PageItemLimitExceeded);
+        }
+        if page.totals().retained_bytes > limits.max_page_bytes() as u64 {
+            return Err(MutationError::PageByteLimitExceeded);
+        }
+        if page.totals().objects > limits.max_page_objects() as u64 {
+            return Err(MutationError::ObjectLimitExceeded);
+        }
+        if page.totals().object_bytes > limits.max_page_object_bytes() as u64 {
+            return Err(MutationError::ObjectByteLimitExceeded);
+        }
+        if page.totals().presentation_bytes > limits.max_page_presentation_bytes() as u64 {
+            return Err(MutationError::PresentationByteLimitExceeded);
+        }
+
+        let mut proposal_candidate = ProposalPageCandidate {
+            sequence: active.sequence,
+            active_object_effect: active.active_object_effect,
+        };
+        if key.lane() == MutationLane::Proposal {
+            validate_proposal_page(
+                active.proposal,
+                active.tracked_active_object,
+                &mut proposal_candidate,
+                page.items(),
+            )?;
+        }
+        let next_totals = lane
+            .totals
+            .checked_add(page.totals())
+            .ok_or(MutationError::CumulativeOverflow)?;
+        let next_ordinal = lane
+            .next_ordinal
+            .checked_add(1)
+            .ok_or(MutationError::CumulativeOverflow)?;
+        if key.lane() == MutationLane::Proposal {
+            active.sequence = proposal_candidate.sequence;
+            active.active_object_effect = proposal_candidate.active_object_effect;
+        }
+        let lane = active.lane_mut(key.lane());
+        lane.totals = next_totals;
+        lane.next_cursor = page.next_cursor();
+        lane.next_ordinal = next_ordinal;
+        lane.cumulative_identity = page.cumulative_identity();
+        lane.last_page = Some(PageReceipt {
+            key,
+            page_identity: page.page_identity(),
+            cumulative_identity: page.cumulative_identity(),
+        });
+        Ok(MutationPageAcceptance::Accepted {
+            next_cursor: lane.next_cursor,
+            next_ordinal: lane.next_ordinal,
+            cumulative_identity: lane.cumulative_identity,
+            totals: lane.totals,
+        })
+    }
+
+    pub fn finish_input(&mut self, finish: MutationFinishInput) -> Result<(), MutationError> {
+        let active = self.active_mut(finish.key(), MutationState::InputStreaming)?;
+        if active.source.finish() != finish.source()
+            || active.proposal_lane.finish() != finish.proposal()
+            || expected_successor_extent(active)? != finish.intended_extent()
+        {
+            return Err(MutationError::FinishMismatch);
+        }
+        validate_intended(active, finish.intended_extent(), finish.intended())?;
+        active.intended = Some(finish.intended());
+        active.intended_extent = Some(finish.intended_extent());
+        active.state = MutationState::FinishPending;
         Ok(())
     }
 
-    fn stage_validated(&mut self, fragment: MutationFragment) -> Result<(), MutationError> {
-        let limits = self.limits;
-        let active = self.active_mut(fragment.key(), MutationState::Staging)?;
-        if active.terminal_seen {
-            return Err(MutationError::PostTerminalFragment);
-        }
-        if fragment.ordinal() != active.next_ordinal {
-            return Err(MutationError::FragmentOutOfOrder {
-                expected: active.next_ordinal,
-                actual: fragment.ordinal(),
-            });
-        }
-        if active.fragment_count == limits.max_fragments {
-            return Err(MutationError::FragmentLimitExceeded);
-        }
+    pub fn admit_commit(
+        &mut self,
+        key: MutationKey,
+    ) -> Result<MutationCommitRequest, MutationError> {
+        let active = self.active_mut(key, MutationState::FinishPending)?;
+        let intended = active.intended.ok_or(MutationError::MissingFinishInput)?;
+        let intended_extent = active
+            .intended_extent
+            .ok_or(MutationError::MissingFinishInput)?;
+        validate_intended(active, intended_extent, intended)?;
+        active.state = MutationState::CommitPending;
+        let finish_identity = finish_identity(active);
+        Ok(MutationCommitRequest::new(key, finish_identity))
+    }
+}
 
-        let mut next_inserted_bytes = active.inserted_bytes;
-        let mut next_inserted_line_breaks = active.inserted_line_breaks;
-        let mut terminal_seen = false;
-        let mut intended = None;
-        let (added, added_objects, added_object_bytes, added_presentation_bytes) = match fragment
-            .payload()
-        {
-            MutationFragmentPayload::Utf8 {
+fn validate_proposal_page(
+    proposal: MutationProposal,
+    tracked_active_object: Option<(InlineObjectId, InlineObjectOrder)>,
+    candidate: &mut ProposalPageCandidate,
+    items: &[MutationPageItem],
+) -> Result<(), MutationError> {
+    for item in items {
+        match item {
+            MutationPageItem::Utf8 {
                 inserted_offset,
                 text,
             } => {
-                if *inserted_offset != active.inserted_bytes {
+                if *inserted_offset != candidate.sequence.inserted_bytes {
                     return Err(MutationError::InsertOffsetMismatch {
-                        expected: active.inserted_bytes,
+                        expected: candidate.sequence.inserted_bytes,
                         actual: *inserted_offset,
                     });
                 }
-                next_inserted_bytes = active
+                candidate.sequence.inserted_bytes = candidate
+                    .sequence
                     .inserted_bytes
                     .checked_add(text.len() as u64)
-                    .ok_or(MutationError::StagedByteLimitExceeded)?;
-                next_inserted_line_breaks = active
+                    .ok_or(MutationError::CumulativeOverflow)?;
+                candidate.sequence.inserted_line_breaks = candidate
+                    .sequence
                     .inserted_line_breaks
                     .checked_add(text.bytes().filter(|byte| *byte == b'\n').count() as u64)
-                    .ok_or(MutationError::StagedByteLimitExceeded)?;
-                (text.len(), 0, 0, 0)
+                    .ok_or(MutationError::CumulativeOverflow)?;
             }
-            MutationFragmentPayload::Atom(AtomChange::Insert {
-                id,
-                inserted_range,
-                fallback_copy,
-            }) => {
-                if inserted_range.is_empty() || inserted_range.end().get() > active.inserted_bytes {
-                    return Err(MutationError::MalformedAtomChange);
-                }
-                let boundary = |offset: u64| {
-                    active
-                        .fragments
-                        .iter()
-                        .any(|fragment| match fragment.payload() {
-                            MutationFragmentPayload::Utf8 {
-                                inserted_offset,
-                                text,
-                            } => {
-                                let Some(local) = offset
-                                    .checked_sub(*inserted_offset)
-                                    .and_then(|value| usize::try_from(value).ok())
-                                else {
-                                    return false;
-                                };
-                                local <= text.len() && text.is_char_boundary(local)
-                            }
-                            _ => false,
-                        })
-                };
-                if !boundary(inserted_range.start().get()) || !boundary(inserted_range.end().get())
-                {
-                    return Err(MutationError::MalformedAtomChange);
-                }
-                let mut previous = None;
-                for prior in &active.fragments {
-                    if let MutationFragmentPayload::Atom(AtomChange::Insert {
-                        id: prior_id,
-                        inserted_range: prior_range,
-                        ..
-                    }) = prior.payload()
-                    {
-                        if prior_id == id {
-                            return Err(MutationError::DuplicateAtomInsert(*id));
-                        }
-                        previous = Some(*prior_range);
-                    }
-                }
-                if let Some(previous) = previous {
-                    if inserted_range.start() < previous.end() {
-                        return Err(MutationError::InsertedAtomRangeOutOfOrder {
-                            previous,
-                            actual: *inserted_range,
-                        });
-                    }
-                }
-                (fallback_copy.len(), 0, 0, 0)
+            MutationPageItem::Atom(change) => {
+                validate_atom_change(proposal, &mut candidate.sequence, change)?
             }
-            MutationFragmentPayload::Atom(AtomChange::Remove { id, source_range }) => {
-                if source_range.is_empty()
-                    || !active.proposal.replacement_bytes().contains(*source_range)
-                {
-                    return Err(MutationError::MalformedAtomChange);
-                }
-                let mut previous = None;
-                for prior in &active.fragments {
-                    if let MutationFragmentPayload::Atom(AtomChange::Remove {
-                        id: prior_id,
-                        source_range: prior_range,
-                    }) = prior.payload()
-                    {
-                        if prior_id == id {
-                            return Err(MutationError::DuplicateAtomRemove(*id));
-                        }
-                        if prior_range == source_range {
-                            return Err(MutationError::DuplicateAtomRemoveRange(*source_range));
-                        }
-                        previous = Some(*prior_range);
-                    }
-                }
-                if let Some(previous) = previous {
-                    if source_range.start() < previous.end() {
-                        return Err(MutationError::RemovedAtomRangeOutOfOrder {
-                            previous,
-                            actual: *source_range,
-                        });
-                    }
-                }
-                (0, 0, 0, 0)
+            MutationPageItem::Object(change) => {
+                validate_object_change(proposal, tracked_active_object, candidate, *change)?
             }
-            MutationFragmentPayload::Object(change) => {
-                validate_object_change(active, *change)?;
-                let (object_bytes, presentation_bytes) = match change {
-                    ObjectChange::Insert { object, .. }
-                    | ObjectChange::Replace { object, .. }
-                    | ObjectChange::Move { object, .. } => {
-                        (object.retained_bytes(), object.presentation_bytes())
-                    }
-                    ObjectChange::Remove { .. } => (0, 0),
-                };
-                (0, 1, object_bytes, presentation_bytes)
-            }
-            MutationFragmentPayload::Terminal {
-                intended: positions,
-            } => {
-                terminal_seen = true;
-                intended = Some(*positions);
-                (0, 0, 0, 0)
-            }
-        };
-        let staged_bytes = active
-            .staged_bytes
-            .checked_add(added)
-            .filter(|bytes| *bytes <= limits.max_staged_bytes)
-            .ok_or(MutationError::StagedByteLimitExceeded)?;
-        let object_count = active
-            .object_count
-            .checked_add(added_objects)
-            .filter(|count| *count <= limits.max_objects)
-            .ok_or(MutationError::ObjectLimitExceeded)?;
-        let object_bytes = active
-            .object_bytes
-            .checked_add(added_object_bytes)
-            .filter(|bytes| *bytes <= limits.max_object_bytes)
-            .ok_or(MutationError::ObjectByteLimitExceeded)?;
-        let presentation_bytes = active
-            .presentation_bytes
-            .checked_add(added_presentation_bytes)
-            .filter(|bytes| *bytes <= limits.max_presentation_bytes)
-            .ok_or(MutationError::PresentationByteLimitExceeded)?;
-        active.inserted_bytes = next_inserted_bytes;
-        active.inserted_line_breaks = next_inserted_line_breaks;
-        active.terminal_seen = terminal_seen;
-        active.staged_bytes = staged_bytes;
-        active.object_count = object_count;
-        active.object_bytes = object_bytes;
-        active.presentation_bytes = presentation_bytes;
-        active.fragment_count += 1;
-        active.next_ordinal += 1;
-        if intended.is_some() {
-            active.intended = intended;
         }
-        active.fragments.push(fragment);
-        Ok(())
     }
+    Ok(())
+}
+
+fn validate_atom_change(
+    proposal: MutationProposal,
+    sequence: &mut MutationSequenceState,
+    change: &AtomChange,
+) -> Result<(), MutationError> {
+    match change {
+        AtomChange::Insert {
+            id, inserted_range, ..
+        } => {
+            if inserted_range.is_empty() || inserted_range.end().get() > sequence.inserted_bytes {
+                return Err(MutationError::MalformedAtomChange);
+            }
+            if let Some((prior_id, prior_range)) = sequence.last_inserted_atom {
+                if *id == prior_id || inserted_range.start() < prior_range.end() {
+                    return Err(MutationError::InsertedAtomRangeOutOfOrder {
+                        previous: prior_range,
+                        actual: *inserted_range,
+                    });
+                }
+            }
+            sequence.last_inserted_atom = Some((*id, *inserted_range));
+        }
+        AtomChange::Remove { id, source_range } => {
+            if source_range.is_empty() || !proposal.replacement_bytes().contains(*source_range) {
+                return Err(MutationError::MalformedAtomChange);
+            }
+            if let Some((prior_id, prior_range)) = sequence.last_removed_atom {
+                if *id == prior_id || source_range.start() < prior_range.end() {
+                    return Err(MutationError::RemovedAtomRangeOutOfOrder {
+                        previous: prior_range,
+                        actual: *source_range,
+                    });
+                }
+            }
+            sequence.last_removed_atom = Some((*id, *source_range));
+        }
+    }
+    Ok(())
 }
 
 fn validate_object_change(
-    active: &ActiveMutation,
+    proposal: MutationProposal,
+    tracked_active_object: Option<(InlineObjectId, InlineObjectOrder)>,
+    candidate: &mut ProposalPageCandidate,
     change: ObjectChange,
 ) -> Result<(), MutationError> {
-    let replacement = active.proposal.replacement();
-    let (target, destination, successor) = match change {
-        ObjectChange::Insert { at, object } => (None, Some(at), Some(object)),
-        ObjectChange::Remove { target } => (Some(target), None, None),
-        ObjectChange::Replace { target, object } => (Some(target), None, Some(object)),
-        ObjectChange::Move { target, to, object } => (Some(target), Some(to), Some(object)),
+    let replacement = proposal.replacement();
+    let (target, successor) = match change {
+        ObjectChange::Insert { object } => (None, Some(object)),
+        ObjectChange::Remove { target } => (Some(target), None),
+        ObjectChange::Replace { target, object } | ObjectChange::Move { target, object } => {
+            (Some(target), Some(object))
+        }
     };
-    if target.is_some_and(|target| !source_range_contains(replacement, target.range()))
-        || destination
-            .is_some_and(|position| !source_range_contains_position(replacement, position))
-    {
+    if target.is_some_and(|target| !source_range_contains(replacement, target.range())) {
         return Err(MutationError::ObjectChangeOutsideReplacement);
     }
-    if let Some(target) = target
-        && successor.is_some_and(|object| {
-            matches!(change, ObjectChange::Move { .. }) && object.id() != target.id()
-        })
+    if let ObjectChange::Move { target, object } = change
+        && target.id() != object.id()
     {
         return Err(MutationError::MalformedObjectChange);
     }
-    match change {
-        ObjectChange::Insert { at, object } => validate_successor_at(at, object, None)?,
-        ObjectChange::Remove { .. } => {}
-        ObjectChange::Replace { target, object } => {
-            if object.anchor() != target.range().start().byte_offset
-                || object.order() != target.order()
-            {
-                return Err(MutationError::MalformedObjectChange);
-            }
-            if object.id() != target.id()
-                && target_unchanged_neighbors(target)
-                    .into_iter()
-                    .flatten()
-                    .any(|neighbor| neighbor == object.id())
-            {
-                return Err(MutationError::DuplicateObjectChange(object.id()));
-            }
-        }
-        ObjectChange::Move { target, to, object } => {
-            validate_successor_at(to, object, Some(target.id()))?;
-        }
-    }
-
-    let mut previous_target = None;
-    let mut previous_successor = None;
-    for prior in &active.fragments {
-        let MutationFragmentPayload::Object(prior) = prior.payload() else {
-            continue;
-        };
-        let (prior_target, prior_successor) = match *prior {
-            ObjectChange::Insert { object, .. } => (None, Some(object)),
-            ObjectChange::Remove { target } => (Some(target), None),
-            ObjectChange::Replace { target, object } => (Some(target), Some(object)),
-            ObjectChange::Move { target, object, .. } => (Some(target), Some(object)),
-        };
-        if let Some(actual) = target
-            && (prior_target.is_some_and(|prior| prior.id() == actual.id())
-                || prior_successor.is_some_and(|prior| prior.id() == actual.id()))
+    if let Some(target) = target {
+        if let Some(previous) = candidate.sequence.last_object_target
+            && (!matches!(
+                positions_cmp(previous.range().end(), target.range().start()),
+                Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+            ) || previous.id() == target.id())
         {
-            return Err(MutationError::DuplicateObjectChange(actual.id()));
+            return Err(MutationError::MalformedObjectChange);
         }
-        if let Some(actual) = successor
-            && (prior_target.is_some_and(|prior| prior.id() == actual.id())
-                || prior_successor.is_some_and(|prior| prior.id() == actual.id()))
-        {
-            return Err(MutationError::DuplicateObjectChange(actual.id()));
-        }
-        if let Some(prior_target) = prior_target {
-            previous_target = Some(prior_target);
-        }
-        if let Some(prior_successor) = prior_successor {
-            previous_successor = Some(prior_successor);
+        candidate.sequence.last_object_target = Some(target);
+        if tracked_active_object == Some((target.id(), target.order())) {
+            candidate.active_object_effect = match change {
+                ObjectChange::Remove { .. } => Some(ActiveObjectEffect::Removed {
+                    id: target.id(),
+                    order: target.order(),
+                }),
+                ObjectChange::Replace { .. } => Some(ActiveObjectEffect::Replaced {
+                    id: target.id(),
+                    order: target.order(),
+                }),
+                _ => candidate.active_object_effect,
+            };
         }
     }
-    if let (Some(previous), Some(actual)) = (previous_target, target)
-        && !matches!(
-            positions_cmp(previous.range().end(), actual.range().start()),
-            Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
-        )
-    {
-        return Err(MutationError::MalformedObjectChange);
-    }
-    if let (Some(previous), Some(actual)) = (previous_successor, successor) {
-        let previous_key = (previous.anchor(), previous.order(), previous.id());
-        let actual_key = (actual.anchor(), actual.order(), actual.id());
-        if previous.anchor() == actual.anchor() && previous.order() == actual.order() {
-            return Err(MutationError::DuplicateSuccessorObjectOrder {
-                anchor: actual.anchor(),
-                order: actual.order(),
-            });
+    if let Some(successor) = successor {
+        if let Some(previous) = candidate.sequence.last_successor_object {
+            let previous_key = (previous.anchor(), previous.order(), previous.id());
+            let actual_key = (successor.anchor(), successor.order(), successor.id());
+            if previous.anchor() == successor.anchor() && previous.order() == successor.order() {
+                return Err(MutationError::DuplicateSuccessorObjectOrder {
+                    anchor: successor.anchor(),
+                    order: successor.order(),
+                });
+            }
+            if previous_key >= actual_key {
+                return Err(MutationError::SuccessorObjectsOutOfOrder);
+            }
         }
-        if previous_key >= actual_key {
-            return Err(MutationError::SuccessorObjectsOutOfOrder);
-        }
+        candidate.sequence.last_successor_object = Some(successor);
     }
     Ok(())
 }
 
-fn target_unchanged_neighbors(target: ObjectTarget) -> [Option<InlineObjectId>; 2] {
-    let preceding = match target.range().start().gap {
-        InlineObjectGap::Between {
-            preceding,
-            following,
-        } if following.id() == target.id() && following.order() == target.order() => {
-            Some(preceding.id())
-        }
-        InlineObjectGap::Before(following)
-            if following.id() == target.id() && following.order() == target.order() =>
-        {
-            None
-        }
-        _ => None,
-    };
-    let following = match target.range().end().gap {
-        InlineObjectGap::Between {
-            preceding,
-            following,
-        } if preceding.id() == target.id() && preceding.order() == target.order() => {
-            Some(following.id())
-        }
-        InlineObjectGap::After(preceding)
-            if preceding.id() == target.id() && preceding.order() == target.order() =>
-        {
-            None
-        }
-        _ => None,
-    };
-    [preceding, following]
-}
-
-fn validate_successor_at(
-    position: SourcePosition,
-    object: SuccessorObject,
-    moving: Option<InlineObjectId>,
+fn validate_intended(
+    active: &ActiveMutation,
+    intended_extent: LogicalExtent,
+    intended: MutationPositions,
 ) -> Result<(), MutationError> {
-    if object.anchor() != position.byte_offset {
-        return Err(MutationError::MalformedObjectChange);
+    let expected_bytes = intended_extent.byte_len();
+    for position in [
+        intended.caret(),
+        intended.selection_anchor(),
+        intended.selection_head(),
+    ] {
+        if position.byte_offset.get() > expected_bytes {
+            return Err(MutationError::IncoherentSuccessor);
+        }
     }
-    let invalid_neighbor = |neighbor: crate::InlineObjectNeighbor| {
-        neighbor.id() == object.id() || moving.is_some_and(|moving| neighbor.id() == moving)
-    };
-    let ordered = match position.gap {
-        InlineObjectGap::NoObjects => true,
-        InlineObjectGap::Before(following) => {
-            !invalid_neighbor(following) && object.order() < following.order()
-        }
-        InlineObjectGap::Between {
-            preceding,
-            following,
-        } => {
-            !invalid_neighbor(preceding)
-                && !invalid_neighbor(following)
-                && preceding.order() < object.order()
-                && object.order() < following.order()
-        }
-        InlineObjectGap::After(preceding) => {
-            !invalid_neighbor(preceding) && preceding.order() < object.order()
-        }
-    };
-    if !ordered {
-        return Err(MutationError::MalformedObjectChange);
+    if active
+        .sequence
+        .last_successor_object
+        .is_some_and(|object| object.anchor().get() > expected_bytes)
+    {
+        return Err(MutationError::SuccessorObjectOutsideExtent);
     }
     Ok(())
+}
+
+pub(super) fn expected_successor_bytes(active: &ActiveMutation) -> Result<u64, MutationError> {
+    active
+        .base_extent
+        .byte_len()
+        .checked_sub(active.proposal.replacement_bytes().len())
+        .and_then(|bytes| bytes.checked_add(active.sequence.inserted_bytes))
+        .ok_or(MutationError::IncoherentSuccessor)
+}
+
+pub(super) fn expected_successor_extent(
+    active: &ActiveMutation,
+) -> Result<LogicalExtent, MutationError> {
+    let expected_bytes = expected_successor_bytes(active)?;
+    let base_breaks = active
+        .base_extent
+        .line_count()
+        .checked_sub(u64::from(active.base_extent.byte_len() != 0))
+        .ok_or(MutationError::IncoherentSuccessor)?;
+    let expected_breaks = base_breaks
+        .checked_sub(active.proposal.replacement_line_breaks())
+        .and_then(|breaks| breaks.checked_add(active.sequence.inserted_line_breaks))
+        .ok_or(MutationError::IncoherentSuccessor)?;
+    let expected_lines = if expected_bytes == 0 {
+        if expected_breaks != 0 {
+            return Err(MutationError::IncoherentSuccessor);
+        }
+        0
+    } else {
+        expected_breaks
+            .checked_add(1)
+            .ok_or(MutationError::IncoherentSuccessor)?
+    };
+    Ok(LogicalExtent::new(expected_bytes, expected_lines))
+}
+
+pub(super) fn finish_identity(active: &ActiveMutation) -> MutationIdentity {
+    canonical_finish_identity(
+        active.proposal,
+        active.base_extent,
+        active.initial_source_cursor,
+        active.initial_proposal_cursor,
+        active.source.finish(),
+        active.proposal_lane.finish(),
+        active
+            .intended_extent
+            .expect("finish input fixes intended extent"),
+        active
+            .intended
+            .expect("finish input fixes intended positions"),
+        active
+            .source
+            .totals
+            .checked_add(active.proposal_lane.totals)
+            .expect("accepted cumulative totals were checked"),
+    )
 }
 
 fn source_range_contains(outer: SourceRange, inner: SourceRange) -> bool {
@@ -374,16 +378,6 @@ fn source_range_contains(outer: SourceRange, inner: SourceRange) -> bool {
         Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
     ) && matches!(
         positions_cmp(inner.end(), outer.end()),
-        Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
-    )
-}
-
-fn source_range_contains_position(range: SourceRange, position: SourcePosition) -> bool {
-    matches!(
-        positions_cmp(range.start(), position),
-        Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
-    ) && matches!(
-        positions_cmp(position, range.end()),
         Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
     )
 }

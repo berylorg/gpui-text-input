@@ -46,10 +46,18 @@ pub(super) struct WidgetTransitionCandidate {
     )>,
 }
 
+impl WidgetTransitionCandidate {
+    pub(super) fn retain_settled_edits(&mut self, edits: crate::RangeEditCoordinator) {
+        debug_assert!(self.replacement_edits.is_some());
+        self.replacement_edits = Some(edits);
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) struct WidgetAdmissionComponents {
     pub(super) prior_surface: crate::RangeSurfaceCharge,
     pub(super) current_request_storage: crate::RangeSurfaceCharge,
+    pub(super) mutation_request_payload: crate::RangeSurfaceCharge,
     pub(super) candidate_record: crate::RangeSurfaceCharge,
     pub(super) geometry: crate::RangeSurfaceCharge,
     pub(super) resident_payload: crate::RangeSurfaceCharge,
@@ -69,6 +77,7 @@ impl WidgetAdmissionComponents {
         [
             self.prior_surface,
             self.current_request_storage,
+            self.mutation_request_payload,
             self.candidate_record,
             self.geometry,
             self.resident_payload,
@@ -592,10 +601,7 @@ impl RangeTextInput {
                 return None;
             }
             Some(
-                if matches!(
-                    self.edits.state(),
-                    crate::MutationState::CommitPending | crate::MutationState::DetachedCommit
-                ) {
+                if matches!(self.edits.state(), crate::MutationState::CommitPending) {
                     crate::MutationDisposal::Detached(key)
                 } else {
                     crate::MutationDisposal::Cancelled(key)
@@ -699,7 +705,7 @@ impl RangeTextInput {
                 effects.push(if detached {
                     RangeTextInputRequest::DetachedMutation(key)
                 } else {
-                    RangeTextInputRequest::CancelMutation(key)
+                    RangeTextInputRequest::CancelMutation(crate::MutationCancelRequest::new(key))
                 });
             }
         }
@@ -720,7 +726,7 @@ impl RangeTextInput {
             }
         }
         if let Some(history) = self.pending_history
-            && !history.is_planned()
+            && !history.is_begun()
             && !self.requests.iter().any(|request| {
                 matches!(request, RangeTextInputRequest::HistoryIntent(intent) if *intent == history.intent())
             })
@@ -891,12 +897,15 @@ impl RangeTextInput {
             .map_or(crate::RangeSurfaceCharge::default(), |surface| {
                 surface.charge()
             });
+        let mutation_request_payload =
+            queued_mutation_payload_charge(self.requests.iter().chain(effects.iter()))?;
         let admission_components = WidgetAdmissionComponents {
             prior_surface: prior_charge,
             current_request_storage: crate::RangeSurfaceCharge {
                 bytes: current_request_bytes,
                 items: self.requests.capacity(),
             },
+            mutation_request_payload,
             candidate_record: crate::RangeSurfaceCharge {
                 bytes: size_of::<WidgetTransitionCandidate>(),
                 items: 1,
@@ -1097,8 +1106,7 @@ impl RangeTextInput {
             }
             Some(TransitionConfigUpdate::Rebind { binding, .. }) => {
                 self.config.binding = binding;
-                self.pending_insert = None;
-                self.pending_object_remove = None;
+                self.pending_local_mutation = None;
                 self.pending_select_all = false;
                 self.mutation_positions = None;
                 self.adopted_positions = None;
@@ -1271,10 +1279,15 @@ impl RangeTextInput {
     fn remove_queued_mutation(&mut self, key: crate::MutationKey) {
         self.requests.retain(|request| {
             !matches!(request,
-                RangeTextInputRequest::MutationPreflight(proposal) if proposal.key() == key
+                RangeTextInputRequest::MutationBegin(begin) if begin.proposal().key() == key
             ) && !matches!(request,
-                RangeTextInputRequest::MutationFragment { key: request_key, .. }
-                    | RangeTextInputRequest::MutationCommit(request_key) if *request_key == key
+                RangeTextInputRequest::MutationSourcePage(page)
+                    | RangeTextInputRequest::MutationProposalPage(page)
+                    if page.page().key().key() == key
+            ) && !matches!(request,
+                RangeTextInputRequest::MutationFinishInput(finish) if finish.key() == key
+            ) && !matches!(request,
+                RangeTextInputRequest::MutationCommit(commit) if commit.key() == key
             )
         });
     }
@@ -1325,12 +1338,16 @@ fn request_survives_transition(
         RangeTextInputRequest::ClipboardWrite(write) => {
             clipboard_rebind.is_none_or(|rebind| rebind.key() != write.key())
         }
-        RangeTextInputRequest::MutationPreflight(proposal) => {
-            edit_disposal.is_none_or(|disposal| mutation_disposal_key(disposal) != proposal.key())
+        RangeTextInputRequest::MutationBegin(begin) => edit_disposal
+            .is_none_or(|disposal| mutation_disposal_key(disposal) != begin.proposal().key()),
+        RangeTextInputRequest::MutationSourcePage(page)
+        | RangeTextInputRequest::MutationProposalPage(page) => edit_disposal
+            .is_none_or(|disposal| mutation_disposal_key(disposal) != page.page().key().key()),
+        RangeTextInputRequest::MutationFinishInput(finish) => {
+            edit_disposal.is_none_or(|disposal| mutation_disposal_key(disposal) != finish.key())
         }
-        RangeTextInputRequest::MutationFragment { key, .. }
-        | RangeTextInputRequest::MutationCommit(key) => {
-            edit_disposal.is_none_or(|disposal| mutation_disposal_key(disposal) != *key)
+        RangeTextInputRequest::MutationCommit(commit) => {
+            edit_disposal.is_none_or(|disposal| mutation_disposal_key(disposal) != commit.key())
         }
         RangeTextInputRequest::HistoryIntent(_) => !is_rebind,
         _ => true,
@@ -1357,6 +1374,45 @@ fn checked_capacity_product(count: usize, width: usize) -> Result<usize, RangeTe
     count
         .checked_mul(width)
         .ok_or(RangeTextInputError::SurfaceCapacity)
+}
+
+fn queued_mutation_payload_charge<'a, I>(
+    requests: I,
+) -> Result<crate::RangeSurfaceCharge, RangeTextInputError>
+where
+    I: Iterator<Item = &'a RangeTextInputRequest> + Clone,
+{
+    let mut total = crate::RangeSurfaceCharge::default();
+    for (index, request) in requests.clone().enumerate() {
+        let page = match request {
+            RangeTextInputRequest::MutationSourcePage(request)
+            | RangeTextInputRequest::MutationProposalPage(request) => request.page(),
+            _ => continue,
+        };
+        let allocation_key = page.payload_allocation_key();
+        let already_charged = requests.clone().take(index).any(|prior| match prior {
+            RangeTextInputRequest::MutationSourcePage(request)
+            | RangeTextInputRequest::MutationProposalPage(request) => {
+                request.page().payload_allocation_key() == allocation_key
+            }
+            _ => false,
+        });
+        if already_charged {
+            continue;
+        }
+        let (bytes, items) = page
+            .payload_allocation_charge()
+            .ok_or(RangeTextInputError::SurfaceCapacity)?;
+        total.bytes = total
+            .bytes
+            .checked_add(bytes)
+            .ok_or(RangeTextInputError::SurfaceCapacity)?;
+        total.items = total
+            .items
+            .checked_add(items)
+            .ok_or(RangeTextInputError::SurfaceCapacity)?;
+    }
+    Ok(total)
 }
 
 fn rebind_binding_from_update(

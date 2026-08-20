@@ -222,6 +222,9 @@ impl RangeTextInput {
             .selection()
             .range()
             .map_err(|_| RangeTextInputError::Stale)?;
+        let directed = surface.selection();
+        let predecessor =
+            crate::MutationPositions::new(directed.head, directed.anchor, directed.head);
         let mut proofs = Vec::with_capacity(2);
         for position in [selection.start(), selection.end()] {
             let proof = crate::range_edit::SourcePositionProof::from_surface_pages(
@@ -243,13 +246,14 @@ impl RangeTextInput {
                 proofs.push(proof);
             }
         }
-        self.begin_composite_clipboard_with_proofs(kind, selection, proofs, cx)
+        self.begin_composite_clipboard_with_proofs(kind, selection, predecessor, proofs, cx)
     }
 
     pub fn begin_composite_clipboard(
         &mut self,
         kind: crate::ClipboardKind,
         selection: SourceRange,
+        predecessor: crate::MutationPositions,
         text: &crate::RangeResidency,
         objects: &crate::ObjectResidency,
         cx: &mut Context<Self>,
@@ -266,13 +270,14 @@ impl RangeTextInput {
                 proofs.push(proof);
             }
         }
-        self.begin_composite_clipboard_with_proofs(kind, selection, proofs, cx)
+        self.begin_composite_clipboard_with_proofs(kind, selection, predecessor, proofs, cx)
     }
 
     fn begin_composite_clipboard_with_proofs(
         &mut self,
         kind: crate::ClipboardKind,
         selection: SourceRange,
+        predecessor: crate::MutationPositions,
         proofs: Vec<crate::range_edit::SourcePositionProof>,
         cx: &mut Context<Self>,
     ) -> Result<crate::ClipboardKey, RangeTextInputError> {
@@ -288,13 +293,14 @@ impl RangeTextInput {
         let id = crate::ClipboardId::new(self.next_id());
         let progress = self
             .clipboard
-            .begin(id, kind, selection)
+            .begin(id, kind, selection, predecessor)
             .map_err(|_| RangeTextInputError::Busy)?;
         let key = crate::ClipboardKey::new(
             id,
             self.config.binding.binding(),
             self.config.binding.revision(),
             selection,
+            predecessor,
         );
         self.clipboard_cut_proofs = (kind == crate::ClipboardKind::Cut).then_some((key, proofs));
         self.advance_clipboard(progress, cx)?;
@@ -430,10 +436,19 @@ impl RangeTextInput {
             } else {
                 replacement.start()
             };
-            self.edits.begin(mutation)?;
-            self.pending_insert = Some((mutation.key(), String::new(), caret, proofs));
-            self.pending_object_remove = removed.map(|target| (mutation.key(), target));
-            self.push_request(RangeTextInputRequest::MutationPreflight(mutation), cx);
+            let items = removed
+                .map(|target| {
+                    crate::MutationPageItem::Object(crate::ObjectChange::Remove { target })
+                })
+                .into_iter()
+                .collect();
+            self.begin_local_mutation(
+                mutation,
+                items,
+                crate::MutationPositions::collapsed(caret),
+                cx,
+            )?;
+            self.admitted_edit_proofs = proofs;
         } else {
             self.clipboard_cut_proofs = None;
         }

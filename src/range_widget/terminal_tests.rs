@@ -591,8 +591,7 @@ struct TransitionFingerprint {
     adopted_positions: Option<String>,
     admitted_edit_proofs: Vec<String>,
     mutation_composition: Option<String>,
-    pending_insert: Option<String>,
-    pending_object_remove: Option<String>,
+    pending_local_mutation: Option<String>,
     platform_ready: Option<String>,
     pending_select_all: bool,
     pointer_anchor: Option<crate::SourcePosition>,
@@ -814,12 +813,8 @@ fn transition_fingerprint(input: &RangeTextInput) -> TransitionFingerprint {
             .mutation_composition
             .as_ref()
             .map(|state| format!("{state:?}")),
-        pending_insert: input
-            .pending_insert
-            .as_ref()
-            .map(|state| format!("{state:?}")),
-        pending_object_remove: input
-            .pending_object_remove
+        pending_local_mutation: input
+            .pending_local_mutation
             .as_ref()
             .map(|state| format!("{state:?}")),
         platform_ready: input
@@ -945,11 +940,54 @@ fn captured_events(
     events
 }
 
+fn drive_local_insert_to_commit_pending(
+    input: &gpui::Entity<RangeTextInput>,
+    cx: &mut gpui::VisualTestContext,
+) -> (crate::MutationKey, crate::MutationPositions) {
+    let current_position = input.read_with(cx, |input, _| {
+        input.surface.as_ref().unwrap().selection().head
+    });
+    let (_, current_text, current_objects) =
+        admitted_successor_sources(SOURCE, 1, &[current_position]);
+    input.update(cx, |input, _| {
+        input
+            .admit_edit_positions(&[current_position], &current_text, &current_objects)
+            .unwrap();
+    });
+    input.update(cx, |input, cx| {
+        input.insert_text("x".to_owned(), cx).unwrap()
+    });
+    let RangeTextInputRequest::MutationBegin(begin) =
+        input.update(cx, |input, _| input.take_request()).unwrap()
+    else {
+        panic!("local mutation begin")
+    };
+    let key = begin.proposal().key();
+    input.update(cx, |input, cx| {
+        input.accept_mutation_preflight(key, cx).unwrap()
+    });
+    let mut intended = None;
+    while let Some(request) = input.update(cx, |input, _| input.take_request()) {
+        if let RangeTextInputRequest::MutationFinishInput(finish) = request {
+            intended = Some(finish.intended());
+        }
+    }
+    let intended = intended.expect("local mutation finish");
+    input.update(cx, |input, cx| {
+        input.accept_mutation_finish(key, cx).unwrap()
+    });
+    assert!(matches!(
+        input.update(cx, |input, _| input.take_request()),
+        Some(RangeTextInputRequest::MutationCommit(commit)) if commit.key() == key
+    ));
+    (key, intended)
+}
+
 #[gpui::test]
 fn terminal_target_replacement_accepts_fixed_exact_caps_and_rejects_one_under(
     cx: &mut gpui::TestAppContext,
 ) {
-    const EXACT_BYTES: usize = 15_901;
+    const EXACT_BYTES: usize = 18_957;
     const EXACT_ITEMS: usize = 104;
     for (bytes, items, succeeds) in [
         (EXACT_BYTES, 32_768, true),
@@ -992,11 +1030,12 @@ fn terminal_target_replacement_accepts_fixed_exact_caps_and_rejects_one_under(
                         items: 90,
                     },
                     current_request_storage: RangeSurfaceCharge {
-                        bytes: 256,
+                        bytes: 560,
                         items: 1,
                     },
+                    mutation_request_payload: RangeSurfaceCharge::default(),
                     candidate_record: RangeSurfaceCharge {
-                        bytes: 7_200,
+                        bytes: 8_736,
                         items: 1,
                     },
                     geometry: RangeSurfaceCharge {
@@ -1009,7 +1048,7 @@ fn terminal_target_replacement_accepts_fixed_exact_caps_and_rejects_one_under(
                         items: 4,
                     },
                     effect_storage: RangeSurfaceCharge {
-                        bytes: 768,
+                        bytes: 1_680,
                         items: 3,
                     },
                     event_storage: RangeSurfaceCharge { bytes: 0, items: 0 },
@@ -1018,7 +1057,7 @@ fn terminal_target_replacement_accepts_fixed_exact_caps_and_rejects_one_under(
                     residency_rebind: RangeSurfaceCharge { bytes: 0, items: 0 },
                     detached_edit_storage: RangeSurfaceCharge { bytes: 0, items: 0 },
                     destination_request_storage: RangeSurfaceCharge {
-                        bytes: 256,
+                        bytes: 560,
                         items: 1,
                     },
                     proof_storage: RangeSurfaceCharge { bytes: 0, items: 0 },
@@ -1293,6 +1332,11 @@ fn prepaint_defers_terminal_resident_target_object_publication(cx: &mut gpui::Te
         assert!(input.active_object.is_none());
     });
     assert!(events.borrow().len() > event_count);
+    assert!(events.borrow().iter().any(|event| matches!(
+        event,
+        RangeTextInputEvent::InlineObjectRealizationLost(loss)
+            if loss.reason == crate::InlineObjectRealizationLossReason::Unrealized
+    )));
 }
 
 #[gpui::test]
@@ -1611,6 +1655,865 @@ fn active_object_candidate_accepts_exact_fit_and_rejects_one_under_atomically(
 }
 
 #[gpui::test]
+fn rejected_terminal_edit_is_quiescent_restorable_and_late_result_is_inert(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (input, cx) = cx.add_window_view(|window, cx| {
+        RangeTextInput::new(config(2 * 1024 * 1024, 32_768), window, cx).unwrap()
+    });
+    drive_initial_surface(&input, cx);
+    let current_position = input.read_with(cx, |input, _| {
+        input.surface.as_ref().unwrap().selection().head
+    });
+    let (_, current_text, current_objects) =
+        admitted_successor_sources(SOURCE, 1, &[current_position]);
+    input.update(cx, |input, _| {
+        input
+            .admit_edit_positions(&[current_position], &current_text, &current_objects)
+            .unwrap();
+    });
+    input.update(cx, |input, cx| {
+        input.insert_text("x".to_owned(), cx).unwrap()
+    });
+    let RangeTextInputRequest::MutationBegin(begin) =
+        input.update(cx, |input, _| input.take_request()).unwrap()
+    else {
+        panic!("insert begin")
+    };
+    let key = begin.proposal().key();
+    input.update(cx, |input, cx| {
+        input.accept_mutation_preflight(key, cx).unwrap()
+    });
+    while let Some(request) = input.update(cx, |input, _| input.take_request()) {
+        if matches!(request, RangeTextInputRequest::MutationFinishInput(_)) {
+            input.update(cx, |input, cx| {
+                input.accept_mutation_finish(key, cx).unwrap()
+            });
+        }
+    }
+    let settlement = cx.update(|window, app| {
+        input.update(app, |input, cx| {
+            input.settle_mutation(key, crate::MutationOutcome::Rejected, window, cx)
+        })
+    });
+    assert_eq!(
+        settlement.unwrap(),
+        crate::MutationSettlement::Current(crate::MutationOutcome::Rejected)
+    );
+    let (seed, released) = input.read_with(cx, |input, _| {
+        assert!(input.is_quiescent());
+        (
+            input.export_restoration(None).unwrap(),
+            input.edits.released_counts(),
+        )
+    });
+    let late = cx.update(|window, app| {
+        input.update(app, |input, cx| {
+            input.settle_mutation(key, crate::MutationOutcome::Rejected, window, cx)
+        })
+    });
+    assert!(matches!(
+        late,
+        Err(RangeTextInputError::Mutation(
+            crate::MutationError::ObsoleteOperation(obsolete)
+        )) if obsolete == key
+    ));
+    input.read_with(cx, |input, _| {
+        assert!(input.is_quiescent());
+        assert_eq!(input.export_restoration(None).unwrap(), seed);
+        assert_eq!(input.edits.released_counts(), released);
+    });
+}
+
+#[gpui::test]
+fn rejected_page_with_valid_prefix_is_atomic_and_exact_retry_succeeds(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (input, cx) = cx.add_window_view(|window, cx| {
+        RangeTextInput::new(config(2 * 1024 * 1024, 32_768), window, cx).unwrap()
+    });
+    drive_initial_surface(&input, cx);
+    let current_position = input.read_with(cx, |input, _| {
+        input.surface.as_ref().unwrap().selection().head
+    });
+    let (_, current_text, current_objects) =
+        admitted_successor_sources(SOURCE, 1, &[current_position]);
+    let binding = input.read_with(cx, |input, _| input.edits.binding());
+    let key = crate::MutationKey::new(
+        binding.binding(),
+        binding.revision(),
+        crate::OperationId::new(44),
+    );
+    let proposal = crate::MutationProposal::new(
+        key,
+        crate::MutationKind::Edit,
+        crate::MutationPositions::collapsed(current_position),
+        crate::SourceRange::new(current_position, current_position).unwrap(),
+        0,
+    );
+    let begin = crate::MutationBeginRequest::new(
+        proposal,
+        crate::MutationCursor::new(10),
+        crate::MutationCursor::new(20),
+    );
+    input.update(cx, |input, cx| {
+        input
+            .begin_host_mutation(
+                begin,
+                &[current_position],
+                &current_text,
+                &current_objects,
+                cx,
+            )
+            .unwrap()
+    });
+    assert!(matches!(
+        input.update(cx, |input, _| input.take_request()),
+        Some(RangeTextInputRequest::MutationBegin(_))
+    ));
+    input.update(cx, |input, cx| {
+        input.accept_mutation_preflight(key, cx).unwrap()
+    });
+    let invalid = crate::MutationPage::new(
+        crate::MutationPageKey::new(
+            key,
+            crate::MutationLane::Proposal,
+            crate::MutationCursor::new(20),
+            0,
+            crate::MutationIdentity::ROOT,
+        ),
+        crate::MutationCursor::new(21),
+        vec![
+            crate::MutationPageItem::Utf8 {
+                inserted_offset: 0,
+                text: "x".into(),
+            },
+            crate::MutationPageItem::Atom(crate::AtomChange::Insert {
+                id: crate::AtomId::new(8),
+                inserted_range: ByteRange::from_u64(0, 2).unwrap(),
+                fallback_copy: "x".into(),
+            }),
+        ],
+    )
+    .unwrap();
+    let before = input.read_with(cx, |input, _| {
+        (
+            input
+                .edits
+                .stream_finish(key, crate::MutationLane::Proposal)
+                .unwrap(),
+            input.requests.len(),
+            input.edits.active_object_effect(),
+        )
+    });
+    assert!(matches!(
+        input.update(cx, |input, cx| input.submit_mutation_page(invalid, cx)),
+        Err(RangeTextInputError::Mutation(
+            crate::MutationError::MalformedAtomChange
+        ))
+    ));
+    input.read_with(cx, |input, _| {
+        assert_eq!(input.edits.state(), crate::MutationState::InputStreaming);
+        assert_eq!(
+            (
+                input
+                    .edits
+                    .stream_finish(key, crate::MutationLane::Proposal)
+                    .unwrap(),
+                input.requests.len(),
+                input.edits.active_object_effect(),
+            ),
+            before
+        );
+    });
+    let corrected = crate::MutationPage::new(
+        crate::MutationPageKey::new(
+            key,
+            crate::MutationLane::Proposal,
+            crate::MutationCursor::new(20),
+            0,
+            crate::MutationIdentity::ROOT,
+        ),
+        crate::MutationCursor::new(21),
+        vec![
+            crate::MutationPageItem::Utf8 {
+                inserted_offset: 0,
+                text: "x".into(),
+            },
+            crate::MutationPageItem::Atom(crate::AtomChange::Insert {
+                id: crate::AtomId::new(8),
+                inserted_range: ByteRange::from_u64(0, 1).unwrap(),
+                fallback_copy: "x".into(),
+            }),
+        ],
+    )
+    .unwrap();
+    assert!(matches!(
+        input.update(cx, |input, cx| input.submit_mutation_page(corrected, cx)),
+        Ok(crate::MutationPageAcceptance::Accepted { .. })
+    ));
+    input.read_with(cx, |input, _| assert_eq!(input.requests.len(), 1));
+}
+
+#[gpui::test]
+fn host_stream_pages_finish_and_commit_through_widget_protocol(cx: &mut gpui::TestAppContext) {
+    let (input, cx) = cx.add_window_view(|window, cx| {
+        RangeTextInput::new(config(2 * 1024 * 1024, 32_768), window, cx).unwrap()
+    });
+    drive_initial_surface(&input, cx);
+    let current = input.read_with(cx, |input, _| {
+        input.surface.as_ref().unwrap().selection().head
+    });
+    let (_, text, objects) = admitted_successor_sources(SOURCE, 1, &[current]);
+    let base = input.read_with(cx, |input, _| input.config.binding);
+    let key = crate::MutationKey::new(
+        base.binding(),
+        base.revision(),
+        crate::OperationId::new(500),
+    );
+    let proposal = crate::MutationProposal::new(
+        key,
+        crate::MutationKind::Edit,
+        crate::MutationPositions::collapsed(current),
+        crate::SourceRange::new(current, current).unwrap(),
+        0,
+    );
+    let begin = crate::MutationBeginRequest::new(
+        proposal,
+        crate::MutationCursor::new(10),
+        crate::MutationCursor::new(20),
+    );
+    input.update(cx, |input, cx| {
+        input
+            .begin_host_mutation(begin, &[current], &text, &objects, cx)
+            .unwrap()
+    });
+    assert!(matches!(
+        input.update(cx, |input, _| input.take_request()),
+        Some(RangeTextInputRequest::MutationBegin(request)) if request == begin
+    ));
+    input.update(cx, |input, cx| {
+        input.accept_mutation_preflight(key, cx).unwrap()
+    });
+    for (lane, cursor, next, value) in [
+        (crate::MutationLane::Source, 10, 11, "s"),
+        (crate::MutationLane::Proposal, 20, 21, "x"),
+    ] {
+        let page = crate::MutationPage::new(
+            crate::MutationPageKey::new(
+                key,
+                lane,
+                crate::MutationCursor::new(cursor),
+                0,
+                crate::MutationIdentity::ROOT,
+            ),
+            crate::MutationCursor::new(next),
+            vec![crate::MutationPageItem::Utf8 {
+                inserted_offset: 0,
+                text: value.into(),
+            }],
+        )
+        .unwrap();
+        input.update(cx, |input, cx| {
+            input.submit_mutation_page(page, cx).unwrap()
+        });
+        assert!(matches!(
+            input.update(cx, |input, _| input.take_request()),
+            Some(RangeTextInputRequest::MutationSourcePage(_))
+                | Some(RangeTextInputRequest::MutationProposalPage(_))
+        ));
+    }
+    let intended = crate::MutationPositions::collapsed(SourcePosition::new(
+        ByteOffset::new(current.byte_offset.get() + 1),
+        crate::InlineObjectGap::NoObjects,
+    ));
+    let finish = input.read_with(cx, |input, _| {
+        crate::MutationFinishInput::new(
+            key,
+            input
+                .edits
+                .stream_finish(key, crate::MutationLane::Source)
+                .unwrap(),
+            input
+                .edits
+                .stream_finish(key, crate::MutationLane::Proposal)
+                .unwrap(),
+            LogicalExtent::new(base.extent().byte_len() + 1, base.extent().line_count()),
+            intended,
+        )
+    });
+    input.update(cx, |input, cx| {
+        input.submit_mutation_finish(finish, cx).unwrap()
+    });
+    assert!(matches!(
+        input.update(cx, |input, _| input.take_request()),
+        Some(RangeTextInputRequest::MutationFinishInput(request)) if request == finish
+    ));
+    input.update(cx, |input, cx| {
+        input.accept_mutation_finish(key, cx).unwrap()
+    });
+    assert!(matches!(
+        input.update(cx, |input, _| input.take_request()),
+        Some(RangeTextInputRequest::MutationCommit(commit)) if commit.key() == key
+    ));
+    cx.update(|window, app| {
+        input.update(app, |input, cx| {
+            input
+                .settle_mutation(key, crate::MutationOutcome::Rejected, window, cx)
+                .unwrap();
+        })
+    });
+}
+
+#[gpui::test]
+fn history_rejection_and_unbegun_rebind_cancellation_are_exact(cx: &mut gpui::TestAppContext) {
+    let (input, cx) = cx.add_window_view(|window, cx| {
+        RangeTextInput::new(config(2 * 1024 * 1024, 32_768), window, cx).unwrap()
+    });
+    drive_initial_surface(&input, cx);
+    let current = input.read_with(cx, |input, _| {
+        input.surface.as_ref().unwrap().selection().head
+    });
+    let (_, text, objects) = admitted_successor_sources(SOURCE, 1, &[current]);
+    input.update(cx, |input, cx| {
+        input.request_history(crate::MutationKind::Undo, cx)
+    });
+    let RangeTextInputRequest::HistoryIntent(intent) =
+        input.update(cx, |input, _| input.take_request()).unwrap()
+    else {
+        panic!("history intent")
+    };
+    let proposal = crate::MutationProposal::new(
+        intent.key(),
+        intent.kind(),
+        crate::MutationPositions::collapsed(current),
+        crate::SourceRange::new(current, current).unwrap(),
+        0,
+    );
+    let begin = crate::MutationBeginRequest::new(
+        proposal,
+        crate::MutationCursor::new(0),
+        crate::MutationCursor::new(0),
+    );
+    input.update(cx, |input, cx| {
+        input
+            .submit_history_session(
+                crate::RangeHistorySession::new(intent, begin),
+                &[current],
+                &text,
+                &objects,
+                cx,
+            )
+            .unwrap();
+    });
+    assert!(matches!(
+        input.update(cx, |input, _| input.take_request()),
+        Some(RangeTextInputRequest::MutationBegin(request)) if request == begin
+    ));
+    input.update(cx, |input, cx| {
+        input.reject_mutation_preflight(intent.key(), cx).unwrap();
+        assert!(input.pending_history.is_none());
+    });
+
+    input.update(cx, |input, cx| {
+        input.request_history(crate::MutationKind::Redo, cx)
+    });
+    let RangeTextInputRequest::HistoryIntent(cancelled) =
+        input.update(cx, |input, _| input.take_request()).unwrap()
+    else {
+        panic!("second history intent")
+    };
+    let rebound = RangeBinding::new(
+        binding().binding(),
+        SourceRevision::new(2),
+        binding().extent(),
+    );
+    cx.update(|window, app| {
+        input.update(app, |input, cx| {
+            input.rebind(rebound, None, window, cx).unwrap()
+        })
+    });
+    input.read_with(cx, |input, _| {
+        assert!(input.pending_history.is_none());
+        assert!(input.requests.iter().any(|request| matches!(
+            request,
+            RangeTextInputRequest::CancelHistoryIntent(intent) if *intent == cancelled
+        )));
+    });
+}
+
+#[gpui::test]
+fn history_page_collision_terminalizes_once_and_cleans_both_lanes(cx: &mut gpui::TestAppContext) {
+    for lane in [crate::MutationLane::Source, crate::MutationLane::Proposal] {
+        let (input, window_cx) = cx.add_window_view(|window, cx| {
+            RangeTextInput::new(config(2 * 1024 * 1024, 32_768), window, cx).unwrap()
+        });
+        drive_initial_surface(&input, window_cx);
+        let events = captured_events(&input, window_cx);
+        let current = input.read_with(window_cx, |input, _| {
+            input.surface.as_ref().unwrap().selection().head
+        });
+        let (_, text, objects) = admitted_successor_sources(SOURCE, 1, &[current]);
+        input.update(window_cx, |input, cx| {
+            input.request_history(crate::MutationKind::Undo, cx)
+        });
+        let RangeTextInputRequest::HistoryIntent(intent) = input
+            .update(window_cx, |input, _| input.take_request())
+            .unwrap()
+        else {
+            panic!("history collision intent")
+        };
+        let proposal = crate::MutationProposal::new(
+            intent.key(),
+            intent.kind(),
+            crate::MutationPositions::collapsed(current),
+            crate::SourceRange::new(current, current).unwrap(),
+            0,
+        );
+        let begin = crate::MutationBeginRequest::new(
+            proposal,
+            crate::MutationCursor::new(0),
+            crate::MutationCursor::new(0),
+        );
+        input.update(window_cx, |input, cx| {
+            input
+                .submit_history_session(
+                    crate::RangeHistorySession::new(intent, begin),
+                    &[current],
+                    &text,
+                    &objects,
+                    cx,
+                )
+                .unwrap();
+        });
+        assert!(matches!(
+            input.update(window_cx, |input, _| input.take_request()),
+            Some(RangeTextInputRequest::MutationBegin(request)) if request == begin
+        ));
+        input.update(window_cx, |input, cx| {
+            input.accept_mutation_preflight(intent.key(), cx).unwrap()
+        });
+        let page = |value: &str| {
+            crate::MutationPage::new(
+                crate::MutationPageKey::new(
+                    intent.key(),
+                    lane,
+                    crate::MutationCursor::new(0),
+                    0,
+                    crate::MutationIdentity::ROOT,
+                ),
+                crate::MutationCursor::new(1),
+                vec![crate::MutationPageItem::Utf8 {
+                    inserted_offset: 0,
+                    text: value.into(),
+                }],
+            )
+            .unwrap()
+        };
+        input.update(window_cx, |input, cx| {
+            input.submit_history_page(page("x"), cx).unwrap();
+        });
+        assert!(matches!(
+            input.update(window_cx, |input, _| input.take_request()),
+            Some(RangeTextInputRequest::MutationSourcePage(_))
+                | Some(RangeTextInputRequest::MutationProposalPage(_))
+        ));
+        let collision = page("y");
+        assert!(matches!(
+            input.update(window_cx, |input, cx| {
+                input.submit_history_page(collision.clone(), cx)
+            }),
+            Err(RangeTextInputError::Mutation(
+                crate::MutationError::PageCollision
+            ))
+        ));
+        let released = input.read_with(window_cx, |input, _| {
+            assert!(input.pending_history.is_none());
+            assert!(input.requests.is_empty());
+            assert!(input.is_quiescent());
+            input.export_restoration(None).unwrap();
+            input.edits.released_counts()
+        });
+        let error_settlements = || {
+            events
+                .borrow()
+                .iter()
+                .filter(|event| {
+                    matches!(
+                        event,
+                        RangeTextInputEvent::MutationSettled { key, outcome }
+                            if *key == intent.key() && *outcome == crate::MutationOutcome::Error
+                    )
+                })
+                .count()
+        };
+        assert_eq!(error_settlements(), 1);
+        assert!(matches!(
+            input.update(window_cx, |input, cx| {
+                input.submit_mutation_page(collision, cx)
+            }),
+            Err(RangeTextInputError::Mutation(
+                crate::MutationError::ObsoleteOperation(obsolete)
+            )) if obsolete == intent.key()
+        ));
+        input.read_with(window_cx, |input, _| {
+            assert!(input.is_quiescent());
+            assert_eq!(input.edits.released_counts(), released);
+        });
+        assert_eq!(error_settlements(), 1);
+
+        input.update(window_cx, |input, cx| {
+            input.request_history(crate::MutationKind::Redo, cx)
+        });
+        let RangeTextInputRequest::HistoryIntent(fresh_intent) = input
+            .update(window_cx, |input, _| input.take_request())
+            .unwrap()
+        else {
+            panic!("fresh history intent")
+        };
+        let fresh_proposal = crate::MutationProposal::new(
+            fresh_intent.key(),
+            fresh_intent.kind(),
+            crate::MutationPositions::collapsed(current),
+            crate::SourceRange::new(current, current).unwrap(),
+            0,
+        );
+        let fresh_begin = crate::MutationBeginRequest::new(
+            fresh_proposal,
+            crate::MutationCursor::new(0),
+            crate::MutationCursor::new(0),
+        );
+        input.update(window_cx, |input, cx| {
+            input
+                .submit_history_session(
+                    crate::RangeHistorySession::new(fresh_intent, fresh_begin),
+                    &[current],
+                    &text,
+                    &objects,
+                    cx,
+                )
+                .unwrap();
+        });
+        assert!(matches!(
+            input.update(window_cx, |input, _| input.take_request()),
+            Some(RangeTextInputRequest::MutationBegin(request)) if request == fresh_begin
+        ));
+        input.update(window_cx, |input, cx| {
+            input
+                .reject_mutation_preflight(fresh_intent.key(), cx)
+                .unwrap();
+            assert!(input.is_quiescent());
+        });
+    }
+}
+
+#[gpui::test]
+fn unchanged_binding_cancellation_is_keyed_exact_once_and_commit_pending_waits(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (input, window_cx) = cx.add_window_view(|window, cx| {
+        RangeTextInput::new(config(2 * 1024 * 1024, 32_768), window, cx).unwrap()
+    });
+    drive_initial_surface(&input, window_cx);
+    let events = captured_events(&input, window_cx);
+    let current = input.read_with(window_cx, |input, _| {
+        input.surface.as_ref().unwrap().selection().head
+    });
+    let (_, text, objects) = admitted_successor_sources(SOURCE, 1, &[current]);
+    let base = input.read_with(window_cx, |input, _| input.config.binding);
+    let key = crate::MutationKey::new(
+        base.binding(),
+        base.revision(),
+        crate::OperationId::new(700),
+    );
+    let proposal = crate::MutationProposal::new(
+        key,
+        crate::MutationKind::Edit,
+        crate::MutationPositions::collapsed(current),
+        crate::SourceRange::new(current, current).unwrap(),
+        0,
+    );
+    let begin = crate::MutationBeginRequest::new(
+        proposal,
+        crate::MutationCursor::new(0),
+        crate::MutationCursor::new(0),
+    );
+    input.update(window_cx, |input, cx| {
+        input
+            .begin_host_mutation(begin, &[current], &text, &objects, cx)
+            .unwrap();
+    });
+    assert!(matches!(
+        input.update(window_cx, |input, _| input.take_request()),
+        Some(RangeTextInputRequest::MutationBegin(request)) if request == begin
+    ));
+    input.update(window_cx, |input, cx| {
+        input.accept_mutation_preflight(key, cx).unwrap()
+    });
+    let source_page = crate::MutationPage::new(
+        crate::MutationPageKey::new(
+            key,
+            crate::MutationLane::Source,
+            crate::MutationCursor::new(0),
+            0,
+            crate::MutationIdentity::ROOT,
+        ),
+        crate::MutationCursor::new(1),
+        vec![crate::MutationPageItem::Utf8 {
+            inserted_offset: 0,
+            text: "source".into(),
+        }],
+    )
+    .unwrap();
+    input.update(window_cx, |input, cx| {
+        input.submit_mutation_page(source_page, cx).unwrap();
+    });
+    let wrong = crate::MutationKey::new(
+        base.binding(),
+        base.revision(),
+        crate::OperationId::new(701),
+    );
+    let before_wrong = input.read_with(window_cx, |input, _| fingerprint(input));
+    assert!(matches!(
+        input.update(window_cx, |input, cx| input.cancel_mutation(wrong, cx)),
+        Err(RangeTextInputError::Mutation(
+            crate::MutationError::WrongKey { expected, actual }
+        )) if expected == key && actual == wrong
+    ));
+    input.read_with(window_cx, |input, _| {
+        assert_eq!(fingerprint(input), before_wrong)
+    });
+    assert!(matches!(
+        input.update(window_cx, |input, cx| input.cancel_mutation(key, cx)),
+        Ok(crate::MutationCancellation::Cancelled)
+    ));
+    assert!(matches!(
+        input.update(window_cx, |input, _| input.take_request()),
+        Some(RangeTextInputRequest::CancelMutation(request)) if request.key() == key
+    ));
+    input.read_with(window_cx, |input, _| assert!(input.is_quiescent()));
+    let cancelled_events = || {
+        events
+            .borrow()
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    RangeTextInputEvent::MutationSettled { key: event_key, outcome }
+                        if *event_key == key && *outcome == crate::MutationOutcome::Cancelled
+                )
+            })
+            .count()
+    };
+    assert_eq!(cancelled_events(), 1);
+    assert!(matches!(
+        input.update(window_cx, |input, cx| input.cancel_mutation(key, cx)),
+        Err(RangeTextInputError::Mutation(
+            crate::MutationError::ObsoleteOperation(obsolete)
+        )) if obsolete == key
+    ));
+    assert_eq!(cancelled_events(), 1);
+
+    input.update(window_cx, |input, _| {
+        input
+            .admit_edit_positions(&[current], &text, &objects)
+            .unwrap();
+    });
+    input.update(window_cx, |input, cx| {
+        input.insert_text("x".to_owned(), cx).unwrap()
+    });
+    let local_key = input.read_with(window_cx, |input, _| {
+        let RangeTextInputRequest::MutationBegin(begin) = input.requests.front().unwrap() else {
+            panic!("local preflight")
+        };
+        begin.proposal().key()
+    });
+    assert!(matches!(
+        input.update(window_cx, |input, cx| input.cancel_mutation(local_key, cx)),
+        Ok(crate::MutationCancellation::Cancelled)
+    ));
+    assert!(matches!(
+        input.update(window_cx, |input, _| input.take_request()),
+        Some(RangeTextInputRequest::CancelMutation(request)) if request.key() == local_key
+    ));
+    input.read_with(window_cx, |input, _| assert!(input.is_quiescent()));
+
+    let (commit_key, _) = drive_local_insert_to_commit_pending(&input, window_cx);
+    assert!(matches!(
+        input.update(window_cx, |input, cx| input.cancel_mutation(commit_key, cx)),
+        Ok(crate::MutationCancellation::AwaitingHostSettlement)
+    ));
+    input.read_with(window_cx, |input, _| assert!(input.requests.is_empty()));
+    window_cx.update(|window, app| {
+        input.update(app, |input, cx| {
+            input
+                .settle_mutation(commit_key, crate::MutationOutcome::Rejected, window, cx)
+                .unwrap();
+        })
+    });
+}
+
+#[gpui::test]
+fn detached_commit_settles_once_after_rebind_and_late_duplicate_is_inert(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (input, cx) = cx.add_window_view(|window, cx| {
+        RangeTextInput::new(config(2 * 1024 * 1024, 32_768), window, cx).unwrap()
+    });
+    drive_initial_surface(&input, cx);
+    let (key, _) = drive_local_insert_to_commit_pending(&input, cx);
+    let rebound = RangeBinding::new(
+        binding().binding(),
+        SourceRevision::new(2),
+        binding().extent(),
+    );
+    cx.update(|window, app| {
+        input.update(app, |input, cx| {
+            input.rebind(rebound, None, window, cx).unwrap()
+        })
+    });
+    input.read_with(cx, |input, _| assert_eq!(input.detached_edits.len(), 1));
+    cx.update(|window, app| {
+        input.update(app, |input, cx| {
+            input
+                .settle_mutation(key, crate::MutationOutcome::Rejected, window, cx)
+                .unwrap();
+        })
+    });
+    input.read_with(cx, |input, _| assert!(input.detached_edits.is_empty()));
+    let late = cx.update(|window, app| {
+        input.update(app, |input, cx| {
+            input.settle_mutation(key, crate::MutationOutcome::Rejected, window, cx)
+        })
+    });
+    assert!(matches!(late, Err(RangeTextInputError::Stale)));
+    input.read_with(cx, |input, _| assert!(input.detached_edits.is_empty()));
+}
+
+#[gpui::test]
+fn one_page_mutation_queue_is_fixed_and_accounts_with_geometry_capacity(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (input, cx) = cx.add_window_view(|window, cx| {
+        RangeTextInput::new(config(2 * 1024 * 1024, 32_768), window, cx).unwrap()
+    });
+    drive_initial_surface(&input, cx);
+    let current_position = input.read_with(cx, |input, _| {
+        input.surface.as_ref().unwrap().selection().head
+    });
+    let (_, current_text, current_objects) =
+        admitted_successor_sources(SOURCE, 1, &[current_position]);
+    input.update(cx, |input, _| {
+        input
+            .admit_edit_positions(&[current_position], &current_text, &current_objects)
+            .unwrap();
+    });
+    input.update(cx, |input, cx| {
+        input.insert_text("x".to_owned(), cx).unwrap()
+    });
+    let key = input.read_with(cx, |input, _| {
+        let RangeTextInputRequest::MutationBegin(begin) = input.requests.front().unwrap() else {
+            panic!("insert begin")
+        };
+        begin.proposal().key()
+    });
+    assert!(matches!(
+        input.update(cx, |input, cx| input.accept_mutation_preflight(key, cx)),
+        Err(RangeTextInputError::Busy)
+    ));
+    input.read_with(cx, |input, _| {
+        assert_eq!(input.edits.state(), crate::MutationState::PreflightPending);
+        assert_eq!(input.requests.len(), 1);
+    });
+    let RangeTextInputRequest::MutationBegin(begin) =
+        input.update(cx, |input, _| input.take_request()).unwrap()
+    else {
+        panic!("insert begin")
+    };
+    assert_eq!(begin.proposal().key(), key);
+    input.update(cx, |input, cx| {
+        input.accept_mutation_preflight(key, cx).unwrap()
+    });
+    let page = input.read_with(cx, |input, _| {
+        assert_eq!(
+            input
+                .requests
+                .iter()
+                .filter(|request| match request {
+                    RangeTextInputRequest::MutationProposalPage(page) => {
+                        page.page().key().key() == key
+                    }
+                    RangeTextInputRequest::MutationFinishInput(finish) => finish.key() == key,
+                    _ => false,
+                })
+                .count(),
+            RangeTextInput::MAX_QUEUED_MUTATION_REQUESTS
+        );
+        input
+            .requests
+            .iter()
+            .find_map(|request| match request {
+                RangeTextInputRequest::MutationProposalPage(page) => Some(page.page().clone()),
+                _ => None,
+            })
+            .unwrap()
+    });
+    assert!(matches!(
+        input.update(cx, |input, cx| input.submit_mutation_page(page, cx)),
+        Err(RangeTextInputError::Busy)
+    ));
+    input.read_with(cx, |input, _| {
+        assert_eq!(input.edits.state(), crate::MutationState::FinishPending);
+        assert_eq!(
+            input.requests.len(),
+            RangeTextInput::MAX_QUEUED_MUTATION_REQUESTS
+        );
+    });
+    input.update(cx, |input, _| {
+        input
+            .prepare_focus_loss_transition(input.desired)
+            .expect("queued page coexistence probe");
+    });
+    let components = input.read_with(cx, |input, _| {
+        input.last_widget_admission_components.get().unwrap()
+    });
+    assert_eq!(
+        components.mutation_request_payload,
+        RangeSurfaceCharge {
+            bytes: std::mem::size_of::<crate::MutationPageItem>() + 1,
+            items: 2,
+        }
+    );
+    let exact = components.checked_total().unwrap();
+    let before = input.read_with(cx, |input, _| fingerprint(input));
+    input.update(cx, |input, _| {
+        input.config.limits.max_surface_bytes = exact.bytes - 1;
+        assert!(matches!(
+            input.prepare_focus_loss_transition(input.desired),
+            Err(RangeTextInputError::SurfaceCapacity)
+        ));
+    });
+    input.read_with(cx, |input, _| assert_eq!(fingerprint(input), before));
+    input.update(cx, |input, _| {
+        input.config.limits.max_surface_bytes = 2 * 1024 * 1024;
+        input.config.limits.max_surface_items = exact.items - 1;
+        assert!(matches!(
+            input.prepare_focus_loss_transition(input.desired),
+            Err(RangeTextInputError::SurfaceCapacity)
+        ));
+    });
+    input.read_with(cx, |input, _| assert_eq!(fingerprint(input), before));
+    input.update(cx, |input, _| {
+        input.config.limits.max_surface_bytes = exact.bytes;
+        input.config.limits.max_surface_items = exact.items;
+        input
+            .prepare_focus_loss_transition(input.desired)
+            .expect("exact queued page coexistence capacity");
+    });
+    input.read_with(cx, |input, _| assert_eq!(fingerprint(input), before));
+}
+
+#[gpui::test]
 fn committed_settlement_accepts_exact_fit_and_one_under_is_retryable(
     cx: &mut gpui::TestAppContext,
 ) {
@@ -1631,26 +2534,32 @@ fn committed_settlement_accepts_exact_fit_and_one_under_is_retryable(
     input.update(cx, |input, cx| {
         input.insert_text("x".to_owned(), cx).unwrap()
     });
-    let RangeTextInputRequest::MutationPreflight(proposal) =
+    let RangeTextInputRequest::MutationBegin(begin) =
         input.update(cx, |input, _| input.take_request()).unwrap()
     else {
         panic!("insert preflight")
     };
     input.update(cx, |input, cx| {
-        input.accept_mutation_preflight(proposal.key(), cx).unwrap()
+        input
+            .accept_mutation_preflight(begin.proposal().key(), cx)
+            .unwrap()
     });
     let mut positions = None;
     while let Some(request) = input.update(cx, |input, _| input.take_request()) {
-        if let RangeTextInputRequest::MutationFragment { fragment, .. } = request
-            && let crate::MutationFragmentPayload::Terminal { intended } = fragment.payload()
-        {
-            positions = Some(*intended);
+        if let RangeTextInputRequest::MutationFinishInput(finish) = request {
+            positions = Some(finish.intended());
         }
     }
-    let positions = positions.expect("terminal successor positions");
-    input.update(cx, |input, _| {
-        input.admit_mutation_commit(proposal.key()).unwrap()
+    let positions = positions.expect("authenticated successor positions");
+    input.update(cx, |input, cx| {
+        input
+            .accept_mutation_finish(begin.proposal().key(), cx)
+            .unwrap()
     });
+    assert!(matches!(
+        input.update(cx, |input, _| input.take_request()),
+        Some(RangeTextInputRequest::MutationCommit(_))
+    ));
     let successor = format!("x{SOURCE}");
     let successor_positions = [
         positions.caret(),
@@ -1679,7 +2588,7 @@ fn committed_settlement_accepts_exact_fit_and_one_under_is_retryable(
                 prior,
                 replacement,
                 crate::InlineObjectRealizationLossReason::Superseded,
-                Some((proposal.key(), outcome)),
+                Some((begin.proposal().key(), outcome)),
                 None,
                 Some((positions, outcome_commit_proofs(outcome))),
             )
@@ -1696,11 +2605,12 @@ fn committed_settlement_accepts_exact_fit_and_one_under_is_retryable(
                 items: 90,
             },
             current_request_storage: RangeSurfaceCharge {
-                bytes: 1_024,
+                bytes: 2_240,
                 items: 4,
             },
+            mutation_request_payload: RangeSurfaceCharge::default(),
             candidate_record: RangeSurfaceCharge {
-                bytes: 7_200,
+                bytes: 8_736,
                 items: 1,
             },
             geometry: RangeSurfaceCharge {
@@ -1710,7 +2620,7 @@ fn committed_settlement_accepts_exact_fit_and_one_under_is_retryable(
             resident_payload: RangeSurfaceCharge { bytes: 0, items: 0 },
             publication_allocation: RangeSurfaceCharge { bytes: 0, items: 0 },
             effect_storage: RangeSurfaceCharge {
-                bytes: 1_024,
+                bytes: 2_240,
                 items: 4,
             },
             event_storage: RangeSurfaceCharge {
@@ -1722,7 +2632,7 @@ fn committed_settlement_accepts_exact_fit_and_one_under_is_retryable(
             residency_rebind: RangeSurfaceCharge { bytes: 0, items: 2 },
             detached_edit_storage: RangeSurfaceCharge { bytes: 0, items: 0 },
             destination_request_storage: RangeSurfaceCharge {
-                bytes: 256,
+                bytes: 560,
                 items: 1,
             },
             proof_storage: RangeSurfaceCharge {
@@ -1732,7 +2642,7 @@ fn committed_settlement_accepts_exact_fit_and_one_under_is_retryable(
         }
     );
     let exact = RangeSurfaceCharge {
-        bytes: 18_779,
+        bytes: 23_051,
         items: 130,
     };
     assert_eq!(components.checked_total(), Some(exact));
@@ -1746,7 +2656,7 @@ fn committed_settlement_accepts_exact_fit_and_one_under_is_retryable(
     let rejected = cx.update(|window, app| {
         input.update(app, |input, cx| {
             input.settle_committed_mutation(
-                proposal.key(),
+                begin.proposal().key(),
                 successor_binding,
                 positions,
                 &text,
@@ -1762,7 +2672,7 @@ fn committed_settlement_accepts_exact_fit_and_one_under_is_retryable(
     ));
     input.read_with(cx, |input, _| {
         assert_eq!(fingerprint(input), before);
-        assert_eq!(input.edits.active_key(), Some(proposal.key()));
+        assert_eq!(input.edits.active_key(), Some(begin.proposal().key()));
     });
     assert_eq!(events.borrow().len(), event_count);
     input.update(cx, |input, _| {
@@ -1772,7 +2682,7 @@ fn committed_settlement_accepts_exact_fit_and_one_under_is_retryable(
     let rejected = cx.update(|window, app| {
         input.update(app, |input, cx| {
             input.settle_committed_mutation(
-                proposal.key(),
+                begin.proposal().key(),
                 successor_binding,
                 positions,
                 &text,
@@ -1788,7 +2698,7 @@ fn committed_settlement_accepts_exact_fit_and_one_under_is_retryable(
     ));
     input.read_with(cx, |input, _| {
         assert_eq!(fingerprint(input), before);
-        assert_eq!(input.edits.active_key(), Some(proposal.key()));
+        assert_eq!(input.edits.active_key(), Some(begin.proposal().key()));
     });
     assert_eq!(events.borrow().len(), event_count);
     input.update(cx, |input, _| {
@@ -1797,7 +2707,7 @@ fn committed_settlement_accepts_exact_fit_and_one_under_is_retryable(
     let accepted = cx.update(|window, app| {
         input.update(app, |input, cx| {
             input.settle_committed_mutation(
-                proposal.key(),
+                begin.proposal().key(),
                 successor_binding,
                 positions,
                 &text,
@@ -1812,6 +2722,40 @@ fn committed_settlement_accepts_exact_fit_and_one_under_is_retryable(
         assert_eq!(input.last_surface_admission, Some(exact));
         assert_eq!(input.adopted_positions, Some(positions));
         assert_eq!(input.admitted_edit_proofs.len(), 3);
+    });
+    input.update(cx, |input, _| {
+        let predecessor_key = begin.proposal().key();
+        assert_eq!(
+            input
+                .edits
+                .settle(predecessor_key, crate::MutationOutcome::Rejected),
+            Err(crate::MutationError::ObsoleteOperation(predecessor_key))
+        );
+        let fresh_key = crate::MutationKey::new(
+            successor_binding.binding(),
+            successor_binding.revision(),
+            predecessor_key.operation(),
+        );
+        let at = positions.caret();
+        let proposal = crate::MutationProposal::new(
+            fresh_key,
+            crate::MutationKind::Edit,
+            positions,
+            crate::SourceRange::new(at, at).unwrap(),
+            0,
+        );
+        input
+            .edits
+            .begin(crate::MutationBeginRequest::new(
+                proposal,
+                crate::MutationCursor::new(0),
+                crate::MutationCursor::new(0),
+            ))
+            .unwrap();
+        assert_eq!(
+            input.edits.cancel(fresh_key).unwrap(),
+            crate::MutationCancellation::Cancelled
+        );
     });
 }
 
