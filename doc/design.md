@@ -35,17 +35,22 @@ undo and redo history, focus integration, layout, scrolling, and app-neutral eve
 
 The range-backed multiline variant does not own authoritative text or storage. Its host owns the
 authoritative revisioned UTF-8 and inline-object sources, opaque binding identity, logical extent,
-bounded page sources, cursor-based staged edit sink, and any supported undo and redo authority. The widget owns
-only its fixed resident text-page and object-page windows, revision-bound viewport and range
-requests, compact cursor and selection source positions, composition state, scroll state, and
-bounded pending-edit coordination. One logical mutation may consume any representable number of
-bounded source and fragment pages over time; the widget never accumulates the complete operation,
-concatenates pages into an authoritative whole value, or reconstructs host undo history.
+bounded page sources, cursor-based staged ordinary-edit sink, and any supported historical-root
+selection authority with exact undo and redo availability. The widget owns only its fixed resident
+text-page and object-page windows, revision-bound viewport and range requests, compact cursor and
+selection source positions, composition state, scroll state, bounded pending ordinary-edit
+coordination, and one fixed-size pending historical-selection intent. One logical ordinary mutation
+may consume any representable number of bounded source and fragment pages over time; the widget
+never accumulates the complete operation, concatenates pages into an authoritative whole value, or
+reconstructs host undo history. Undo and redo carry no source or proposal pages through the
+ordinary-edit sink: they select an existing immutable host root through fixed-size intent and
+settlement state.
 
 Every range-backed request names the exact binding identity and source revision. A response applies
 only to that binding and revision; rebinding never lets an old response become current by offset
 coincidence. The public boundary gives page requests, staged mutations, clipboard reads, and layout
-jobs distinct request or job identities so callers can cancel, reject, and release them exactly.
+jobs distinct request or job identities, and gives historical-root selections distinct operation
+identities, so callers can cancel, reject, reconcile, and release them exactly.
 Partial application, result-free adoption, and cleanup that mutates authoritative text are invalid
 host behavior.
 
@@ -145,9 +150,9 @@ fixed. Neither the host nor widget may impose a semantic segment-length cap, tre
 edge as a boundary, substitute a different word policy, accumulate the segment bytes, or assemble
 the whole document to resolve one continuation.
 
-## Range-Backed Edit Transactions
+## Range-Backed Ordinary Edit Transactions
 
-An edit, undo, or redo uses one app-neutral host-owned transaction session keyed by binding
+An ordinary edit uses one cursor-paged app-neutral host-owned transaction session keyed by binding
 identity, base revision, and unique operation identity. Begin captures the exact predecessor caret
 and directed selection, including which endpoint is active, and names the exact composite
 replacement range whose endpoints are predecessor source positions. The widget then exchanges
@@ -174,9 +179,9 @@ objects retain their relative order unless the transaction explicitly moves them
 not change authoritative text or objects, and the host may reject the envelope or a page before
 commit without exposing a partial replacement.
 
-Typing, paste, deletion, cut, undo, redo, and a host-initiated inline-object command all enter this
-same session protocol. Small keystrokes use a low-latency single-page fast path through the same
-begin, cumulative identity, `finish-input`, commit, and settlement rules; it is not a second edit
+Typing, paste, deletion, cut, and a host-initiated inline-object command all enter this same session
+protocol. Small keystrokes use a low-latency single-page fast path through the same begin,
+cumulative identity, `finish-input`, commit, and settlement rules; it is not a second edit
 authority. A host-initiated command supplies its exact base binding and revision, operation
 identity, predecessor caret and directed selection, composite range, bounded page source, and
 intended successor positions through the widget boundary; it cannot mutate widget projection
@@ -212,6 +217,61 @@ suffix as visible content, publish only object changes, or partially apply compe
 logical transaction has exactly one terminal settlement even when it requires many bounded
 commands, and the widget adopts the successor revision only with a coherent source projection for
 that exact committed result.
+
+## Range-Backed Historical Root Selection
+
+When undo or redo is supported, the host publishes one opaque history-authority identity and exact
+undo and redo availability bound to the live binding identity, source revision, and logical extent.
+Availability from any other binding, revision, extent, or authority identity is stale and cannot
+enable a command. The widget does not infer availability from resident pages, roots, prior commands,
+or locally retained edit records.
+
+Undo and redo share the range-backed widget's single live operation slot with ordinary edits, but
+they do not use the ordinary cursor-paged mutation proposal protocol. One request contains only its
+direction, unique operation identity, exact base binding, revision and logical extent, opaque
+history-authority identity, and captured caret and directed selection. It names no replacement
+range, inverse text, proposal source, marker registry, root graph, or historical content. The host
+authenticates that fixed-size intent against its current immutable history authority and selects an
+existing immutable historical root.
+
+Cancellation observed before selection-command admission settles the request as `Cancelled` and
+leaves the base binding, revision, history authority, caret, and directed selection unchanged. Once
+admitted, cancellation cannot retract or replace the result. The host reconciles any indeterminate
+command custody and settles the request exactly once as `Committed`, `Rejected`, `Conflict`,
+`Cancelled`, or `Error`; indeterminate custody is not a sixth terminal outcome. `Rejected`,
+`Cancelled`, and `Error` prove that the selection changed no live root or history frontier, while
+`Conflict` proves that the named base or history authority was no longer current and that this
+request selected nothing. Replay accepts only the exact operation and terminal closure and never
+reissues the logical undo or redo from guessed state.
+
+Every terminal settlement is fixed-size control state: it contains the exact operation and base
+identity, its outcome, and only the compact successor facts below when committed. It cannot embed
+historical content, inverse or replacement payload, page data, object collections, or a root graph.
+
+`Committed` returns only the successor binding identity, source revision and logical extent, the
+exact restored caret and directed selection, and the successor opaque history-authority identity
+with exact undo and redo availability. It returns no inverse, replacement, text page, object page,
+root graph, or document-sized value. The widget adopts that result through one atomic live rebind:
+the old binding's requests, resident text and object pages, interaction state, and availability
+become retired together, and the successor identity, extent, positions, and availability become
+current together. The successor content is then realized exclusively through the ordinary bounded
+text-page and object-page sources under the successor binding and revision. Until the required new
+pages validate the returned positions and form a coherent surface, any retained prior pixels are
+inert pending presentation rather than editable or hit-testable successor content. A position or
+gap mismatch leaves the committed successor binding fail-closed and never revives the old root or
+reclassifies the host's terminal settlement.
+
+The host provides a configured finite settlement-custody capacity shared across live and detached
+widget generations. Every ordinary commit or historical-root selection reserves one compact slot
+before admission, so rebind or unmount can transfer its fixed operation identity, exact base key,
+and terminal reconciliation state into detached custody without retaining proposal, inverse, page,
+marker, root-graph, or whole-value payload. A later generation may operate while earlier admitted
+operations settle only when another slot is available; exhaustion rejects new admission without
+mutating the current generation or falsifying semantic undo/redo availability. A late result
+matches and releases only its exact reserved slot, cannot change a replacement binding or resurrect
+a retired generation, and remains under bounded host reconciliation until one terminal outcome
+releases it. Repeated rebinds therefore retain at most the configured number of fixed-size
+settlement records, independent of operation size, history depth, draft size, or generation count.
 
 ## Range-Backed Geometry And Clipboard
 
@@ -464,27 +524,31 @@ The widget exposes app-neutral callbacks, events, and key-propagation policies f
 
 Rebinding or unmounting cancels every cancellable page, segmentation, clipboard, and geometry job
 owned by that widget instance and releases its resident pages, staged clipboard bytes, job slots,
-and other local capacity. A pre-commit edit transaction receives cancellation; an already admitted
-commit still settles exactly at the host boundary, but its result is obsolete for the detached
-widget and cannot mutate a later binding. Late responses are rejected by their request or job key.
+and other local capacity. A pre-admission ordinary edit or historical-root selection receives
+cancellation. An already admitted operation transfers only its pre-reserved compact settlement
+custody to the host and still reaches its exact terminal there, but its result is obsolete for the
+detached widget and cannot mutate a later binding. Late page and job responses are rejected by their
+request or job key; late operation results are consumed only by their exact detached-custody key.
 
-At a quiescent range-backed cut with no active composition, pre-commit edit, or admitted edit, the
-host may synchronously request one compact restoration seed before rebind or unmount. The seed
-contains only the exact binding identity, source revision and logical extent, caret and selection
+At a quiescent range-backed cut with no active composition, pre-admission ordinary edit or
+historical-root selection, or admitted operation, the host may synchronously request one compact
+restoration seed before rebind or unmount. The seed contains only the exact binding identity,
+source revision and logical extent, caret and selection
 source positions with their constant-size inline-gap witnesses, a logical vertical-scroll anchor
-with its bounded intra-anchor object continuation, and optional opaque host-supplied undo/redo
-authority identity and availability facts. The widget does not inspect that authority. The
-seed contains no text, object presentation, resident page, shaped layout, composition, undo
+with its bounded intra-anchor object continuation, and optional opaque host-supplied history-
+authority identity with exact undo and redo availability bound to that same source key. The widget
+does not inspect that authority. The seed contains no text, object presentation, resident page,
+shaped layout, composition, undo
 payload, clipboard payload, pending request, job, or staged mutation. A host that requires exact
-restoration must first fence
-new edits and settle or explicitly cancel every nonquiescent state through its ordinary exact
-boundary; an already admitted commit cannot be covered by a seed captured at its prior revision.
+restoration must first fence new edits and settle or explicitly cancel every nonquiescent state
+through its ordinary exact boundary; an already admitted commit cannot be covered by a seed captured
+at its prior revision.
 
 Quiescent additionally means that the widget owns no active or unpublished viewport, index,
 block-target, page, segmentation, platform-range, clipboard, undo, or redo operation. Cancellable
-work must settle or cancel and release normally. An admitted edit remains nonquiescent until its
-exact host settlement arrives; rebind or unmount may detach it, but seed export cannot cancel it or
-describe its base revision as current.
+work must settle or cancel and release normally. An admitted ordinary edit or historical-root
+selection remains nonquiescent until its exact host settlement arrives; rebind or unmount may
+detach it, but seed export cannot cancel it or describe its base revision as current.
 
 A new range-backed widget may accept that seed only for the identical binding, revision, and logical
 extent. It validates the compact positions, UTF-8 boundaries, adjacent-object gap witnesses, and
@@ -492,13 +556,15 @@ scroll continuation through bounded text and object pages, re-requests the range
 selection, viewport, and overscan, and publishes no restored surface until those facts are
 coherent. A mismatched, malformed, boundary-invalid, or nonadjacent seed is rejected rather than
 clamped, translated to another revision, or used to retain old widget state. Restoration transfers
-no resident or staged capacity from the unmounted instance.
+no resident or staged capacity, in-flight operation, or detached-settlement custody from the
+unmounted instance.
 
 Owned-value undo and redo histories are retained editor mechanics, not host application state. Each
 stack is bounded by both snapshot count and retained UTF-8 byte budget, and hosts may clear that
 history explicitly without changing the current buffer. Range-backed undo and redo, when supported,
-are host-owned mutations using the same exact revision and atomic-result boundary as other
-range-backed edits; the widget retains no authoritative undo snapshot stack for that variant.
+are host-owned historical-root selections using the fixed-size intent, exact five-outcome
+settlement, and atomic live-rebind boundary above; the widget retains no authoritative undo snapshot
+stack or inverse content for that variant.
 
 ## Application Neutrality
 
@@ -508,3 +574,11 @@ Inline non-text hooks must be modeled as opaque editor primitives with host-owne
 object identities, order keys, bounded presentation facts, source positions, and
 activation geometry are generic widget data; they carry no application meaning. The crate must not
 special-case Beryl images, settings fields, backend payloads, or any other consumer domain.
+
+# Engineering Rigor
+
+Profile: `production-application/v1`
+
+Modifiers:
+
+- `shared-resource-protection/v1`

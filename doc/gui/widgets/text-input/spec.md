@@ -12,11 +12,12 @@ IME composition, bounded undo and redo, placeholder rendering, opaque atom range
 multiline scrolling.
 
 For the range-backed multiline variant, the host owns authoritative revisioned text and storage,
-the opaque binding identity, bounded text and inline-object page sources, staged edit sink, and undo
-or redo authority when supported. The widget owns bounded viewport, segmentation, clipboard, and
-geometry requests, resident-page and inline-object realization, compact selection and caret source
-positions, composition, scrolling, pending-edit coordination, and atomic adoption of exact host
-results.
+the opaque binding identity, bounded text and inline-object page sources, staged ordinary-edit sink,
+and historical-root selection authority with exact undo and redo availability when supported. The
+widget owns bounded viewport, segmentation, clipboard, and geometry requests, resident-page and
+inline-object realization, compact selection and caret source positions, composition, scrolling,
+pending ordinary-edit coordination, one fixed-size pending historical-selection intent, and atomic
+adoption of exact host results.
 
 Hosts own validation, submission, persistence, labels, surrounding field chrome, and domain meaning of the text or atoms.
 
@@ -41,10 +42,13 @@ binding identity, source revision and logical extent, bounded text and source-ze
 page sources, compact caret and selection source positions, fixed resident text-page and object-page
 windows, fixed-capacity pending-request windows, authoritative grapheme, word, logical-line, and
 same-anchor object continuations, a bounded background visual-line index, a bounded streaming-layout
-continuation, an optional exact block-target job, and one cursor-based staged host-mutation session.
-That session retains fixed control state, cumulative identity, and bounded source and proposal
-pages rather than a whole-operation fragment collection. Request and job records carry exact keys;
-host results either carry the exact committed successor or prove a non-mutating terminal outcome.
+continuation, an optional exact block-target job, one cursor-based staged ordinary host-mutation
+session, and one fixed-size historical-root selection slot. The ordinary session retains fixed
+control state, cumulative identity, and bounded source and proposal pages rather than a whole-
+operation fragment collection. The historical slot retains only its direction, operation identity,
+exact base key, opaque history-authority identity, and captured positions. Request, job, and
+operation records carry exact keys; host results either carry the exact committed successor or
+prove a non-mutating terminal outcome.
 
 A source position contains one proven UTF-8 byte offset and one constant-size inline-gap witness.
 The witness proves the adjacent object identities and order keys at that anchor, including the
@@ -79,7 +83,8 @@ plain text, active selection, caret insertion, IME marked text, source-covering 
 source-zero-width inline object, inline-object active, inline-object activation, single-line,
 multiline, range-backed multiline, edit preflight accepted, edit preflight rejected, edit staging,
 edit commit pending, edit committed, edit rejected, edit conflict, edit cancelled, edit failed, text
-source-page pending, edit-fragment-page pending, edit-input finished, object page pending, platform-range pending, coherent resident range, page failed, page
+source-page pending, edit-fragment-page pending, edit-input finished, historical-root selection
+pending, historical-root rebind pending, object page pending, platform-range pending, coherent resident range, page failed, page
 cancelled, obsolete response, segmentation pending, clipboard pending, clipboard failed, clipboard
 cancelled, geometry-
 index pending, geometry-index refining, geometry-index complete, geometry-index failed, geometry-
@@ -121,7 +126,8 @@ published inside that terminal surface, never by a second fallible transition.
 Default key bindings cover character movement, word movement, vertical movement, home and end
 movement, buffer start and end movement, selection extension, select all, backspace, delete, word
 delete, Enter, Shift-Enter, copy, cut, paste, undo, and redo. Undo and redo operate on the local
-bounded history in owned-value variants and request the host-owned mutation in range-backed mode.
+bounded history in owned-value variants. In range-backed mode they request fixed-size host-owned
+historical-root selection and never enter the ordinary mutation proposal stream.
 
 Word movement, selection, deletion, and double-click selection share the crate-owned Unicode word
 segments from `doc/design.md`. Previous-word skips immediately preceding whitespace and lands at the
@@ -217,20 +223,20 @@ bounded continuation steps, but it never grows resident page bytes or retained s
 Navigation, deletion, double-click selection, Home, End, and line selection never cap segment
 length, treat an arbitrary page edge as a boundary, or flatten the document to find one.
 
-Each range-backed edit proposal opens one staged transaction session keyed by binding identity,
-base revision, and operation identity. Begin captures the exact predecessor caret and directed
-selection and names one exact composite replacement range. Bounded source and proposal pages carry
-exact cursors, ordinals, canonical bytes, prior and cumulative identities, positive item and byte
-ceilings, and an explicit authenticated `finish-input`. The widget and host retain only bounded
-current pages and fixed cumulative state; neither accumulates all fragments or treats a hardcoded
-256- or 257-fragment total as end-of-input.
+Each range-backed ordinary edit proposal opens one cursor-paged staged transaction session keyed by
+binding identity, base revision, and operation identity. Begin captures the exact predecessor caret
+and directed selection and names one exact composite replacement range. Bounded source and proposal
+pages carry exact cursors, ordinals, canonical bytes, prior and cumulative identities, positive
+item and byte ceilings, and an explicit authenticated `finish-input`. The widget and host retain
+only bounded current pages and fixed cumulative state; neither accumulates all fragments or treats a
+hardcoded 256- or 257-fragment total as end-of-input.
 
 Inserted UTF-8, source-covering atom changes, and source-zero-width object insertions, removals,
 replacements, or moves stream through those pages. Removed objects use predecessor positions;
 inserted and moved objects use authoritative successor-relative anchors and same-anchor order keys,
-including anchors inside newly inserted text. Typing, paste, deletion, cut, undo, redo, and host-
-initiated inline-object commands use this same boundary. Small keystrokes take a single-page fast
-path through the same cumulative identity, finish, commit, and settlement rules. A host-initiated
+including anchors inside newly inserted text. Typing, paste, deletion, cut, and host-initiated
+inline-object commands use this same boundary. Small keystrokes take a single-page fast path through
+the same cumulative identity, finish, commit, and settlement rules. A host-initiated
 command supplies its exact base, operation identity, predecessor positions, page source, and
 intended successor positions; it cannot mutate the resident projection directly. While one
 transaction is staging or commit-pending, the widget retains its coherent prior projection and
@@ -242,8 +248,37 @@ before it; unchanged objects after it move to the translated successor anchor. T
 the authoritative successor anchors and order keys and preserves unchanged relative order unless
 the transaction explicitly moves objects.
 
+Range-backed undo and redo share the single live operation slot with ordinary edits. Exact command
+availability is one host-supplied fact bound to the current binding identity, source revision,
+logical extent, and opaque history-authority identity; stale or mismatched availability never
+enables a command. A request captures only its direction, unique operation identity, that exact base
+key and authority identity, and the current caret and directed selection. It contains no
+replacement range, inverse or successor text, proposal page source, object collection, marker
+registry, root graph, or historical content. The host authenticates the request and selects one
+existing immutable historical root.
+
+The host settles historical selection exactly once as `Committed`, `Rejected`, `Conflict`,
+`Cancelled`, or `Error`. Cancellation before command admission produces `Cancelled` without
+changing the current root or availability. After admission, cancellation cannot override the exact
+result, and indeterminate custody remains under host reconciliation rather than becoming a sixth
+outcome. The four noncommitted outcomes preserve the live binding, caret, directed selection, and
+history availability. `Committed` contains only the successor binding identity, source revision and
+logical extent, exact restored caret and directed selection, and successor opaque history-authority
+identity with exact undo and redo availability. Every terminal settlement is fixed-size control
+state and contains no historical content, inverse or replacement payload, page data, object
+collection, or root graph.
+
+The widget adopts `Committed` through one atomic live rebind that retires the old binding's pages,
+requests, interaction state, and availability together and installs all successor compact facts
+together. It realizes the selected root only by issuing the ordinary bounded text-page and object-
+page demands under the successor binding and revision; settlement itself carries no content page or
+operation-sized payload. Until those demands validate the returned positions and produce a coherent
+successor surface, prior pixels may remain only as inert pending presentation and cannot accept
+editing or hit testing as successor content. A position or gap mismatch leaves the committed
+successor binding fail-closed and never revives the old root or reclassifies the host settlement.
+
 `Escape` or lifecycle cancellation may cancel before commit admission. The host completes the
-transaction exactly once as `Committed` with the successor revision and coherent extent,
+ordinary edit transaction exactly once as `Committed` with the successor revision and coherent extent,
 `Rejected`, `Conflict`, `Cancelled`, or `Error`. `Rejected`, `Cancelled`, and `Error` prove that the
 transaction made no change from its base; `Conflict` proves the base is no longer current and this
 transaction applied none of its replacement. After commit admission, cancellation no longer
@@ -259,27 +294,42 @@ cancel stale requests, and new demand waits or replaces obsolete demand when no 
 available; the widget never queues one request per movement, edit, logical line, source page,
 object, or same-anchor gap. Rebind and unmount cancel every cancellable page, segmentation,
 clipboard, and geometry request, release resident presentation and staged local capacity, and mark
-late results obsolete. An already admitted edit commit still settles at the host boundary but
-cannot apply to the detached or replacement widget binding.
+late results obsolete. A pre-admission ordinary edit or historical-root selection is cancelled.
+An already admitted operation still settles at the host boundary but cannot apply to the detached
+or replacement widget binding.
+
+The host exposes a configured finite settlement-custody capacity shared by live and detached widget
+generations. Each ordinary commit and historical-root selection reserves one compact slot before
+admission. Rebind or unmount transfers only its operation identity, exact base key, and terminal
+reconciliation state into that slot; it retains no proposal, inverse, text or object page, marker
+registry, root graph, or whole value. A later generation may admit work only while another slot is
+available. Each late result matches and releases only its exact slot, never revives an old
+generation, and cannot mutate the current binding. Repeated rebinds therefore retain no more than
+the configured number of fixed-size settlement records even when several generations await late
+terminal results. Custody exhaustion rejects a new operation before admission without changing
+semantic undo/redo availability or the current binding.
 
 When range-backed state is quiescent, the widget can synchronously export one compact restoration
 seed containing its exact binding, source revision and logical extent, caret and selection source
 positions with constant-size inline-gap witnesses, logical vertical-scroll anchor with its bounded
-object continuation, and optional opaque host-supplied undo/redo authority identity and availability
-fact. Export is unavailable during composition, a pre-commit edit, or an admitted edit. The seed
-contains no source text, object presentation, page, layout, composition, undo payload, request, job,
-or staged capacity and does not keep the widget mounted.
+object continuation, and optional opaque host-supplied history-authority identity with exact undo
+and redo availability bound to the same source key. Export is unavailable during composition, a
+pre-admission operation, or an admitted operation. The seed contains no source text, object
+presentation, page, layout, composition, undo payload, request, job, staged capacity, in-flight
+operation, or detached-settlement custody and does not keep the widget mounted.
 
 Quiescent export additionally requires no active or unpublished viewport, geometry-index,
 block-target, page, segmentation, platform-range, clipboard, undo, or redo operation. An admitted
-edit remains nonquiescent until its exact host result settles even if the widget can otherwise
-detach it during rebind or unmount.
+ordinary edit or historical-root selection remains nonquiescent until its exact host result settles
+even if the widget can otherwise detach it during rebind or unmount.
 
 Construction may consume a seed only with the identical host binding, revision, and extent. The
-widget validates its source positions, UTF-8 boundaries, and adjacent-object gap witnesses with
-bounded text and object page requests and reconstructs the coherent caret, selection, viewport,
-and scroll position from newly admitted resident pages. It rejects a stale or invalid seed without
-clamping or translating it and never adopts resident state from the detached instance.
+host must also confirm that any history-authority identity and availability still belong to that
+same source key. The widget validates its source positions, UTF-8 boundaries, and adjacent-object
+gap witnesses with bounded text and object page requests and reconstructs the coherent caret,
+selection, viewport, and scroll position from newly admitted resident pages. It rejects a stale or
+invalid seed without clamping or translating it and never adopts resident state, in-flight work, or
+detached-settlement custody from the detached instance.
 
 # Layout
 
