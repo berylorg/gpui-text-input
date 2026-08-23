@@ -353,6 +353,20 @@ fn mounted_read_only_copy_and_single_flight_history_routes_are_typed(
             .unwrap();
         input.set_read_only(false, cx);
     });
+    input.update(cx, |input, _| {
+        let expected = input.history_frontier();
+        input
+            .set_history_frontier(
+                expected,
+                gpui_text_input::RangeHistoryFrontier {
+                    binding: binding(source, 1),
+                    id: 1,
+                    undo_available: true,
+                    redo_available: false,
+                },
+            )
+            .unwrap();
+    });
 
     cx.simulate_keystrokes("ctrl-z ctrl-z");
     let history = drive_pages(&input, cx, source);

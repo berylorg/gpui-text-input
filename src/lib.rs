@@ -75,8 +75,9 @@ pub use range_source::{
 pub use range_widget::{
     CoherentRangeSurface, InlineObjectActivation, InlineObjectActivationKey,
     InlineObjectInputOrigin, InlineObjectRealizationLoss, InlineObjectRealizationLossReason,
-    PlatformRangeResult, RangeHistoryFrontier, RangeHistoryIntent, RangeHistorySession,
-    RangeRestorationScrollAnchor, RangeRestorationSeed, RangeSelection, RangeSourceSelection,
+    PlatformRangeResult, RangeHistoryCommit, RangeHistoryFrontier, RangeHistoryIntent,
+    RangeHistoryOutcome, RangeHistorySession, RangeHistorySettlement, RangeRestorationScrollAnchor,
+    RangeRestorationSeed, RangeSelection, RangeSettlementCoordinator, RangeSourceSelection,
     RangeSurfaceCharge, RangeSurfaceHit, RangeTextInput, RangeTextInputConfig, RangeTextInputError,
     RangeTextInputEvent, RangeTextInputLimits, RangeTextInputRequest, RealizedInlineObjectAnchor,
     RealizedInlineObjectGeometry, RealizedInlineObjectPresentation, RealizedObjectGapGeometry,

@@ -2,11 +2,11 @@ use gpui::px;
 use gpui_text_input::{
     BindingId, ByteOffset, InlineObjectGap, LogicalExtent, MutationBeginRequest,
     MutationCancelRequest, MutationCursor, MutationFinishInput, MutationIdentity, MutationKey,
-    MutationKind, MutationLane, MutationLimits, MutationPage, MutationPageItem, MutationPageKey,
-    MutationPageRequest, MutationPositions, MutationProposal, MutationState, MutationStreamFinish,
-    MutationTotals, OperationId, RangeBinding, RangeEditCoordinator, RangeHistoryIntent,
-    RangeHistorySession, RangeRestorationScrollAnchor, RangeRestorationSeed, RangeSourceSelection,
-    RangeTextInputRequest, SourcePosition, SourceRange, SourceRevision,
+    MutationKind, MutationLane, MutationPage, MutationPageItem, MutationPageKey,
+    MutationPageRequest, MutationPositions, MutationProposal, MutationStreamFinish, MutationTotals,
+    OperationId, RangeBinding, RangeHistoryCommit, RangeHistoryFrontier, RangeHistoryIntent,
+    RangeHistoryOutcome, RangeHistorySession, RangeRestorationScrollAnchor, RangeRestorationSeed,
+    RangeSourceSelection, RangeTextInputRequest, SourcePosition, SourceRange, SourceRevision,
 };
 
 fn binding(revision: u64, bytes: u64) -> RangeBinding {
@@ -22,8 +22,12 @@ fn position(offset: u64) -> SourcePosition {
 }
 
 fn begin(kind: MutationKind) -> MutationBeginRequest {
-    let binding = binding(1, 3);
-    let key = MutationKey::new(binding.binding(), binding.revision(), OperationId::new(8));
+    let predecessor_binding = binding(1, 3);
+    let key = MutationKey::new(
+        predecessor_binding.binding(),
+        predecessor_binding.revision(),
+        OperationId::new(8),
+    );
     let predecessor = MutationPositions::new(position(1), position(3), position(1));
     let replacement = SourceRange::new(position(1), position(3)).unwrap();
     MutationBeginRequest::new(
@@ -113,58 +117,64 @@ fn widget_protocol_has_distinct_bounded_request_variants() {
 }
 
 #[test]
-fn history_uses_the_same_cursor_session_and_preserves_direction() {
-    let begin = begin(MutationKind::Undo);
-    let intent = RangeHistoryIntent::new(begin.proposal().key(), MutationKind::Undo);
-    let session = RangeHistorySession::new(intent, begin);
-    assert_eq!(session.intent(), intent);
-    assert_eq!(session.begin(), begin);
-    assert_eq!(
-        session.begin().proposal().predecessor(),
-        MutationPositions::new(position(1), position(3), position(1))
+fn history_session_and_commit_are_compact_and_preserve_exact_availability() {
+    let predecessor_binding = binding(1, 3);
+    let key = MutationKey::new(
+        predecessor_binding.binding(),
+        predecessor_binding.revision(),
+        OperationId::new(8),
     );
-    let key = session.begin().proposal().key();
-    let page = MutationPage::new(
-        MutationPageKey::new(
-            key,
-            MutationLane::Proposal,
-            session.begin().proposal_cursor(),
-            0,
-            MutationIdentity::ROOT,
-        ),
-        MutationCursor::new(21),
-        vec![MutationPageItem::Utf8 {
-            inserted_offset: 0,
-            text: "x".into(),
-        }],
-    )
-    .unwrap();
-    let source = MutationStreamFinish {
-        next_cursor: session.begin().source_cursor(),
-        next_ordinal: 0,
-        cumulative_identity: MutationIdentity::ROOT,
-        totals: MutationTotals::default(),
+    let frontier = RangeHistoryFrontier {
+        binding: predecessor_binding,
+        id: 12,
+        undo_available: true,
+        redo_available: false,
     };
-    let proposal = MutationStreamFinish {
-        next_cursor: page.next_cursor(),
-        next_ordinal: 1,
-        cumulative_identity: page.cumulative_identity(),
-        totals: page.totals(),
+    let predecessor = position(3);
+    let predecessor_selection = RangeSourceSelection {
+        anchor: position(1),
+        head: predecessor,
     };
-    let mut edits = RangeEditCoordinator::new(binding(1, 3), MutationLimits::new(4, 4096).unwrap());
-    edits.begin(session.begin()).unwrap();
-    edits.accept_preflight(key, None).unwrap();
-    edits.accept_page(page).unwrap();
-    edits
-        .finish_input(MutationFinishInput::new(
-            key,
-            source,
-            proposal,
-            LogicalExtent::new(2, 1),
-            MutationPositions::collapsed(position(2)),
-        ))
-        .unwrap();
-    assert_eq!(edits.state(), MutationState::FinishPending);
+    let intent = RangeHistoryIntent::new(
+        key,
+        predecessor_binding,
+        MutationKind::Undo,
+        frontier,
+        predecessor,
+        predecessor_selection,
+    );
+    let session = RangeHistorySession::new(intent);
+    assert_eq!(session.intent(), intent);
+    assert_eq!(intent.binding(), predecessor_binding);
+    assert_eq!(intent.frontier(), frontier);
+    assert_eq!(intent.kind(), MutationKind::Undo);
+    assert_eq!(intent.caret(), predecessor);
+    assert_eq!(intent.selection(), predecessor_selection);
+    assert!(!std::mem::needs_drop::<RangeHistoryIntent>());
+    assert!(std::mem::size_of::<RangeHistoryIntent>() <= 512);
+    let successor_binding = binding(2, 4);
+    let successor_frontier = RangeHistoryFrontier {
+        binding: successor_binding,
+        id: 13,
+        undo_available: false,
+        redo_available: true,
+    };
+    let commit = RangeHistoryCommit::new(
+        successor_binding,
+        position(4),
+        RangeSourceSelection::caret(position(4)),
+        successor_frontier,
+    );
+    assert_eq!(commit.binding(), successor_binding);
+    assert_eq!(commit.frontier(), successor_frontier);
+    assert!(!std::mem::needs_drop::<RangeHistorySession>());
+    assert!(!std::mem::needs_drop::<RangeHistoryCommit>());
+    assert!(std::mem::size_of::<RangeHistorySession>() <= 512);
+    assert!(std::mem::size_of::<RangeHistoryCommit>() <= 512);
+    assert!(matches!(
+        RangeHistoryOutcome::Committed(commit),
+        RangeHistoryOutcome::Committed(committed) if committed == commit
+    ));
 }
 
 #[test]

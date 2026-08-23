@@ -15,15 +15,17 @@ use gpui_text_input::{
     AtomFact, AtomId, BindingId, ByteOffset, ByteRange, ClipboardLimits, ClipboardWriteOutcome,
     ExactGeometryLimits, ExactGeometryOwner, InlineObjectFact, InlineObjectGap, InlineObjectId,
     InlineObjectNeighbor, InlineObjectOrder, InlineObjectPresentation, LogicalExtent,
-    MutationLimits, MutationPositions, ObjectDemand, ObjectDemandEnvelope, ObjectDirection,
+    MutationBeginRequest, MutationCursor, MutationKey, MutationKind, MutationLimits,
+    MutationPositions, MutationProposal, ObjectDemand, ObjectDemandEnvelope, ObjectDirection,
     ObjectPage, ObjectPageEdgeFact, ObjectPageId, ObjectPurpose, ObjectRequestId, ObjectResidency,
-    ObjectResidencyLimits, PageDemand, PageDemandEnvelope, PageDirection, PageEdgeFact,
-    PageFailure, PageId, PagePurpose, PageRequestId, PlatformRangeResult, PresentationGeneration,
-    RangeBinding, RangePage, RangeResidency, RangeRestorationScrollAnchor, RangeRestorationSeed,
-    RangeSelection, RangeSourceSelection, RangeTextInput, RangeTextInputConfig,
-    RangeTextInputEvent, RangeTextInputLimits, RangeTextInputRequest, ResidencyLimits,
-    SegmentationLimits, SourcePosition, SourceRange, SourceRevision, StreamingGeometryStyle,
-    StreamingOversizePresentation, TextInputTheme, ensure_text_input_bindings,
+    ObjectResidencyLimits, OperationId, PageDemand, PageDemandEnvelope, PageDirection,
+    PageEdgeFact, PageFailure, PageId, PagePurpose, PageRequestId, PlatformRangeResult,
+    PresentationGeneration, RangeBinding, RangePage, RangeResidency, RangeRestorationScrollAnchor,
+    RangeRestorationSeed, RangeSelection, RangeSourceSelection, RangeTextInput,
+    RangeTextInputConfig, RangeTextInputEvent, RangeTextInputLimits, RangeTextInputRequest,
+    ResidencyLimits, SegmentationLimits, SourcePosition, SourceRange, SourceRevision,
+    StreamingGeometryStyle, StreamingOversizePresentation, TextInputTheme,
+    ensure_text_input_bindings,
 };
 
 fn binding(source: &str, revision: u64) -> RangeBinding {
@@ -264,6 +266,61 @@ fn admit_ordinary_edit_positions(
     input
         .admit_edit_positions(&positions, &text, &objects)
         .unwrap();
+}
+
+#[gpui::test]
+fn host_mutation_protocol_rejects_undo_and_redo_before_operation_claim(
+    cx: &mut gpui::TestAppContext,
+) {
+    let source = "history protocol boundary";
+    let configuration = config(source, 1);
+    let coordinator = configuration.settlement_coordinator.clone();
+    let (input, cx) =
+        cx.add_window_view(|window, cx| RangeTextInput::new(configuration, window, cx).unwrap());
+    assert!(drive_pages(&input, cx, source).is_empty());
+    let current = input.read_with(cx, |input, _| input.surface().unwrap().selection().head);
+    let (text, objects) = admitted_sources(source, 1, &[current]);
+    let base = binding(source, 1);
+    let before = range_publication_fingerprint(&input, cx);
+    let proposal = |kind| {
+        MutationBeginRequest::new(
+            MutationProposal::new(
+                MutationKey::new(base.binding(), base.revision(), OperationId::new(1)),
+                kind,
+                MutationPositions::collapsed(current),
+                SourceRange::new(current, current).unwrap(),
+                0,
+            ),
+            MutationCursor::new(0),
+            MutationCursor::new(0),
+        )
+    };
+
+    for kind in [MutationKind::Undo, MutationKind::Redo] {
+        input.update(cx, |input, cx| {
+            assert!(matches!(
+                input.begin_host_mutation(proposal(kind), &[current], &text, &objects, cx),
+                Err(gpui_text_input::RangeTextInputError::UnsupportedMutationKind)
+            ));
+            assert!(input.take_request().is_none());
+        });
+        assert_eq!(range_publication_fingerprint(&input, cx), before);
+        assert_eq!(coordinator.retained_count(), 0);
+    }
+
+    let edit = proposal(MutationKind::Edit);
+    input.update(cx, |input, cx| {
+        assert_eq!(
+            input
+                .begin_host_mutation(edit, &[current], &text, &objects, cx)
+                .unwrap(),
+            edit.proposal().key()
+        );
+        assert!(matches!(
+            input.take_request(),
+            Some(RangeTextInputRequest::MutationBegin(request)) if request == edit
+        ));
+    });
 }
 
 #[gpui::test]
@@ -579,7 +636,8 @@ fn config(source: &str, revision: u64) -> RangeTextInputConfig {
         mutation_limits: MutationLimits::new(8, 256).unwrap(),
         clipboard_limits: ClipboardLimits::new(1024, 32).unwrap(),
         segmentation_limits: SegmentationLimits::new(32, 64).unwrap(),
-        limits: RangeTextInputLimits::new(2 * 1024 * 1024, 32768, 32, 32, px(16.), 4).unwrap(),
+        limits: RangeTextInputLimits::new(2 * 1024 * 1024, 32768, 32, 32, px(16.)).unwrap(),
+        settlement_coordinator: gpui_text_input::RangeSettlementCoordinator::new(4).unwrap(),
         viewport_extent: px(80.),
         overscan: px(32.),
         placeholder: SharedString::new_static("Value"),

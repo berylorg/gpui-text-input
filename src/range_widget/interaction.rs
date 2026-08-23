@@ -5,7 +5,7 @@ use crate::{
     MutationFinishInput, MutationIdentity, MutationKey, MutationKind, MutationLane,
     MutationOutcome, MutationPage, MutationPageItem, MutationPageKey, MutationPageRequest,
     MutationPositions, MutationProposal, MutationSettlement, MutationStreamFinish, ObjectResidency,
-    OperationId, RangeResidency, RangeTextInputError, RangeTextInputEvent, RangeTextInputRequest,
+    RangeResidency, RangeTextInputError, RangeTextInputEvent, RangeTextInputRequest,
     SegmentationContinuation, SegmentationDirection, SegmentationKind, SourcePosition, SourceRange,
 };
 
@@ -174,15 +174,15 @@ impl RangeTextInput {
             return Err(RangeTextInputError::ReadOnly);
         }
         let proposal = request.proposal();
+        if proposal.kind() != crate::MutationKind::Edit {
+            return Err(RangeTextInputError::UnsupportedMutationKind);
+        }
         if !self.mutation_queue_has_capacity(proposal.key()) {
             return Err(RangeTextInputError::Busy);
         }
-        let next_operation_id = proposal
-            .key()
-            .operation()
-            .get()
-            .checked_add(1)
-            .ok_or(RangeTextInputError::Stale)?;
+        self.config
+            .settlement_coordinator
+            .claim_host_operation(proposal.key().operation())?;
         for required in [
             proposal.predecessor().caret(),
             proposal.predecessor().selection_anchor(),
@@ -196,7 +196,6 @@ impl RangeTextInput {
         }
         self.admit_edit_positions(base_positions, text, objects)?;
         self.edits.begin(request)?;
-        self.next_id = self.next_id.max(next_operation_id);
         self.push_request(RangeTextInputRequest::MutationBegin(request), cx);
         Ok(proposal.key())
     }
@@ -391,7 +390,7 @@ impl RangeTextInput {
         let key = MutationKey::new(
             self.config.binding.binding(),
             self.config.binding.revision(),
-            OperationId::new(self.next_id()),
+            self.next_local_operation()?,
         );
         let predecessor = MutationPositions::new(selection.head, selection.anchor, selection.head);
         let proposal = MutationProposal::new(key, kind, predecessor, replacement, 0);
@@ -433,15 +432,15 @@ impl RangeTextInput {
         }
         self.config.binding.extent().check_byte_range(range)?;
         let (replacement, proofs) = self.proven_no_object_range(range)?;
-        let key = MutationKey::new(
-            self.config.binding.binding(),
-            self.config.binding.revision(),
-            OperationId::new(self.next_id()),
-        );
         let surface = self
             .interactive_surface()
             .ok_or(RangeTextInputError::Busy)?;
         let selection = surface.selection();
+        let key = MutationKey::new(
+            self.config.binding.binding(),
+            self.config.binding.revision(),
+            self.next_local_operation()?,
+        );
         let predecessor = MutationPositions::new(selection.head, selection.anchor, selection.head);
         let proposal =
             MutationProposal::new(key, kind, predecessor, replacement, removed_line_breaks);
@@ -469,6 +468,26 @@ impl RangeTextInput {
         intended: MutationPositions,
         cx: &mut Context<Self>,
     ) -> Result<(), RangeTextInputError> {
+        let operation = match self.prepared_local_operation.take() {
+            Some(operation) if operation == proposal.key().operation() => operation,
+            Some(_) => return Err(RangeTextInputError::Stale),
+            None => self.config.settlement_coordinator.allocate_operation()?,
+        };
+        let proposal = if operation == proposal.key().operation() {
+            proposal
+        } else {
+            MutationProposal::new(
+                MutationKey::new(
+                    proposal.key().binding(),
+                    proposal.key().base_revision(),
+                    operation,
+                ),
+                proposal.kind(),
+                proposal.predecessor(),
+                proposal.replacement(),
+                proposal.replacement_line_breaks(),
+            )
+        };
         let key = proposal.key();
         let source_cursor = MutationCursor::new(0);
         let proposal_cursor = MutationCursor::new(0);
@@ -592,13 +611,17 @@ impl RangeTextInput {
         key: MutationKey,
         cx: &mut Context<Self>,
     ) -> Result<(), RangeTextInputError> {
-        if self.detached_edits.len() >= self.config.limits.max_detached_edits {
-            return Err(RangeTextInputError::DetachedCapacity);
-        }
         if !self.mutation_queue_has_capacity(key) {
             return Err(RangeTextInputError::Busy);
         }
-        let request = self.edits.admit_commit(key)?;
+        self.config.settlement_coordinator.reserve_mutation(key)?;
+        let request = match self.edits.admit_commit(key) {
+            Ok(request) => request,
+            Err(error) => {
+                self.config.settlement_coordinator.settle_mutation(key);
+                return Err(error.into());
+            }
+        };
         self.push_request(RangeTextInputRequest::MutationCommit(request), cx);
         Ok(())
     }
@@ -713,7 +736,16 @@ impl RangeTextInput {
                     cx,
                 );
             }
-            let settlement = self.edits.settle(key, outcome)?;
+            if !self.config.settlement_coordinator.settle_mutation(key) {
+                return Err(RangeTextInputError::Stale);
+            }
+            let settlement = match self.edits.settle(key, outcome) {
+                Ok(settlement) => settlement,
+                Err(error) => {
+                    self.config.settlement_coordinator.reserve_mutation(key)?;
+                    return Err(error.into());
+                }
+            };
             self.dispatched_mutations.remove(&key);
             self.pending_local_mutation = None;
             if self
@@ -731,19 +763,13 @@ impl RangeTextInput {
         if self.edits.is_retired(key) {
             return Err(MutationError::ObsoleteOperation(key).into());
         }
-        let Some(index) = self
-            .detached_edits
-            .iter()
-            .position(|owner| owner.active_key() == Some(key))
-        else {
+        if !self.config.settlement_coordinator.settle_mutation(key) {
             return Err(RangeTextInputError::Stale);
-        };
-        let settlement = self.detached_edits[index].settle(key, outcome)?;
+        }
         self.dispatched_mutations.remove(&key);
-        self.detached_edits.remove(index);
         cx.emit(RangeTextInputEvent::MutationSettled { key, outcome });
         cx.notify();
-        Ok(settlement)
+        Ok(MutationSettlement::Obsolete(outcome))
     }
 
     pub(super) fn insert_text(

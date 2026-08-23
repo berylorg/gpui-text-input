@@ -1,13 +1,131 @@
 use gpui::{Context, Pixels, Window};
 
 use crate::{
-    RangeEditCoordinator, RangeHistoryFrontier, RangeRestorationScrollAnchor, RangeRestorationSeed,
-    RangeSourceSelection, RangeTextInputError, RangeTextInputEvent, RangeTextInputRequest,
+    RangeEditCoordinator, RangeHistoryCommit, RangeHistoryFrontier, RangeHistoryIntent,
+    RangeHistoryOutcome, RangeHistorySettlement, RangeRestorationScrollAnchor,
+    RangeRestorationSeed, RangeSourceSelection, RangeTextInputError, RangeTextInputEvent,
+    RangeTextInputRequest,
 };
 
 use super::RangeTextInput;
 
 impl RangeTextInput {
+    pub fn settle_history(
+        &mut self,
+        intent: RangeHistoryIntent,
+        outcome: RangeHistoryOutcome,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<RangeHistorySettlement, RangeTextInputError> {
+        if let Some(pending) = self.pending_history {
+            if pending.intent() == intent && pending.is_admitted() {
+                if let RangeHistoryOutcome::Committed(commit) = outcome {
+                    self.validate_history_commit(intent, commit)?;
+                    return self.settle_committed_history_rebind(intent, commit, window, cx);
+                }
+                if !self.config.settlement_coordinator.settle_history(intent) {
+                    return Err(RangeTextInputError::Stale);
+                }
+                self.pending_history = None;
+                cx.emit(RangeTextInputEvent::HistorySettled { intent, outcome });
+                cx.notify();
+                return Ok(RangeHistorySettlement::Current(outcome));
+            }
+        }
+        self.config.settlement_coordinator.settle_history(intent);
+        Ok(RangeHistorySettlement::Obsolete(outcome))
+    }
+
+    fn validate_history_commit(
+        &self,
+        intent: RangeHistoryIntent,
+        commit: RangeHistoryCommit,
+    ) -> Result<(), RangeTextInputError> {
+        let binding = commit.binding();
+        let base = intent.binding();
+        if base != self.config.binding
+            || base.binding() != intent.key().binding()
+            || base.revision() != intent.key().base_revision()
+            || intent.frontier().binding() != base
+            || intent.frontier() != self.history_frontier()
+            || commit.frontier().binding() != binding
+            || commit.selection().range().is_err()
+            || commit.caret() != commit.selection().head
+        {
+            return Err(RangeTextInputError::Stale);
+        }
+        let extent = binding.extent().byte_len();
+        if [
+            commit.caret(),
+            commit.selection().anchor,
+            commit.selection().head,
+        ]
+        .into_iter()
+        .any(|position| position.byte_offset.get() > extent)
+        {
+            return Err(RangeTextInputError::Stale);
+        }
+        Ok(())
+    }
+
+    fn settle_committed_history_rebind(
+        &mut self,
+        intent: RangeHistoryIntent,
+        commit: RangeHistoryCommit,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<RangeHistorySettlement, RangeTextInputError> {
+        if !self.config.settlement_coordinator.contains_history(intent) {
+            return Err(RangeTextInputError::Stale);
+        }
+        let prior_scrollbar_owner = self.scrollbar.owner;
+        let next_mount = prior_scrollbar_owner
+            .mount_generation
+            .get()
+            .checked_add(1)
+            .ok_or(RangeTextInputError::Stale)?;
+        let replacement_scrollbar_owner = gpui_scrollbar::ScrollbarOwnerKey::new(
+            prior_scrollbar_owner.owner_id,
+            gpui_scrollbar::ScrollbarMountGeneration::new(next_mount),
+        );
+        let candidate = self.prepare_rebind_transition(
+            commit.binding(),
+            Some(commit.selection()),
+            prior_scrollbar_owner,
+            replacement_scrollbar_owner,
+            crate::InlineObjectRealizationLossReason::Superseded,
+            None,
+            None,
+            Some((
+                crate::MutationPositions::new(
+                    commit.caret(),
+                    commit.selection().anchor,
+                    commit.selection().head,
+                ),
+                Vec::new(),
+            )),
+        )?;
+        if self.scrollbar.state.current_owner() != Some(prior_scrollbar_owner) {
+            return Err(RangeTextInputError::Stale);
+        }
+        if !self.config.settlement_coordinator.settle_history(intent) {
+            return Err(RangeTextInputError::Stale);
+        }
+        let committed = self.commit_widget_transition_internal(candidate);
+        self.history_frontier = commit.frontier();
+        assert!(self.scrollbar.state.replace_owner(
+            prior_scrollbar_owner,
+            replacement_scrollbar_owner,
+            window,
+            cx,
+        ));
+        self.flush_widget_transition(committed, Some(cx));
+        let outcome = RangeHistoryOutcome::Committed(commit);
+        cx.emit(RangeTextInputEvent::HistorySettled { intent, outcome });
+        cx.notify();
+        Ok(RangeHistorySettlement::Current(outcome))
+    }
+
     pub(super) fn settle_committed_rebind(
         &mut self,
         key: crate::MutationKey,
@@ -44,13 +162,23 @@ impl RangeTextInput {
         if self.scrollbar.state.current_owner() != Some(prior_scrollbar_owner) {
             return Err(RangeTextInputError::Stale);
         }
-        let settlement = self.edits.settle(key, outcome)?;
+        if !self.config.settlement_coordinator.settle_mutation(key) {
+            return Err(RangeTextInputError::Stale);
+        }
+        let settlement = match self.edits.settle(key, outcome) {
+            Ok(settlement) => settlement,
+            Err(error) => {
+                self.config.settlement_coordinator.reserve_mutation(key)?;
+                return Err(error.into());
+            }
+        };
         let settled_edits = std::mem::replace(
             &mut self.edits,
             crate::RangeEditCoordinator::new(binding, self.config.mutation_limits),
         );
         candidate.retain_settled_edits(settled_edits);
         let committed = self.commit_widget_transition_internal(candidate);
+        self.history_frontier = RangeHistoryFrontier::unavailable(binding);
         assert!(self.scrollbar.state.replace_owner(
             prior_scrollbar_owner,
             replacement_scrollbar_owner,
@@ -85,11 +213,6 @@ impl RangeTextInput {
             };
             return self.publish_optional_source_selection(selection, selected_object, None, cx);
         }
-        if self.detached_edits.len() >= self.config.limits.max_detached_edits
-            && matches!(self.edits.state(), crate::MutationState::CommitPending)
-        {
-            return Err(RangeTextInputError::Busy);
-        }
         let prior_scrollbar_owner = self.scrollbar.owner;
         let next_mount = prior_scrollbar_owner
             .mount_generation
@@ -116,6 +239,7 @@ impl RangeTextInput {
             return Err(RangeTextInputError::Stale);
         }
         let committed = self.commit_widget_transition_internal(candidate);
+        self.history_frontier = RangeHistoryFrontier::unavailable(binding);
         assert!(self.scrollbar.state.replace_owner(
             prior_scrollbar_owner,
             replacement_scrollbar_owner,
@@ -142,6 +266,9 @@ impl RangeTextInput {
             .surface
             .as_ref()
             .ok_or(RangeTextInputError::NotQuiescent)?;
+        if history.is_some_and(|frontier| frontier.binding() != surface.binding()) {
+            return Err(RangeTextInputError::Stale);
+        }
         if surface.composition().is_some() {
             return Err(RangeTextInputError::NotQuiescent);
         }
@@ -176,6 +303,23 @@ impl RangeTextInput {
                     proof_at(surface.selection().head)?,
                 ))
             })
+            .or_else(|| {
+                let proof_at = |position| {
+                    crate::range_edit::SourcePositionProof::from_surface_pages(
+                        surface.binding(),
+                        position,
+                        surface.pages(),
+                        surface.object_pages(),
+                    )
+                    .ok()
+                    .map(|proof| proof.position())
+                };
+                Some(crate::MutationPositions::new(
+                    proof_at(surface.caret())?,
+                    proof_at(surface.selection().anchor)?,
+                    proof_at(surface.selection().head)?,
+                ))
+            })
             .ok_or(RangeTextInputError::IncompleteSurface)?;
         let scroll = self
             .admitted_edit_proofs
@@ -187,6 +331,16 @@ impl RangeTextInput {
             .map(|proof| proof.position())
             .or_else(|| {
                 (positions.caret() == surface.scroll_position()).then_some(positions.caret())
+            })
+            .or_else(|| {
+                crate::range_edit::SourcePositionProof::from_surface_pages(
+                    surface.binding(),
+                    surface.scroll_position(),
+                    surface.pages(),
+                    surface.object_pages(),
+                )
+                .ok()
+                .map(|proof| proof.position())
             })
             .ok_or(RangeTextInputError::IncompleteSurface)?;
         Ok(RangeRestorationSeed {
@@ -217,6 +371,9 @@ impl RangeTextInput {
             return Err(RangeTextInputError::NotQuiescent);
         }
         if seed.binding != self.config.binding
+            || seed
+                .history
+                .is_some_and(|frontier| frontier.binding() != seed.binding)
             || seed.caret != seed.selection.head
             || seed.scroll.intra_anchor < Pixels::ZERO
             || seed.scroll.intra_anchor > self.config.limits.max_intra_anchor
@@ -287,7 +444,6 @@ impl RangeTextInput {
                 }
                 crate::MutationDisposal::Detached(key) => {
                     self.cancel_mutation_dispatch(key, true);
-                    self.detached_edits.push(edits);
                 }
             }
         }
@@ -333,6 +489,7 @@ impl RangeTextInput {
         self.admitted_edit_proofs.clear();
         self.mutation_composition = None;
         self.pending_local_mutation = None;
+        self.prepared_local_operation = None;
         self.pending_select_all = false;
         self.cancel_history_dispatch();
         self.surface = None;
@@ -400,7 +557,12 @@ impl RangeTextInput {
         let Some(pending) = self.pending_history.take() else {
             return;
         };
-        if pending.is_begun() {
+        if pending.is_admitted() {
+            debug_assert!(
+                self.config
+                    .settlement_coordinator
+                    .contains_history(pending.intent())
+            );
             return;
         }
         let intent = pending.intent();

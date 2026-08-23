@@ -79,12 +79,13 @@ pub struct RangeTextInput {
     published_restoration: Option<RangeRestorationSeed>,
     replacement: Option<replacement::ReplacementScan>,
     pending_history: Option<history::PendingHistory>,
-    detached_edits: Vec<RangeEditCoordinator>,
+    history_frontier: RangeHistoryFrontier,
     mutation_positions: Option<(crate::MutationKey, crate::MutationPositions)>,
     adopted_positions: Option<crate::MutationPositions>,
     admitted_edit_proofs: Vec<crate::range_edit::SourcePositionProof>,
     mutation_composition: Option<(crate::MutationKey, ByteRange, RangeSourceSelection)>,
     pending_local_mutation: Option<interaction::PendingLocalMutation>,
+    prepared_local_operation: Option<crate::OperationId>,
     platform_ready: Option<(std::ops::Range<usize>, String)>,
     next_id: u64,
     mounted: bool,
@@ -241,12 +242,13 @@ impl RangeTextInput {
             published_restoration: None,
             replacement: None,
             pending_history: None,
-            detached_edits: Vec::new(),
+            history_frontier: RangeHistoryFrontier::unavailable(config.binding),
             mutation_positions: None,
             adopted_positions: None,
             admitted_edit_proofs: Vec::new(),
             mutation_composition: None,
             pending_local_mutation: None,
+            prepared_local_operation: None,
             platform_ready: None,
             next_id: 1,
             mounted: true,
@@ -285,6 +287,7 @@ impl RangeTextInput {
             surface.binding() == self.config.binding
                 && surface.geometry_key() == self.geometry.key()
                 && self.mounted
+                && self.pending_history.is_none()
         })
     }
 
@@ -346,7 +349,7 @@ impl RangeTextInput {
                 self.edits.state(),
                 crate::MutationState::Idle | crate::MutationState::Settled
             )
-            && self.detached_edits.is_empty()
+            && self.config.settlement_coordinator.retained_count() == 0
             && self.requests.is_empty()
     }
 
@@ -448,13 +451,23 @@ impl RangeTextInput {
         id
     }
 
+    fn next_local_operation(&mut self) -> Result<crate::OperationId, RangeTextInputError> {
+        if self.prepared_local_operation.is_some() {
+            return Err(RangeTextInputError::Busy);
+        }
+        let operation = self.config.settlement_coordinator.allocate_operation()?;
+        self.prepared_local_operation = Some(operation);
+        Ok(operation)
+    }
+
     fn push_request(&mut self, request: RangeTextInputRequest, cx: &mut Context<Self>) {
         self.requests.push_back(request);
         cx.notify();
     }
 
     fn mutation_queue_has_capacity(&self, key: crate::MutationKey) -> bool {
-        self.queued_mutation_requests(key) < Self::MAX_QUEUED_MUTATION_REQUESTS
+        self.pending_history.is_none()
+            && self.queued_mutation_requests(key) < Self::MAX_QUEUED_MUTATION_REQUESTS
     }
 
     fn queued_mutation_requests(&self, key: crate::MutationKey) -> usize {

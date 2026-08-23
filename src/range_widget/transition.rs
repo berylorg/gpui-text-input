@@ -27,7 +27,6 @@ pub(super) struct WidgetTransitionCandidate {
     clipboard_rebind: Option<crate::ClipboardCancellation>,
     replacement_edits: Option<crate::RangeEditCoordinator>,
     edit_disposal: Option<crate::MutationDisposal>,
-    replacement_detached_edits: Option<Vec<crate::RangeEditCoordinator>>,
     scrollbar_replacement: Option<(
         gpui_scrollbar::ScrollbarOwnerKey,
         gpui_scrollbar::ScrollbarOwnerKey,
@@ -610,17 +609,6 @@ impl RangeTextInput {
         });
         let replacement_edits = rebind_binding
             .map(|binding| crate::RangeEditCoordinator::new(binding, self.config.mutation_limits));
-        let replacement_detached_edits =
-            if matches!(edit_disposal, Some(crate::MutationDisposal::Detached(_))) {
-                Some(Vec::with_capacity(
-                    self.detached_edits
-                        .len()
-                        .checked_add(1)
-                        .ok_or(RangeTextInputError::SurfaceCapacity)?,
-                ))
-            } else {
-                None
-            };
         let effect_capacity = checked_capacity_sum([
             geometry.release().pages.len(),
             geometry.release().object_pages.len(),
@@ -726,7 +714,7 @@ impl RangeTextInput {
             }
         }
         if let Some(history) = self.pending_history
-            && !history.is_begun()
+            && !history.is_admitted()
             && !self.requests.iter().any(|request| {
                 matches!(request, RangeTextInputRequest::HistoryIntent(intent) if *intent == history.intent())
             })
@@ -871,10 +859,6 @@ impl RangeTextInput {
             checked_capacity_product(effects.capacity(), size_of::<RangeTextInputRequest>())?;
         let event_bytes =
             checked_capacity_product(events.capacity(), size_of::<RangeTextInputEvent>())?;
-        let detached_edit_bytes = checked_capacity_product(
-            replacement_detached_edits.as_ref().map_or(0, Vec::capacity),
-            size_of::<crate::RangeEditCoordinator>(),
-        )?;
         let destination_request_bytes =
             checked_capacity_product(requests.capacity(), size_of::<RangeTextInputRequest>())?;
         let proof_bytes = checked_capacity_product(
@@ -950,10 +934,7 @@ impl RangeTextInput {
                     .as_ref()
                     .map_or(0, PreparedResidencyRebind::retained_items),
             },
-            detached_edit_storage: crate::RangeSurfaceCharge {
-                bytes: detached_edit_bytes,
-                items: replacement_detached_edits.as_ref().map_or(0, Vec::capacity),
-            },
+            detached_edit_storage: crate::RangeSurfaceCharge { bytes: 0, items: 0 },
             destination_request_storage: crate::RangeSurfaceCharge {
                 bytes: destination_request_bytes,
                 items: requests.capacity(),
@@ -992,7 +973,6 @@ impl RangeTextInput {
             clipboard_rebind,
             replacement_edits,
             edit_disposal,
-            replacement_detached_edits,
             scrollbar_replacement: None,
             effects,
             events,
@@ -1046,7 +1026,6 @@ impl RangeTextInput {
             clipboard_rebind,
             replacement_edits,
             edit_disposal,
-            mut replacement_detached_edits,
             scrollbar_replacement,
             effects,
             events,
@@ -1107,6 +1086,7 @@ impl RangeTextInput {
             Some(TransitionConfigUpdate::Rebind { binding, .. }) => {
                 self.config.binding = binding;
                 self.pending_local_mutation = None;
+                self.prepared_local_operation = None;
                 self.pending_select_all = false;
                 self.mutation_positions = None;
                 self.adopted_positions = None;
@@ -1139,14 +1119,6 @@ impl RangeTextInput {
                 let mut prior = std::mem::replace(&mut self.edits, replacement);
                 let actual_disposal = prior.dispose();
                 debug_assert_eq!(actual_disposal, edit_disposal);
-                if matches!(actual_disposal, Some(crate::MutationDisposal::Detached(_))) {
-                    let mut detached = replacement_detached_edits
-                        .take()
-                        .expect("detached capacity prepared");
-                    detached.append(&mut self.detached_edits);
-                    detached.push(prior);
-                    self.detached_edits = detached;
-                }
                 if let Some(disposal) = actual_disposal {
                     let key = match disposal {
                         crate::MutationDisposal::Cancelled(key)
