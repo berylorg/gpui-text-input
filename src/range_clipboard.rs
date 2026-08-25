@@ -4,7 +4,7 @@ use crate::{
     ObjectPage, ObjectPageFailure, ObjectPurpose, ObjectRequest, ObjectRequestId, ObjectRequestKey,
     OperationId, PageDirection, PageEdgeFact, PageFailure, PagePurpose, PageRequest, PageRequestId,
     PageRequestKey, PresentationGeneration, RangeBinding, RangePage, SourcePosition, SourceRange,
-    SourceRevision,
+    SourceRevision, TextInputAtomClipboardPolicy,
 };
 
 mod collection;
@@ -187,6 +187,7 @@ pub enum ClipboardWriteOutcome {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ClipboardCompletion {
+    Propagate(ClipboardKind),
     Copied,
     Delete(CutDeletion),
     WriteFailed,
@@ -317,6 +318,7 @@ struct OpenAtom {
 struct ActiveClipboard {
     key: ClipboardKey,
     kind: ClipboardKind,
+    phase: ClipboardCollectionPhase,
     state: ClipboardState,
     text_cursor: ByteOffset,
     text_target: Option<ByteOffset>,
@@ -336,10 +338,17 @@ struct ActiveClipboard {
     source_line_breaks: u64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ClipboardCollectionPhase {
+    Classifying,
+    Collecting,
+}
+
 #[derive(Debug)]
 pub struct RangeClipboardCoordinator {
     binding: RangeBinding,
     presentation_generation: PresentationGeneration,
+    atom_policy: TextInputAtomClipboardPolicy,
     limits: ClipboardLimits,
     active: Option<ActiveClipboard>,
     last_terminal: Option<ClipboardKey>,
@@ -348,18 +357,24 @@ pub struct RangeClipboardCoordinator {
 }
 
 impl RangeClipboardCoordinator {
-    pub const fn new(binding: RangeBinding, limits: ClipboardLimits) -> Self {
-        Self::new_composite(binding, PresentationGeneration::new(0), limits)
+    pub const fn new(
+        binding: RangeBinding,
+        atom_policy: TextInputAtomClipboardPolicy,
+        limits: ClipboardLimits,
+    ) -> Self {
+        Self::new_composite(binding, PresentationGeneration::new(0), atom_policy, limits)
     }
 
     pub const fn new_composite(
         binding: RangeBinding,
         presentation_generation: PresentationGeneration,
+        atom_policy: TextInputAtomClipboardPolicy,
         limits: ClipboardLimits,
     ) -> Self {
         Self {
             binding,
             presentation_generation,
+            atom_policy,
             limits,
             active: None,
             last_terminal: None,
@@ -456,6 +471,11 @@ impl RangeClipboardCoordinator {
         self.active = Some(ActiveClipboard {
             key,
             kind,
+            phase: if self.atom_policy == TextInputAtomClipboardPolicy::Propagate {
+                ClipboardCollectionPhase::Classifying
+            } else {
+                ClipboardCollectionPhase::Collecting
+            },
             state: ClipboardState::CollectingObjects,
             text_cursor: selection.start().byte_offset,
             text_target: None,

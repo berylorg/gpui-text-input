@@ -1,5 +1,7 @@
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
+#[path = "range_widget/propagation.rs"]
+mod propagation;
 #[path = "range_widget/range_widget_legacy_contracts.rs"]
 mod range_widget_legacy_contracts;
 #[path = "range_widget/range_widget_protocol.rs"]
@@ -24,8 +26,8 @@ use gpui_text_input::{
     RangeRestorationSeed, RangeSelection, RangeSourceSelection, RangeTextInput,
     RangeTextInputConfig, RangeTextInputEvent, RangeTextInputLimits, RangeTextInputRequest,
     ResidencyLimits, SegmentationLimits, SourcePosition, SourceRange, SourceRevision,
-    StreamingGeometryStyle, StreamingOversizePresentation, TextInputTheme,
-    ensure_text_input_bindings,
+    StreamingGeometryStyle, StreamingOversizePresentation, TextInputAtomClipboardPolicy,
+    TextInputEnterKey, TextInputRichPastePolicy, TextInputTheme, ensure_text_input_bindings,
 };
 
 fn binding(source: &str, revision: u64) -> RangeBinding {
@@ -609,6 +611,9 @@ fn config(source: &str, revision: u64) -> RangeTextInputConfig {
     RangeTextInputConfig {
         binding: binding(source, revision),
         presentation_generation: PresentationGeneration::new(1),
+        enter_key: TextInputEnterKey::InsertNewline,
+        atom_clipboard_policy: TextInputAtomClipboardPolicy::PlainText,
+        rich_paste_policy: TextInputRichPastePolicy::PlainText,
         layout,
         style: StreamingGeometryStyle::new(
             run,

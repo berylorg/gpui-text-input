@@ -2,13 +2,13 @@ use std::sync::Arc;
 
 use gpui::{SharedString, px};
 use gpui_text_input::{
-    BindingId, ByteOffset, ByteRange, ClipboardCompletion, ClipboardId, ClipboardKind,
-    ClipboardLimits, ClipboardProgress, ClipboardWriteOutcome, InlineObjectFact, InlineObjectGap,
-    InlineObjectId, InlineObjectNeighbor, InlineObjectOrder, InlineObjectPresentation,
-    LogicalExtent, MutationPositions, ObjectPage, ObjectPageEdgeFact, ObjectPageId,
-    ObjectRequestId, PageDirection, PageEdgeFact, PageId, PageRequestId, PresentationGeneration,
-    RangeBinding, RangeClipboardCoordinator, RangePage, SourcePosition, SourceRange,
-    SourceRevision,
+    AtomFact, AtomId, BindingId, ByteOffset, ByteRange, ClipboardCompletion, ClipboardId,
+    ClipboardKind, ClipboardLimits, ClipboardProgress, ClipboardWriteOutcome, InlineObjectFact,
+    InlineObjectGap, InlineObjectId, InlineObjectNeighbor, InlineObjectOrder,
+    InlineObjectPresentation, LogicalExtent, MutationPositions, ObjectPage, ObjectPageEdgeFact,
+    ObjectPageId, ObjectRequestId, PageDirection, PageEdgeFact, PageId, PageRequestId,
+    PresentationGeneration, RangeBinding, RangeClipboardCoordinator, RangePage, SourcePosition,
+    SourceRange, SourceRevision, TextInputAtomClipboardPolicy,
 };
 
 fn binding(source: &str) -> RangeBinding {
@@ -55,9 +55,24 @@ fn object(id: u128, anchor: u64, order: u128, fallback: &str) -> InlineObjectFac
 }
 
 fn coordinator(source: &str, cap: usize, object_count: usize) -> RangeClipboardCoordinator {
+    coordinator_with_policy(
+        source,
+        cap,
+        object_count,
+        TextInputAtomClipboardPolicy::PlainText,
+    )
+}
+
+fn coordinator_with_policy(
+    source: &str,
+    cap: usize,
+    object_count: usize,
+    atom_policy: TextInputAtomClipboardPolicy,
+) -> RangeClipboardCoordinator {
     RangeClipboardCoordinator::new_composite(
         binding(source),
         PresentationGeneration::new(9),
+        atom_policy,
         ClipboardLimits::new_composite(cap, 4, object_count, 64 * 1024).unwrap(),
     )
 }
@@ -137,6 +152,58 @@ fn text_page(source: &str, request: gpui_text_input::PageRequest, id: u64) -> Ra
     .unwrap()
 }
 
+fn classification_text_page(
+    source: &str,
+    request: gpui_text_input::PageRequest,
+    id: u64,
+    atom: Option<ByteRange>,
+) -> RangePage {
+    let key = request.key();
+    let gpui_text_input::PageDemandEnvelope::Adjacent {
+        anchor,
+        direction: PageDirection::Forward,
+        ..
+    } = key.demand()
+    else {
+        panic!("clipboard uses forward adjacent text pages")
+    };
+    let start = anchor.get() as usize;
+    let end = start.saturating_add(4).min(source.len());
+    let range = ByteRange::from_u64(start as u64, end as u64).unwrap();
+    let atoms = atom
+        .filter(|atom| range.contains(*atom))
+        .map(|atom| vec![AtomFact::new(AtomId::new(91), atom, atom, "x")])
+        .unwrap_or_default();
+    RangePage::new(
+        PageId::new(id),
+        key,
+        range,
+        source[start..end].to_owned(),
+        atoms,
+        if start == 0 {
+            PageEdgeFact::DocumentBoundary
+        } else {
+            PageEdgeFact::Continues
+        },
+        if end == source.len() {
+            PageEdgeFact::DocumentBoundary
+        } else {
+            PageEdgeFact::Continues
+        },
+        end == source.len(),
+    )
+    .unwrap()
+}
+
+fn propagating_coordinator(source: &str, max_bytes: usize) -> RangeClipboardCoordinator {
+    RangeClipboardCoordinator::new_composite(
+        binding(source),
+        PresentationGeneration::new(9),
+        TextInputAtomClipboardPolicy::Propagate,
+        ClipboardLimits::new_composite(max_bytes, 8, 1, 64 * 1024).unwrap(),
+    )
+}
+
 fn collect(
     collector: &mut RangeClipboardCoordinator,
     source: &str,
@@ -207,6 +274,328 @@ fn empty_text_only_and_reversed_selections_are_exact() {
         deletion.predecessor(),
         MutationPositions::new(position(0), position(source.len() as u64), position(0))
     );
+}
+
+#[test]
+fn propagation_policy_classifies_both_object_kinds_without_write_or_cut_deletion() {
+    let source = "ab";
+    let selection = SourceRange::new(position(0), position(2)).unwrap();
+    let mut object_collector =
+        coordinator_with_policy(source, 16, 1, TextInputAtomClipboardPolicy::Propagate);
+    let ClipboardProgress::NeedObjectPage { key, .. } = object_collector
+        .begin(
+            ClipboardId::new(100),
+            ClipboardKind::Cut,
+            selection,
+            predecessor(selection),
+        )
+        .unwrap()
+    else {
+        panic!("nonempty selection begins bounded object classification")
+    };
+    let request = object_collector
+        .request_object_page(key, ObjectRequestId::new(1))
+        .unwrap();
+    let ClipboardProgress::NeedTextPage { key, .. } = object_collector
+        .admit_object_page(object_page(request, &[object(1, 1, 1, "[object]")], 2))
+        .unwrap()
+    else {
+        panic!("classification streams text preceding the selected object")
+    };
+    let text_request = object_collector
+        .request_text_page(key, PageRequestId::new(2))
+        .unwrap();
+    assert_eq!(
+        object_collector
+            .admit_text_page(text_page(source, text_request, 3))
+            .unwrap(),
+        ClipboardProgress::Terminal(ClipboardCompletion::Propagate(ClipboardKind::Cut))
+    );
+    assert_eq!(object_collector.counts(), Default::default());
+
+    let mut atom_collector =
+        coordinator_with_policy(source, 16, 1, TextInputAtomClipboardPolicy::Propagate);
+    let ClipboardProgress::NeedObjectPage { key, .. } = atom_collector
+        .begin(
+            ClipboardId::new(101),
+            ClipboardKind::Copy,
+            selection,
+            predecessor(selection),
+        )
+        .unwrap()
+    else {
+        panic!("nonempty selection begins bounded object classification")
+    };
+    let object_request = atom_collector
+        .request_object_page(key, ObjectRequestId::new(1))
+        .unwrap();
+    let ClipboardProgress::NeedTextPage { key, .. } = atom_collector
+        .admit_object_page(object_page(object_request, &[], 2))
+        .unwrap()
+    else {
+        panic!("object-free selection continues through bounded text pages")
+    };
+    let text_request = atom_collector
+        .request_text_page(key, PageRequestId::new(2))
+        .unwrap();
+    let base = text_page(source, text_request, 3);
+    let atom_range = ByteRange::from_u64(0, 2).unwrap();
+    let atom_page = RangePage::new(
+        base.id(),
+        base.key(),
+        base.range(),
+        base.text().to_owned(),
+        vec![AtomFact::new(AtomId::new(1), atom_range, atom_range, "x")],
+        base.preceding(),
+        base.following(),
+        base.end_of_source(),
+    )
+    .unwrap();
+    assert_eq!(
+        atom_collector.admit_text_page(atom_page).unwrap(),
+        ClipboardProgress::Terminal(ClipboardCompletion::Propagate(ClipboardKind::Copy))
+    );
+    assert_eq!(atom_collector.counts(), Default::default());
+}
+
+#[test]
+fn propagation_classification_releases_custody_on_every_terminal_path() {
+    let source = "abcd";
+    let selection = SourceRange::new(position(0), position(4)).unwrap();
+    let make = || coordinator_with_policy(source, 8, 1, TextInputAtomClipboardPolicy::Propagate);
+    let begin = |collector: &mut RangeClipboardCoordinator, id| {
+        let ClipboardProgress::NeedObjectPage { key, .. } = collector
+            .begin(
+                ClipboardId::new(id),
+                ClipboardKind::Cut,
+                selection,
+                predecessor(selection),
+            )
+            .unwrap()
+        else {
+            panic!("classification starts with one bounded object page")
+        };
+        let request = collector
+            .request_object_page(key, ObjectRequestId::new(1))
+            .unwrap();
+        (key, request.key())
+    };
+
+    let mut cancelled = make();
+    let (key, request) = begin(&mut cancelled, 110);
+    assert_eq!(
+        cancelled.cancel(key).unwrap(),
+        ClipboardCompletion::Cancelled
+    );
+    assert!(matches!(
+        cancelled.settle_object_page(request, gpui_text_input::ObjectPageFailure::Cancelled),
+        Err(gpui_text_input::ClipboardError::ObsoleteObjectPage(obsolete)) if obsolete == request
+    ));
+    assert_eq!(cancelled.counts(), Default::default());
+
+    let mut rebound = make();
+    let _ = begin(&mut rebound, 111);
+    assert!(rebound.rebind(binding("replacement")).is_some());
+    assert_eq!(rebound.counts(), Default::default());
+
+    let mut disposed = make();
+    let _ = begin(&mut disposed, 112);
+    assert!(disposed.dispose().is_some());
+    assert_eq!(disposed.counts(), Default::default());
+
+    let mut failed = make();
+    let (_, request) = begin(&mut failed, 113);
+    assert_eq!(
+        failed
+            .settle_object_page(request, gpui_text_input::ObjectPageFailure::Unavailable)
+            .unwrap(),
+        ClipboardProgress::Terminal(ClipboardCompletion::ObjectPageFailed(
+            gpui_text_input::ObjectPageFailure::Unavailable,
+        ))
+    );
+    assert_eq!(failed.counts(), Default::default());
+
+    let mut capped = coordinator_with_policy(source, 1, 1, TextInputAtomClipboardPolicy::Propagate);
+    let ClipboardProgress::NeedObjectPage { key, .. } = capped
+        .begin(
+            ClipboardId::new(114),
+            ClipboardKind::Copy,
+            selection,
+            predecessor(selection),
+        )
+        .unwrap()
+    else {
+        panic!("classification starts with one bounded object page")
+    };
+    let object_request = capped
+        .request_object_page(key, ObjectRequestId::new(1))
+        .unwrap();
+    let ClipboardProgress::NeedTextPage { key, .. } = capped
+        .admit_object_page(object_page(object_request, &[], 2))
+        .unwrap()
+    else {
+        panic!("object-free selection continues to bounded text classification")
+    };
+    let text_request = capped
+        .request_text_page(key, PageRequestId::new(2))
+        .unwrap();
+    let ClipboardProgress::NeedTextPage {
+        key, next_offset, ..
+    } = capped
+        .admit_text_page(text_page(source, text_request, 3))
+        .unwrap()
+    else {
+        panic!("atom-free classification restarts capped collection")
+    };
+    assert_eq!(next_offset, ByteOffset::new(0));
+    assert_eq!(capped.counts().staged_bytes, 0);
+    let collection_request = capped
+        .request_text_page(key, PageRequestId::new(3))
+        .unwrap();
+    assert_eq!(
+        capped
+            .admit_text_page(text_page(source, collection_request, 4))
+            .unwrap(),
+        ClipboardProgress::Terminal(ClipboardCompletion::TooLarge)
+    );
+    assert_eq!(capped.counts(), Default::default());
+}
+
+#[test]
+fn propagation_classifies_late_source_atoms_beyond_output_cap_for_copy_and_cut() {
+    let source = "0123456789abcdefghijklmn";
+    let selection = SourceRange::new(position(0), position(source.len() as u64)).unwrap();
+    let atom = ByteRange::from_u64(16, 20).unwrap();
+    for (ordinal, kind) in [ClipboardKind::Copy, ClipboardKind::Cut]
+        .into_iter()
+        .enumerate()
+    {
+        let mut collector = propagating_coordinator(source, 2);
+        let mut progress = collector
+            .begin(
+                ClipboardId::new(120 + ordinal as u64),
+                kind,
+                selection,
+                predecessor(selection),
+            )
+            .unwrap();
+        let mut request_id = 1;
+        let mut text_pages = 0;
+        loop {
+            assert_eq!(
+                collector.counts().staged_bytes,
+                0,
+                "classification never retains fallback output"
+            );
+            progress = match progress {
+                ClipboardProgress::NeedObjectPage { key, .. } => {
+                    let request = collector
+                        .request_object_page(key, ObjectRequestId::new(request_id))
+                        .unwrap();
+                    request_id += 1;
+                    collector
+                        .admit_object_page(object_page(request, &[], request_id))
+                        .unwrap()
+                }
+                ClipboardProgress::NeedTextPage { key, .. } => {
+                    let request = collector
+                        .request_text_page(key, PageRequestId::new(request_id))
+                        .unwrap();
+                    request_id += 1;
+                    text_pages += 1;
+                    collector
+                        .admit_text_page(classification_text_page(
+                            source,
+                            request,
+                            request_id,
+                            Some(atom),
+                        ))
+                        .unwrap()
+                }
+                ClipboardProgress::Terminal(outcome) => {
+                    assert_eq!(outcome, ClipboardCompletion::Propagate(kind));
+                    break;
+                }
+                ClipboardProgress::Write(_) => panic!("atom-bearing selection reached write"),
+            };
+        }
+        assert!(
+            text_pages > 4,
+            "atom is classified after several bounded pages"
+        );
+        assert_eq!(collector.counts(), Default::default());
+    }
+}
+
+#[test]
+fn atom_free_classification_restarts_exact_text_collection_before_write_or_cap() {
+    let source = "abcdefghijkl";
+    let selection = SourceRange::new(position(0), position(source.len() as u64)).unwrap();
+    for (max_bytes, expected_text) in [(source.len(), Some(source)), (5, None)] {
+        let mut collector = propagating_coordinator(source, max_bytes);
+        let mut progress = collector
+            .begin(
+                ClipboardId::new(130 + max_bytes as u64),
+                ClipboardKind::Copy,
+                selection,
+                predecessor(selection),
+            )
+            .unwrap();
+        let mut request_id = 1;
+        let mut text_pass = 0;
+        let mut prior_offset = None;
+        let terminal = loop {
+            progress = match progress {
+                ClipboardProgress::NeedObjectPage { key, .. } => {
+                    let request = collector
+                        .request_object_page(key, ObjectRequestId::new(request_id))
+                        .unwrap();
+                    request_id += 1;
+                    collector
+                        .admit_object_page(object_page(request, &[], request_id))
+                        .unwrap()
+                }
+                ClipboardProgress::NeedTextPage {
+                    key, next_offset, ..
+                } => {
+                    if prior_offset.is_some_and(|prior| next_offset < prior) {
+                        text_pass += 1;
+                        assert_eq!(next_offset, ByteOffset::new(0));
+                        assert_eq!(collector.counts().staged_bytes, 0);
+                    }
+                    if text_pass == 0 {
+                        assert_eq!(collector.counts().staged_bytes, 0);
+                    }
+                    prior_offset = Some(next_offset);
+                    let request = collector
+                        .request_text_page(key, PageRequestId::new(request_id))
+                        .unwrap();
+                    request_id += 1;
+                    collector
+                        .admit_text_page(classification_text_page(
+                            source, request, request_id, None,
+                        ))
+                        .unwrap()
+                }
+                ClipboardProgress::Write(write) => break Ok(write),
+                ClipboardProgress::Terminal(outcome) => break Err(outcome),
+            };
+        };
+        assert_eq!(
+            text_pass, 1,
+            "atom-free classification restarts exactly once"
+        );
+        match expected_text {
+            Some(expected) => {
+                let write = terminal.expect("within-cap text reaches write");
+                assert_eq!(write.text(), expected);
+            }
+            None => {
+                assert_eq!(terminal, Err(ClipboardCompletion::TooLarge));
+                assert_eq!(collector.counts(), Default::default());
+            }
+        }
+    }
 }
 
 #[test]

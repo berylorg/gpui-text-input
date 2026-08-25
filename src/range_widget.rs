@@ -215,6 +215,7 @@ impl RangeTextInput {
             clipboard: RangeClipboardCoordinator::new_composite(
                 binding,
                 config.presentation_generation,
+                config.atom_clipboard_policy,
                 config.clipboard_limits,
             ),
             pending_clipboard_page: None,

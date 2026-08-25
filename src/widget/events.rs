@@ -5,6 +5,7 @@ use crate::TextInputChange;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum TextInputCommand {
+    Enter,
     Backspace,
     Delete,
     DeleteWordBackward,

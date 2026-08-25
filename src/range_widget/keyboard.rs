@@ -481,6 +481,12 @@ impl RangeTextInput {
         {
             return;
         }
+        if self.config.enter_key == crate::TextInputEnterKey::Propagate {
+            cx.emit(crate::RangeTextInputEvent::CommandPropagated(
+                crate::TextInputCommand::Enter,
+            ));
+            return;
+        }
         let _ = self.insert_text("\n".to_owned(), cx);
     }
     pub(super) fn space(&mut self, _: &Space, _: &mut Window, cx: &mut Context<Self>) {
@@ -506,6 +512,12 @@ impl RangeTextInput {
         let _ = self.begin_clipboard(ClipboardKind::Cut, cx);
     }
     pub(super) fn paste(&mut self, _: &Paste, _: &mut Window, cx: &mut Context<Self>) {
+        if self.config.rich_paste_policy == crate::TextInputRichPastePolicy::Propagate {
+            cx.emit(crate::RangeTextInputEvent::CommandPropagated(
+                crate::TextInputCommand::Paste,
+            ));
+            return;
+        }
         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
             let _ = self.insert_text(text, cx);
         }

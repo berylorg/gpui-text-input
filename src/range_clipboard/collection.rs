@@ -80,13 +80,15 @@ impl RangeClipboardCoordinator {
             self.finish(key);
             return Ok(ClipboardProgress::Terminal(ClipboardCompletion::Malformed));
         };
-        let line_breaks = consumed_text.bytes().filter(|byte| *byte == b'\n').count() as u64;
-        let Some(total) = active.source_line_breaks.checked_add(line_breaks) else {
-            let key = active.key;
-            self.finish(key);
-            return Ok(ClipboardProgress::Terminal(ClipboardCompletion::Malformed));
-        };
-        self.active.as_mut().expect("active").source_line_breaks = total;
+        if active.phase == ClipboardCollectionPhase::Collecting {
+            let line_breaks = consumed_text.bytes().filter(|byte| *byte == b'\n').count() as u64;
+            let Some(total) = active.source_line_breaks.checked_add(line_breaks) else {
+                let key = active.key;
+                self.finish(key);
+                return Ok(ClipboardProgress::Terminal(ClipboardCompletion::Malformed));
+            };
+            self.active.as_mut().expect("active").source_line_breaks = total;
+        }
         if let Some(outcome) = self.collect_text_page(&page, consumed_end) {
             let key = self.active.as_ref().expect("active").key;
             self.finish(key);
@@ -202,6 +204,14 @@ impl RangeClipboardCoordinator {
                 && trailing
                     .compare_in_revision(selection.end())
                     .is_some_and(|order| order != Ordering::Greater);
+            if selected && active.phase == ClipboardCollectionPhase::Classifying {
+                let key = active.key;
+                let kind = active.kind;
+                self.finish(key);
+                return Ok(ClipboardProgress::Terminal(ClipboardCompletion::Propagate(
+                    kind,
+                )));
+            }
             if selected
                 && Self::append(
                     &mut active.output,
@@ -276,6 +286,9 @@ impl RangeClipboardCoordinator {
             {
                 return Some(ClipboardCompletion::Malformed);
             }
+            if active.phase == ClipboardCollectionPhase::Classifying {
+                return Some(ClipboardCompletion::Propagate(active.kind));
+            }
             if Self::append(
                 &mut active.output,
                 &consumed_text[cursor..fragment_start],
@@ -316,6 +329,9 @@ impl RangeClipboardCoordinator {
             }
             cursor = fragment_end;
         }
+        if active.phase == ClipboardCollectionPhase::Classifying {
+            return None;
+        }
         if active.open_atom.is_some() && page.atoms().is_empty() {
             return Some(ClipboardCompletion::Malformed);
         }
@@ -336,6 +352,22 @@ impl RangeClipboardCoordinator {
 
     pub(super) fn complete_collection(&mut self) -> ClipboardProgress {
         let active = self.active.as_mut().expect("collection is active");
+        if active.phase == ClipboardCollectionPhase::Classifying {
+            active.phase = ClipboardCollectionPhase::Collecting;
+            active.text_cursor = active.key.selection().start().byte_offset;
+            active.text_target = Some(active.key.selection().end().byte_offset);
+            active.output.clear();
+            active.open_atom = None;
+            active.source_line_breaks = 0;
+            active.state = ClipboardState::CollectingText;
+            if active.text_cursor != active.text_target.expect("collection target") {
+                return ClipboardProgress::NeedTextPage {
+                    key: active.key,
+                    next_offset: active.text_cursor,
+                    target: active.text_target.expect("collection target"),
+                };
+            }
+        }
         let text = std::mem::take(&mut active.output);
         active.pending_text = None;
         active.pending_object = None;

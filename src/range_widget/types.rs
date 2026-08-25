@@ -8,7 +8,8 @@ use crate::{
     MutationCommitRequest, MutationError, MutationFinishInput, MutationKey, MutationLimits,
     MutationOutcome, MutationPageRequest, ObjectRequest, ObjectRequestKey, ObjectResidencyLimits,
     PageRequest, PageRequestKey, PresentationGeneration, RangeBinding, ResidencyLimits,
-    SegmentationLimits, StreamingGeometryStyle,
+    SegmentationLimits, StreamingGeometryStyle, TextInputAtomClipboardPolicy, TextInputCommand,
+    TextInputEnterKey, TextInputRichPastePolicy,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -51,6 +52,9 @@ impl RangeTextInputLimits {
 pub struct RangeTextInputConfig {
     pub binding: RangeBinding,
     pub presentation_generation: PresentationGeneration,
+    pub enter_key: TextInputEnterKey,
+    pub atom_clipboard_policy: TextInputAtomClipboardPolicy,
+    pub rich_paste_policy: TextInputRichPastePolicy,
     pub layout: StreamingLayoutBinding,
     pub style: StreamingGeometryStyle,
     pub geometry_limits: ExactGeometryLimits,
@@ -496,6 +500,7 @@ pub enum RangeTextInputRequest {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum RangeTextInputEvent {
+    CommandPropagated(TextInputCommand),
     InlineAtomClicked(crate::AtomId),
     FocusLost,
     MutationSettled {

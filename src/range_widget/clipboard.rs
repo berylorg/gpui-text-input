@@ -174,6 +174,15 @@ impl RangeTextInput {
             crate::ClipboardProgress::Write(write) => {
                 self.push_request(RangeTextInputRequest::ClipboardWrite(write), cx);
             }
+            crate::ClipboardProgress::Terminal(crate::ClipboardCompletion::Propagate(kind)) => {
+                self.clipboard_cut_proofs = None;
+                let command = match kind {
+                    crate::ClipboardKind::Copy => crate::TextInputCommand::Copy,
+                    crate::ClipboardKind::Cut => crate::TextInputCommand::Cut,
+                };
+                cx.emit(crate::RangeTextInputEvent::CommandPropagated(command));
+                cx.notify();
+            }
             crate::ClipboardProgress::Terminal(_) => {
                 self.clipboard_cut_proofs = None;
                 cx.notify();

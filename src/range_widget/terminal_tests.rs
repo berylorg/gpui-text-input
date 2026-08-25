@@ -59,6 +59,9 @@ fn config(bytes: usize, items: usize) -> RangeTextInputConfig {
     RangeTextInputConfig {
         binding: binding(),
         presentation_generation: PresentationGeneration::new(1),
+        enter_key: crate::TextInputEnterKey::InsertNewline,
+        atom_clipboard_policy: crate::TextInputAtomClipboardPolicy::PlainText,
+        rich_paste_policy: crate::TextInputRichPastePolicy::PlainText,
         layout,
         style: StreamingGeometryStyle::new(
             run,
