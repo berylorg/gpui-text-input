@@ -3805,6 +3805,84 @@ fn pointer_activation_and_realization_loss_use_only_the_current_exact_surface(
 }
 
 #[gpui::test]
+fn active_inline_object_remove_requires_the_exact_realization_anchor(
+    cx: &mut gpui::TestAppContext,
+) {
+    cx.update(ensure_text_input_bindings);
+    let source = "ab";
+    let facts = [object_fact(302, 1, 10)];
+    let (input, cx) = cx.add_window_view(|window, cx| {
+        let input = RangeTextInput::new(config(source, 1), window, cx).unwrap();
+        input.focus(window);
+        input
+    });
+    drive_pages_with_objects(&input, cx, source, &facts);
+    let object = input.read_with(cx, |input, _| {
+        input.surface().unwrap().realized_objects()[0]
+    });
+    cx.simulate_event(MouseDownEvent {
+        position: object.hit_bounds().origin + point(px(1.), px(1.)),
+        modifiers: Modifiers::none(),
+        button: MouseButton::Left,
+        click_count: 1,
+        first_mouse: false,
+    });
+    drive_pages_with_objects(&input, cx, source, &facts);
+    let active = input.read_with(cx, |input, _| input.active_inline_object().unwrap());
+    let mut stale = active;
+    stale.presentation_generation = PresentationGeneration::new(2);
+
+    input.update(cx, |input, cx| {
+        assert!(matches!(
+            input.remove_active_inline_object(stale, cx),
+            Err(gpui_text_input::RangeTextInputError::Stale)
+        ));
+        assert_eq!(input.active_inline_object(), Some(active));
+        assert!(input.take_request().is_none());
+    });
+}
+
+#[gpui::test]
+fn active_inline_object_remove_stages_its_exact_composite_range(cx: &mut gpui::TestAppContext) {
+    cx.update(ensure_text_input_bindings);
+    let source = "ab";
+    let facts = [object_fact(303, 1, 10)];
+    let (input, cx) = cx.add_window_view(|window, cx| {
+        let input = RangeTextInput::new(config(source, 1), window, cx).unwrap();
+        input.focus(window);
+        input
+    });
+    drive_pages_with_objects(&input, cx, source, &facts);
+    let object = input.read_with(cx, |input, _| {
+        input.surface().unwrap().realized_objects()[0]
+    });
+    cx.simulate_event(MouseDownEvent {
+        position: object.hit_bounds().origin + point(px(1.), px(1.)),
+        modifiers: Modifiers::none(),
+        button: MouseButton::Left,
+        click_count: 1,
+        first_mouse: false,
+    });
+    drive_pages_with_objects(&input, cx, source, &facts);
+    let (active, selected) = input.read_with(cx, |input, _| {
+        (
+            input.active_inline_object().unwrap(),
+            input.surface().unwrap().selection().range().unwrap(),
+        )
+    });
+
+    input.update(cx, |input, cx| {
+        let key = input.remove_active_inline_object(active, cx).unwrap();
+        let Some(RangeTextInputRequest::MutationBegin(request)) = input.take_request() else {
+            panic!("exact remove must begin one staged mutation")
+        };
+        assert_eq!(request.proposal().key(), key);
+        assert_eq!(request.proposal().kind(), MutationKind::Edit);
+        assert_eq!(request.proposal().replacement(), selected);
+    });
+}
+
+#[gpui::test]
 fn object_gap_platform_composition_is_not_collapsed_and_lifecycle_loss_is_once(
     cx: &mut gpui::TestAppContext,
 ) {
