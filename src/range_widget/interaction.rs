@@ -54,20 +54,6 @@ impl RangeTextInput {
         self.active_object.map(|active| active.anchor)
     }
 
-    pub fn remove_active_inline_object(
-        &mut self,
-        expected: crate::RealizedInlineObjectAnchor,
-        cx: &mut Context<Self>,
-    ) -> Result<crate::MutationKey, RangeTextInputError> {
-        let active = self.active_object.ok_or(RangeTextInputError::Stale)?;
-        if active.anchor != expected {
-            return Err(RangeTextInputError::Stale);
-        }
-        let range = crate::SourceRange::new(active.leading, active.trailing)
-            .map_err(|_| RangeTextInputError::Stale)?;
-        self.begin_source_replacement(range, String::new(), crate::MutationKind::Edit, cx)
-    }
-
     pub(super) fn active_from_geometry(
         &self,
         object: crate::RealizedInlineObjectGeometry,

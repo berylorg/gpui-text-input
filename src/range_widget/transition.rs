@@ -310,7 +310,7 @@ impl RangeTextInput {
         candidate: ActiveObjectTransitionCandidate,
         cx: &mut Context<Self>,
     ) {
-        self.active_object = candidate.active_object;
+        self.install_active_object(candidate.active_object);
         self.enabled = candidate.enabled;
         self.pointer_anchor = candidate.pointer_anchor;
         self.last_surface_admission = Some(candidate.admission_charge);
@@ -364,11 +364,17 @@ impl RangeTextInput {
         mut desired: DesiredSurface,
     ) -> Result<WidgetTransitionCandidate, RangeTextInputError> {
         desired.composition = None;
-        let mut candidate = self.prepare_interaction_target_transition(
-            desired,
-            None,
-            ActiveObjectTransition::Clear(crate::InlineObjectRealizationLossReason::FocusLost),
-        )?;
+        let active_transition = if self
+            .attached_inline_object_surface
+            .is_some_and(|(_, anchor)| {
+                self.active_object.map(|active| active.anchor) == Some(anchor)
+            }) {
+            ActiveObjectTransition::Preserve
+        } else {
+            ActiveObjectTransition::Clear(crate::InlineObjectRealizationLossReason::FocusLost)
+        };
+        let mut candidate =
+            self.prepare_interaction_target_transition(desired, None, active_transition)?;
         candidate.pointer_anchor = Some(None);
         Ok(candidate)
     }
@@ -1169,7 +1175,7 @@ impl RangeTextInput {
             self.commit_prepared_target_publication(publication, admission_charge);
         }
         if let Some(active_object) = active_object {
-            self.active_object = active_object;
+            self.install_active_object(active_object);
         }
         if let Some(pointer_anchor) = pointer_anchor {
             self.pointer_anchor = pointer_anchor;

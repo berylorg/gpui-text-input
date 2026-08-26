@@ -432,6 +432,7 @@ impl RangeTextInput {
                     anchor: active.anchor,
                     reason: crate::InlineObjectRealizationLossReason::Disposed,
                 });
+        self.attached_inline_object_surface = None;
         self.mounted = false;
         let mut edits = std::mem::replace(
             &mut self.edits,

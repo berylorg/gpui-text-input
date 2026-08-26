@@ -5,6 +5,8 @@ mod ime;
 mod interaction;
 mod keyboard;
 mod lifecycle;
+mod object_edit;
+mod object_surface;
 mod page_delivery;
 mod platform;
 mod pointer;
@@ -91,6 +93,8 @@ pub struct RangeTextInput {
     mounted: bool,
     pointer_anchor: Option<crate::SourcePosition>,
     active_object: Option<ActiveInlineObject>,
+    attached_inline_object_surface: Option<(u64, RealizedInlineObjectAnchor)>,
+    next_inline_object_surface_attachment: u64,
     pending_select_all: bool,
     scrollbar: RangeScrollbar,
     last_bounds: Option<Bounds<Pixels>>,
@@ -255,6 +259,8 @@ impl RangeTextInput {
             mounted: true,
             pointer_anchor: None,
             active_object: None,
+            attached_inline_object_surface: None,
+            next_inline_object_surface_attachment: 1,
             pending_select_all: false,
             scrollbar: RangeScrollbar {
                 owner: scrollbar_owner,
@@ -352,6 +358,7 @@ impl RangeTextInput {
             )
             && self.config.settlement_coordinator.retained_count() == 0
             && self.requests.is_empty()
+            && self.attached_inline_object_surface.is_none()
     }
 
     pub fn focus(&self, window: &mut Window) {

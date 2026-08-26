@@ -306,7 +306,7 @@ impl RangeTextInput {
         let surface = CoherentRangeSurface::commit_prepared(surface, pages, object_pages, target);
         self.last_surface_admission = Some(admission);
         if let Some(active_result) = active_result {
-            self.active_object = active_result;
+            self.install_active_object(active_result);
         }
         self.surface_candidate = None;
         self.surface = Some(surface);

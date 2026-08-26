@@ -769,6 +769,11 @@ fn committed_object_removal_and_replacement_emit_exact_realization_loss(
         });
         drive_pages_with_objects(&input, cx, source, &facts);
         let active = input.read_with(cx, |input, _| input.active_inline_object().unwrap());
+        let attached = input
+            .update(cx, |input, _| {
+                input.attach_active_inline_object_surface(active)
+            })
+            .unwrap();
 
         match replacement {
             None => cx.simulate_keystrokes("backspace"),
@@ -819,5 +824,15 @@ fn committed_object_removal_and_replacement_emit_exact_realization_loss(
                 .count(),
             1
         );
+        assert!(matches!(
+            cx.update(|window, app| input.update(app, |input, cx| input
+                .dismiss_active_inline_object_surface(
+                    attached,
+                    InlineObjectSurfaceDismissal::RefocusObject,
+                    window,
+                    cx,
+                ))),
+            Err(gpui_text_input::RangeTextInputError::Stale)
+        ));
     }
 }

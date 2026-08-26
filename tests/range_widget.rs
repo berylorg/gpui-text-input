@@ -16,18 +16,19 @@ use gpui_scrollbar::ScrollbarStyle;
 use gpui_text_input::{
     AtomFact, AtomId, BindingId, ByteOffset, ByteRange, ClipboardLimits, ClipboardWriteOutcome,
     ExactGeometryLimits, ExactGeometryOwner, InlineObjectFact, InlineObjectGap, InlineObjectId,
-    InlineObjectNeighbor, InlineObjectOrder, InlineObjectPresentation, LogicalExtent,
-    MutationBeginRequest, MutationCursor, MutationKey, MutationKind, MutationLimits,
-    MutationPositions, MutationProposal, ObjectDemand, ObjectDemandEnvelope, ObjectDirection,
-    ObjectPage, ObjectPageEdgeFact, ObjectPageId, ObjectPurpose, ObjectRequestId, ObjectResidency,
-    ObjectResidencyLimits, OperationId, PageDemand, PageDemandEnvelope, PageDirection,
-    PageEdgeFact, PageFailure, PageId, PagePurpose, PageRequestId, PlatformRangeResult,
-    PresentationGeneration, RangeBinding, RangePage, RangeResidency, RangeRestorationScrollAnchor,
-    RangeRestorationSeed, RangeSelection, RangeSourceSelection, RangeTextInput,
-    RangeTextInputConfig, RangeTextInputEvent, RangeTextInputLimits, RangeTextInputRequest,
-    ResidencyLimits, SegmentationLimits, SourcePosition, SourceRange, SourceRevision,
-    StreamingGeometryStyle, StreamingOversizePresentation, TextInputAtomClipboardPolicy,
-    TextInputEnterKey, TextInputRichPastePolicy, TextInputTheme, ensure_text_input_bindings,
+    InlineObjectNeighbor, InlineObjectOrder, InlineObjectPresentation,
+    InlineObjectSurfaceDismissal, LogicalExtent, MutationBeginRequest, MutationCursor, MutationKey,
+    MutationKind, MutationLimits, MutationPositions, MutationProposal, ObjectDemand,
+    ObjectDemandEnvelope, ObjectDirection, ObjectPage, ObjectPageEdgeFact, ObjectPageId,
+    ObjectPurpose, ObjectRequestId, ObjectResidency, ObjectResidencyLimits, OperationId,
+    PageDemand, PageDemandEnvelope, PageDirection, PageEdgeFact, PageFailure, PageId, PagePurpose,
+    PageRequestId, PlatformRangeResult, PresentationGeneration, RangeBinding, RangePage,
+    RangeResidency, RangeRestorationScrollAnchor, RangeRestorationSeed, RangeSelection,
+    RangeSourceSelection, RangeTextInput, RangeTextInputConfig, RangeTextInputEvent,
+    RangeTextInputLimits, RangeTextInputRequest, ResidencyLimits, SegmentationLimits,
+    SourcePosition, SourceRange, SourceRevision, StreamingGeometryStyle,
+    StreamingOversizePresentation, TextInputAtomClipboardPolicy, TextInputEnterKey,
+    TextInputRichPastePolicy, TextInputTheme, ensure_text_input_bindings,
 };
 
 fn binding(source: &str, revision: u64) -> RangeBinding {
@@ -3756,6 +3757,11 @@ fn pointer_activation_and_realization_loss_use_only_the_current_exact_surface(
     });
     drive_pages_with_objects(&input, cx, &source, &facts);
     assert!(input.read_with(cx, |input, _| input.active_inline_object().is_some()));
+    let attached = input
+        .update(cx, |input, _| {
+            input.attach_active_inline_object_surface(input.active_inline_object().unwrap())
+        })
+        .unwrap();
 
     input.update(cx, |input, cx| {
         input.request_absolute_scroll(px(800.), cx).unwrap()
@@ -3778,6 +3784,16 @@ fn pointer_activation_and_realization_loss_use_only_the_current_exact_surface(
             if loss.anchor.object_id == InlineObjectId::new(301)
                 && loss.reason == gpui_text_input::InlineObjectRealizationLossReason::Unrealized
     )));
+    assert!(matches!(
+        cx.update(|window, app| input.update(app, |input, cx| input
+            .dismiss_active_inline_object_surface(
+                attached,
+                InlineObjectSurfaceDismissal::RefocusObject,
+                window,
+                cx,
+            ))),
+        Err(gpui_text_input::RangeTextInputError::Stale)
+    ));
 
     input.update(cx, |input, cx| {
         input
@@ -3802,6 +3818,119 @@ fn pointer_activation_and_realization_loss_use_only_the_current_exact_surface(
                 })
         );
     });
+}
+
+#[gpui::test]
+fn exact_attached_inline_object_surface_owns_focus_loss_until_one_explicit_dismissal(
+    cx: &mut gpui::TestAppContext,
+) {
+    cx.update(ensure_text_input_bindings);
+    let source = "ab";
+    let facts = [object_fact(307, 1, 10)];
+    let (input, cx) = cx.add_window_view(|window, cx| {
+        let input = RangeTextInput::new(config(source, 1), window, cx).unwrap();
+        input.focus(window);
+        input
+    });
+    drive_pages_with_objects(&input, cx, source, &facts);
+    let events = restoration_events(&input, cx);
+    let object = input.read_with(cx, |input, _| {
+        input.surface().unwrap().realized_objects()[0]
+    });
+    cx.simulate_event(MouseDownEvent {
+        position: object.hit_bounds().origin + point(px(1.), px(1.)),
+        modifiers: Modifiers::none(),
+        button: MouseButton::Left,
+        click_count: 1,
+        first_mouse: false,
+    });
+    drive_pages_with_objects(&input, cx, source, &facts);
+    let active = input.read_with(cx, |input, _| input.active_inline_object().unwrap());
+    let mut stale = active;
+    stale.layout_epoch = gpui_text_input::LayoutEpoch::new(active.layout_epoch.get() + 1);
+    input.update(cx, |input, _| {
+        assert!(matches!(
+            input.attach_active_inline_object_surface(stale),
+            Err(gpui_text_input::RangeTextInputError::Stale)
+        ));
+    });
+    let menu_attachment = input
+        .update(cx, |input, _| {
+            input.attach_active_inline_object_surface(active)
+        })
+        .unwrap();
+    assert_eq!(menu_attachment.anchor(), active);
+    input.read_with(cx, |input, _| assert!(!input.is_quiescent()));
+
+    cx.update(|window, _| window.blur());
+    drive_pages_with_objects(&input, cx, source, &facts);
+    input.read_with(cx, |input, _| {
+        assert_eq!(input.active_inline_object(), Some(active));
+        assert!(!input.is_quiescent());
+    });
+    assert!(events.borrow().iter().all(|event| !matches!(
+        event,
+        RangeTextInputEvent::InlineObjectRealizationLost(loss)
+            if loss.anchor == active
+                && loss.reason
+                    == gpui_text_input::InlineObjectRealizationLossReason::FocusLost
+    )));
+
+    let preview_attachment = menu_attachment;
+    cx.update(|window, app| {
+        input.update(app, |input, cx| {
+            input
+                .dismiss_active_inline_object_surface(
+                    preview_attachment,
+                    InlineObjectSurfaceDismissal::RefocusObject,
+                    window,
+                    cx,
+                )
+                .unwrap();
+        })
+    });
+    input.read_with(cx, |input, _| {
+        assert_eq!(input.active_inline_object(), Some(active));
+        assert!(input.is_quiescent());
+    });
+
+    let attachment = input
+        .update(cx, |input, _| {
+            input.attach_active_inline_object_surface(active)
+        })
+        .unwrap();
+    cx.update(|window, _| window.blur());
+    drive_pages_with_objects(&input, cx, source, &facts);
+    cx.update(|window, app| {
+        input.update(app, |input, cx| {
+            input
+                .dismiss_active_inline_object_surface(
+                    attachment,
+                    InlineObjectSurfaceDismissal::ClearObject,
+                    window,
+                    cx,
+                )
+                .unwrap();
+        })
+    });
+    input.read_with(cx, |input, _| {
+        assert!(input.active_inline_object().is_none());
+        assert!(input.is_quiescent());
+    });
+    assert_eq!(
+        events
+            .borrow()
+            .iter()
+            .filter(|event| matches!(
+                event,
+                RangeTextInputEvent::InlineObjectRealizationLost(loss)
+                    if loss.anchor == active
+                        && loss.reason
+                            == gpui_text_input::InlineObjectRealizationLossReason::FocusLost
+            ))
+            .count(),
+        1
+    );
 }
 
 #[gpui::test]
@@ -3883,6 +4012,191 @@ fn active_inline_object_remove_stages_its_exact_composite_range(cx: &mut gpui::T
 }
 
 #[gpui::test]
+fn committed_inline_object_replacement_invalidates_an_exact_surface_attachment(
+    cx: &mut gpui::TestAppContext,
+) {
+    cx.update(ensure_text_input_bindings);
+    let source = "ab";
+    let facts = [object_fact(308, 1, 10)];
+    let (input, cx) = cx.add_window_view(|window, cx| {
+        let input = RangeTextInput::new(config(source, 1), window, cx).unwrap();
+        input.focus(window);
+        input
+    });
+    drive_pages_with_objects(&input, cx, source, &facts);
+    let events = restoration_events(&input, cx);
+    let object = input.read_with(cx, |input, _| {
+        input.surface().unwrap().realized_objects()[0]
+    });
+    cx.simulate_event(MouseDownEvent {
+        position: object.hit_bounds().origin + point(px(1.), px(1.)),
+        modifiers: Modifiers::none(),
+        button: MouseButton::Left,
+        click_count: 1,
+        first_mouse: false,
+    });
+    drive_pages_with_objects(&input, cx, source, &facts);
+    let (active, predecessor) = input.read_with(cx, |input, _| {
+        let surface = input.surface().unwrap();
+        let selection = surface.selection();
+        (
+            input.active_inline_object().unwrap(),
+            MutationPositions::new(selection.head, selection.anchor, selection.head),
+        )
+    });
+    let attached = input
+        .update(cx, |input, _| {
+            input.attach_active_inline_object_surface(active)
+        })
+        .unwrap();
+    let replacement = SourceRange::new(object.leading(), object.trailing()).unwrap();
+    let key = MutationKey::new(
+        binding(source, 1).binding(),
+        binding(source, 1).revision(),
+        OperationId::new(1),
+    );
+    let proposal = MutationProposal::new(key, MutationKind::Edit, predecessor, replacement, 0);
+    let begin = MutationBeginRequest::new(proposal, MutationCursor::new(0), MutationCursor::new(0));
+    let mut base_positions = Vec::new();
+    for position in [
+        predecessor.caret(),
+        predecessor.selection_anchor(),
+        predecessor.selection_head(),
+        replacement.start(),
+        replacement.end(),
+    ] {
+        if !base_positions.contains(&position) {
+            base_positions.push(position);
+        }
+    }
+    let (base_text, base_objects) = admitted_sources_with_facts(source, 1, &base_positions, &facts);
+    input.update(cx, |input, cx| {
+        input
+            .begin_host_mutation(begin, &base_positions, &base_text, &base_objects, cx)
+            .unwrap();
+        assert!(matches!(
+            input.take_request(),
+            Some(RangeTextInputRequest::MutationBegin(request)) if request == begin
+        ));
+        input.accept_mutation_preflight(key, cx).unwrap();
+    });
+
+    let successor_id = InlineObjectId::new(309);
+    let successor_order = InlineObjectOrder::new(20);
+    let page = gpui_text_input::MutationPage::new(
+        gpui_text_input::MutationPageKey::new(
+            key,
+            gpui_text_input::MutationLane::Proposal,
+            MutationCursor::new(0),
+            0,
+            gpui_text_input::MutationIdentity::ROOT,
+        ),
+        MutationCursor::new(1),
+        vec![gpui_text_input::MutationPageItem::Object(
+            gpui_text_input::ObjectChange::Replace {
+                target: gpui_text_input::ObjectTarget::new(
+                    replacement,
+                    active.object_id,
+                    active.order,
+                )
+                .unwrap(),
+                object: gpui_text_input::SuccessorObject::new(
+                    successor_id,
+                    object.leading().byte_offset,
+                    successor_order,
+                    1,
+                    1,
+                ),
+            },
+        )],
+    )
+    .unwrap();
+    let intended_position = SourcePosition::new(
+        object.leading().byte_offset,
+        InlineObjectGap::After(InlineObjectNeighbor::new(successor_id, successor_order)),
+    );
+    let intended = MutationPositions::collapsed(intended_position);
+    let finish = gpui_text_input::MutationFinishInput::new(
+        key,
+        gpui_text_input::MutationStreamFinish {
+            next_cursor: begin.source_cursor(),
+            next_ordinal: 0,
+            cumulative_identity: gpui_text_input::MutationIdentity::ROOT,
+            totals: gpui_text_input::MutationTotals::default(),
+        },
+        gpui_text_input::MutationStreamFinish {
+            next_cursor: page.next_cursor(),
+            next_ordinal: 1,
+            cumulative_identity: page.cumulative_identity(),
+            totals: page.totals(),
+        },
+        binding(source, 1).extent(),
+        intended,
+    );
+    input.update(cx, |input, cx| {
+        input.submit_mutation_page(page, cx).unwrap();
+        assert!(matches!(
+            input.take_request(),
+            Some(RangeTextInputRequest::MutationProposalPage(_))
+        ));
+        input.submit_mutation_finish(finish, cx).unwrap();
+        assert!(matches!(
+            input.take_request(),
+            Some(RangeTextInputRequest::MutationFinishInput(request)) if request == finish
+        ));
+        input.accept_mutation_finish(key, cx).unwrap();
+        assert!(matches!(
+            input.take_request(),
+            Some(RangeTextInputRequest::MutationCommit(request)) if request.key() == key
+        ));
+    });
+    let successor_facts = [object_fact(309, 1, 20)];
+    let (successor_text, successor_objects) =
+        admitted_sources_with_facts(source, 2, &[intended_position], &successor_facts);
+    cx.update(|window, app| {
+        input.update(app, |input, cx| {
+            input
+                .settle_committed_mutation(
+                    key,
+                    binding(source, 2),
+                    intended,
+                    &successor_text,
+                    &successor_objects,
+                    window,
+                    cx,
+                )
+                .unwrap();
+        })
+    });
+    drive_pages_with_objects(&input, cx, source, &successor_facts);
+    assert!(input.read_with(cx, |input, _| input.active_inline_object().is_none()));
+    assert_eq!(
+        events
+            .borrow()
+            .iter()
+            .filter(|event| matches!(
+                event,
+                RangeTextInputEvent::InlineObjectRealizationLost(loss)
+                    if loss.anchor == active
+                        && loss.reason
+                            == gpui_text_input::InlineObjectRealizationLossReason::Replaced
+            ))
+            .count(),
+        1
+    );
+    assert!(matches!(
+        cx.update(|window, app| input.update(app, |input, cx| input
+            .dismiss_active_inline_object_surface(
+                attached,
+                InlineObjectSurfaceDismissal::RefocusObject,
+                window,
+                cx,
+            ))),
+        Err(gpui_text_input::RangeTextInputError::Stale)
+    ));
+}
+
+#[gpui::test]
 fn object_gap_platform_composition_is_not_collapsed_and_lifecycle_loss_is_once(
     cx: &mut gpui::TestAppContext,
 ) {
@@ -3940,6 +4254,11 @@ fn object_gap_platform_composition_is_not_collapsed_and_lifecycle_loss_is_once(
     drive_pages_with_objects(&input, cx, source, &facts);
     cx.simulate_keystrokes("right");
     drive_pages_with_objects(&input, cx, source, &facts);
+    let attached = input
+        .update(cx, |input, _| {
+            input.attach_active_inline_object_surface(input.active_inline_object().unwrap())
+        })
+        .unwrap();
     cx.update(|window, app| {
         input.update(app, |input, cx| {
             let _ = input.dispose(window, cx);
@@ -3960,6 +4279,16 @@ fn object_gap_platform_composition_is_not_collapsed_and_lifecycle_loss_is_once(
             .count(),
         1
     );
+    assert!(matches!(
+        cx.update(|window, app| input.update(app, |input, cx| input
+            .dismiss_active_inline_object_surface(
+                attached,
+                InlineObjectSurfaceDismissal::RefocusObject,
+                window,
+                cx,
+            ))),
+        Err(gpui_text_input::RangeTextInputError::Stale)
+    ));
 }
 
 #[gpui::test]
@@ -4238,6 +4567,11 @@ fn successful_layout_replacement_loses_active_object_exactly_once(cx: &mut gpui:
             input.surface().unwrap().geometry_key(),
         )
     });
+    let attached = input
+        .update(cx, |input, _| {
+            input.attach_active_inline_object_surface(active)
+        })
+        .unwrap();
 
     input
         .update(cx, |input, cx| {
@@ -4262,6 +4596,16 @@ fn successful_layout_replacement_loses_active_object_exactly_once(cx: &mut gpui:
             .count(),
         1
     );
+    assert!(matches!(
+        cx.update(|window, app| input.update(app, |input, cx| input
+            .dismiss_active_inline_object_surface(
+                attached,
+                InlineObjectSurfaceDismissal::RefocusObject,
+                window,
+                cx,
+            ))),
+        Err(gpui_text_input::RangeTextInputError::Stale)
+    ));
 
     drive_pages_with_objects(&input, cx, source, &facts);
     input.read_with(cx, |input, _| {

@@ -433,6 +433,24 @@ pub struct RealizedInlineObjectAnchor {
     pub bounds: gpui::Bounds<Pixels>,
 }
 
+#[derive(Debug, PartialEq)]
+pub struct InlineObjectSurfaceAttachment {
+    pub(super) id: u64,
+    pub(super) anchor: RealizedInlineObjectAnchor,
+}
+
+impl InlineObjectSurfaceAttachment {
+    pub const fn anchor(&self) -> RealizedInlineObjectAnchor {
+        self.anchor
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InlineObjectSurfaceDismissal {
+    RefocusObject,
+    ClearObject,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InlineObjectActivationKey {
     Enter,
