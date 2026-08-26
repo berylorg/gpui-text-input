@@ -506,6 +506,40 @@ fn retained_prior_surface_is_paint_only_after_rebind(cx: &mut gpui::TestAppConte
 }
 
 #[gpui::test]
+fn empty_rebind_with_canonical_selection_completes_prepared_publication(
+    cx: &mut gpui::TestAppContext,
+) {
+    let source = "prior publication";
+    let prior = binding(source, 1);
+    let successor = binding("", 2);
+    let position = SourcePosition::new(ByteOffset::new(0), InlineObjectGap::NoObjects);
+    let selection = RangeSourceSelection {
+        anchor: position,
+        head: position,
+    };
+    let (input, cx) = cx
+        .add_window_view(|window, cx| RangeTextInput::new(config(source, 1), window, cx).unwrap());
+    assert!(drive_pages(&input, cx, source).is_empty());
+
+    cx.update(|window, app| {
+        input.update(app, |input, cx| {
+            input
+                .rebind(successor, Some(selection), window, cx)
+                .unwrap();
+            assert_eq!(input.surface().unwrap().binding(), prior);
+        });
+    });
+
+    assert!(drive_pages(&input, cx, "").is_empty());
+    input.read_with(cx, |input, _| {
+        assert!(input.is_quiescent());
+        let surface = input.surface().unwrap();
+        assert_eq!(surface.binding(), successor);
+        assert_eq!(surface.selection(), selection);
+    });
+}
+
+#[gpui::test]
 fn obsolete_target_completion_cannot_publish_newer_scroll_intent(cx: &mut gpui::TestAppContext) {
     let source = &(0..80)
         .map(|line| format!("line-{line:02}\n"))

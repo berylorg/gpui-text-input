@@ -28,6 +28,36 @@ fn empty_source_is_finalized_through_the_canonical_end_boundary(cx: &mut TestApp
 }
 
 #[gpui::test]
+fn empty_source_end_anchor_completes_from_the_only_checkpoint(cx: &mut TestAppContext) {
+    with_text_system(cx, |text_system| {
+        let mut owner = owner("", 8, 4, 256 * 1024, 8);
+        let index = owner.start_index(GeometryJobId::new(1)).unwrap();
+        let page = page(&mut owner, index.key(), "", 0, 0, 1);
+        assert_eq!(
+            admit_page_with_empty_objects(&mut owner, index.key(), &page, text_system)
+                .unwrap()
+                .progress(),
+            ExactGeometryProgress::IndexComplete
+        );
+
+        let position = SourcePosition::new(ByteOffset::new(0), InlineObjectGap::NoObjects);
+        let target = owner
+            .request_block_target_anchored(
+                GeometryJobId::new(2),
+                BlockTarget::new(px(0.), px(28.), px(14.)),
+                position,
+            )
+            .unwrap();
+        assert_eq!(target.progress(), ExactGeometryProgress::TargetComplete);
+        let publication = owner.target().unwrap();
+        assert_eq!(publication.predecessor(), position);
+        assert_eq!(publication.target_source(), position);
+        assert_eq!(publication.source_end(), position);
+        assert!(publication.fragments().is_empty());
+    });
+}
+
+#[gpui::test]
 fn construction_accounts_style_collections_features_fallbacks_and_direct_exact_cap(
     cx: &mut TestAppContext,
 ) {

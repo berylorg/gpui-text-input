@@ -343,6 +343,7 @@ impl ExactGeometryOwner {
         release: ExactGeometryRelease,
     ) -> Result<PreparedGeometryTransition, ExactGeometryError> {
         let inputs = self.inputs()?;
+        let source_len = inputs.binding.extent().byte_len();
         let predecessor = if let Some(anchor) = anchor {
             let include_preceding_object = matches!(
                 anchor.gap,
@@ -360,8 +361,7 @@ impl ExactGeometryOwner {
                             ordering.is_lt()
                                 || (!include_preceding_object
                                     && ordering.is_eq()
-                                    && anchor.byte_offset.get()
-                                        < inputs.binding.extent().byte_len())
+                                    && (source_len == 0 || anchor.byte_offset.get() < source_len))
                         })
                 })
                 .ok_or(ExactGeometryError::SourceContract)?
