@@ -367,6 +367,10 @@ impl RangeTextInput {
         }
     }
 
+    pub const fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
     pub fn set_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
         if self.enabled != enabled {
             let active = if !enabled && self.active_object.is_some() {
