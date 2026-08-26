@@ -95,11 +95,17 @@ impl RangeTextInput {
             caret,
             selection,
         );
+        if self
+            .push_request(RangeTextInputRequest::HistoryIntent(intent), cx)
+            .is_err()
+        {
+            self.config.settlement_coordinator.settle_history(intent);
+            return;
+        }
         self.pending_history = Some(PendingHistory {
             intent,
             admitted: false,
         });
-        self.push_request(RangeTextInputRequest::HistoryIntent(intent), cx);
     }
 
     pub fn submit_history_session(

@@ -163,7 +163,15 @@ impl RangeTextInput {
             .len()
             .checked_add(effect_count)
             .ok_or(RangeTextInputError::SurfaceCapacity)?;
-        let requests = VecDeque::with_capacity(destination_capacity);
+        let max_queued_requests = super::super::checked_request_capacity(&self.config)
+            .ok_or(RangeTextInputError::SurfaceCapacity)?;
+        if destination_capacity > max_queued_requests {
+            return Err(RangeTextInputError::SurfaceCapacity);
+        }
+        let destination_requests = VecDeque::with_capacity(max_queued_requests);
+        if destination_requests.capacity() > max_queued_requests {
+            return Err(RangeTextInputError::SurfaceCapacity);
+        }
         let text_allocation = text_admission.as_ref().map_or(Ok((0, 0)), |admission| {
             let charge = admission.page().retained_charge();
             Ok::<_, RangeTextInputError>((
@@ -253,7 +261,10 @@ impl RangeTextInput {
             .capacity()
             .checked_mul(size_of::<RangeTextInputRequest>())
             .ok_or(RangeTextInputError::SurfaceCapacity)?;
-        let destination_request_bytes = requests
+        let current_realization_state = self.current_auxiliary_realization_charge()?;
+        let current_request_payload =
+            super::super::transition::queued_request_payload_charge(self.requests.iter())?;
+        let destination_request_bytes = destination_requests
             .capacity()
             .checked_mul(size_of::<RangeTextInputRequest>())
             .ok_or(RangeTextInputError::SurfaceCapacity)?;
@@ -276,8 +287,7 @@ impl RangeTextInput {
             object_allocation.1,
             residency_payload.items,
             demand_items,
-            requests.capacity(),
-            effect_count,
+            destination_requests.capacity(),
             usize::from(pending_page.is_some()),
             usize::from(pending_object.is_some()),
         ]
@@ -285,14 +295,20 @@ impl RangeTextInput {
         .try_fold(0usize, usize::checked_add)
         .ok_or(RangeTextInputError::SurfaceCapacity)?;
         let admission_charge = crate::RangeSurfaceCharge {
-            bytes: prior
+            bytes: Self::realization_owner_charge()
                 .bytes
-                .checked_add(current_request_bytes)
+                .checked_add(prior.bytes)
+                .and_then(|bytes| bytes.checked_add(current_request_bytes))
+                .and_then(|bytes| bytes.checked_add(current_request_payload.bytes))
+                .and_then(|bytes| bytes.checked_add(current_realization_state.bytes))
                 .and_then(|bytes| bytes.checked_add(candidate_bytes))
                 .ok_or(RangeTextInputError::SurfaceCapacity)?,
-            items: prior
+            items: Self::realization_owner_charge()
                 .items
-                .checked_add(self.requests.capacity())
+                .checked_add(prior.items)
+                .and_then(|items| items.checked_add(self.requests.capacity()))
+                .and_then(|items| items.checked_add(current_request_payload.items))
+                .and_then(|items| items.checked_add(current_realization_state.items))
                 .and_then(|items| items.checked_add(candidate_items))
                 .ok_or(RangeTextInputError::SurfaceCapacity)?,
         };
@@ -326,8 +342,8 @@ impl RangeTextInput {
             object_touches,
             pending_page,
             pending_object,
-            requests,
             effects,
+            destination_requests,
             completed_page,
             completed_object_page,
             next_id,
@@ -365,21 +381,24 @@ impl RangeTextInput {
             });
         }
         let desired = state.desired;
-        let required_anchor = if desired.preserve_scroll_anchor {
-            Some(desired.scroll.source)
-        } else if desired.reveal_caret {
-            desired
+        let required_anchor = match desired.priority() {
+            crate::RangeRealizationPriority::Caret
+            | crate::RangeRealizationPriority::Ime
+            | crate::RangeRealizationPriority::DirectedSelection
+            | crate::RangeRealizationPriority::ActiveInteraction => desired
                 .source_selection
-                .map(|selection| selection.head.byte_offset)
-        } else {
-            None
+                .map(|selection| selection.head.byte_offset),
+            crate::RangeRealizationPriority::ScrollAnchor => desired
+                .preserve_scroll_anchor
+                .then_some(desired.scroll.source),
+            crate::RangeRealizationPriority::NearbyContent => None,
         };
         if let Some(anchor) = required_anchor
             && (anchor < target.predecessor().byte_offset
                 || anchor > target.source_end().byte_offset)
         {
             let mut retarget = desired;
-            retarget.target_block = if anchor < target.predecessor().byte_offset {
+            retarget.realization_anchor_block = if anchor < target.predecessor().byte_offset {
                 index
                     .checkpoints()
                     .iter()
@@ -388,7 +407,10 @@ impl RangeTextInput {
                     .map(|checkpoint| checkpoint.block_offset())
                     .ok_or(RangeTextInputError::IncompleteSurface)?
             } else {
-                desired.target_block + desired.viewport_extent.max(self.config.layout.line_height)
+                desired.realization_anchor_block
+                    + desired
+                        .realization_extent
+                        .max(self.config.layout.line_height)
             };
             return Ok(TerminalTargetPreparation::Retarget(retarget));
         }
@@ -474,7 +496,7 @@ impl RangeTextInput {
         ))
     }
 
-    pub(super) fn resident_publication_payload_charge<'a>(
+    pub(in crate::range_widget) fn resident_publication_payload_charge<'a>(
         mut pages: impl Iterator<Item = &'a crate::RangePage>,
         mut object_pages: impl Iterator<Item = &'a crate::ObjectPage>,
     ) -> Result<crate::RangeSurfaceCharge, RangeTextInputError> {

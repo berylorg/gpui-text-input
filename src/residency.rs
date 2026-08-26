@@ -162,6 +162,10 @@ impl PreparedRangePageAdmission {
         self.retained_items
     }
 
+    pub(crate) fn into_page(self) -> RangePage {
+        self.page
+    }
+
     pub(crate) fn projected_resident_pages<'a>(
         &'a self,
         residency: &'a RangeResidency,
@@ -184,14 +188,67 @@ impl PreparedPageDemand {
         self.retired
             .capacity()
             .saturating_mul(std::mem::size_of::<PageRequestKey>())
+            .saturating_add(match self.outcome {
+                PageDemand::Requested(request) => {
+                    usize::try_from(request.key().demand().max_payload_bytes())
+                        .expect("validated page demand fits usize")
+                }
+                _ => 0,
+            })
     }
 
     pub(crate) fn retained_items(&self) -> usize {
-        1usize.saturating_add(self.retired.capacity())
+        1usize
+            .saturating_add(self.retired.capacity())
+            .saturating_add(usize::from(matches!(
+                self.outcome,
+                PageDemand::Requested(_)
+            )))
     }
 }
 
 impl RangeResidency {
+    pub(crate) fn checked_initial_owner_storage_charge(
+        limits: ResidencyLimits,
+    ) -> Option<crate::RangeSurfaceCharge> {
+        Some(crate::RangeSurfaceCharge {
+            bytes: std::mem::size_of::<Self>()
+                .checked_add(
+                    limits
+                        .max_resident_pages()
+                        .checked_mul(std::mem::size_of::<RangePage>())?,
+                )?
+                .checked_add(
+                    limits
+                        .max_pending_requests()
+                        .checked_mul(std::mem::size_of::<PageRequestKey>())?,
+                )?
+                .checked_add(
+                    limits
+                        .max_pending_requests()
+                        .checked_mul(std::mem::size_of::<PageRequestKey>())?,
+                )?,
+            items: 1usize
+                .checked_add(limits.max_resident_pages())?
+                .checked_add(limits.max_pending_requests())?
+                .checked_add(limits.max_pending_requests())?,
+        })
+    }
+
+    pub(crate) fn owner_storage_charge(&self) -> crate::RangeSurfaceCharge {
+        crate::RangeSurfaceCharge {
+            bytes: std::mem::size_of::<Self>()
+                + (self.resident.capacity() - self.resident.len())
+                    * std::mem::size_of::<RangePage>()
+                + self.pending.capacity() * std::mem::size_of::<PageRequestKey>()
+                + self.cancelled.capacity() * std::mem::size_of::<PageRequestKey>(),
+            items: 1
+                + (self.resident.capacity() - self.resident.len())
+                + self.pending.capacity()
+                + self.cancelled.capacity(),
+        }
+    }
+
     /// Creates an empty projection bound to one exact source revision.
     pub fn new(binding: RangeBinding, limits: ResidencyLimits) -> Self {
         Self {
@@ -921,9 +978,9 @@ impl RangeResidency {
     /// Releases every resident page and pending request without installing another binding.
     pub fn dispose(&mut self) -> Vec<PageRequestKey> {
         let cancelled = self.pending.iter().copied().collect();
-        self.resident.clear();
-        self.pending.clear();
-        self.cancelled.clear();
+        self.resident = VecDeque::new();
+        self.pending = VecDeque::new();
+        self.cancelled = VecDeque::new();
         self.resident_bytes = 0;
         self.pending_bytes = 0;
         cancelled

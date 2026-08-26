@@ -92,10 +92,13 @@ impl RangeTextInput {
             pending,
             marked_selection,
         });
-        let resident =
-            self.accept_page_demand(crate::PageRequest::new(pending), demand_result, cx)?;
-        if let Some(page) = resident {
-            self.deliver_replacement_page(page, cx)?;
+        if let Err(error) = self.accept_range_continuation_demand(
+            crate::PageRequest::new(pending),
+            demand_result,
+            cx,
+        ) {
+            self.replacement = None;
+            return Err(error);
         }
         Err(RangeTextInputError::Pending)
     }
@@ -170,10 +173,13 @@ impl RangeTextInput {
         )?;
         let pending = scan.pending;
         self.replacement = Some(scan);
-        let resident =
-            self.accept_page_demand(crate::PageRequest::new(pending), demand_result, cx)?;
-        if let Some(page) = resident {
-            self.deliver_replacement_page(page, cx)?;
+        if let Err(error) = self.accept_range_continuation_demand(
+            crate::PageRequest::new(pending),
+            demand_result,
+            cx,
+        ) {
+            self.replacement = None;
+            return Err(error);
         }
         Ok(())
     }

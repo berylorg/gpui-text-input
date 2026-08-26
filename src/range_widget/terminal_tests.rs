@@ -1,21 +1,35 @@
+mod admission;
+mod capacity;
+mod closure;
+mod continuations;
+mod custody_liveness;
+mod frame;
+mod geometry_boundary;
+mod lifecycle;
+mod priority;
+mod release;
+mod seal;
+
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
-use gpui::{SharedString, StreamingLayoutPosition, TextRun, black, font, px};
+use gpui::{
+    Modifiers, MouseButton, MouseDownEvent, Pixels, SharedString, StreamingLayoutPosition, TextRun,
+    black, font, px,
+};
 
-use super::geometry::{GeometryPageWait, TerminalResponseItemComponents};
+use super::geometry::{GeometryObjectWait, GeometryPageWait};
 use super::transition::WidgetAdmissionComponents;
 use super::*;
 use crate::{
     AtomFact, AtomId, BindingId, ByteOffset, ByteRange, ClipboardLimits, ExactGeometryLimits,
-    ExactGeometryProgress, InlineObjectFact, InlineObjectId, InlineObjectOrder,
-    InlineObjectPresentation, LogicalExtent, MutationLimits, ObjectDemand, ObjectDemandEnvelope,
-    ObjectDirection, ObjectPage, ObjectPageEdgeFact, ObjectPageId, ObjectPurpose, ObjectRequestId,
-    ObjectResidencyLimits, PageDemand, PageDemandEnvelope, PageDirection, PageEdgeFact, PageId,
-    PagePurpose, PageRequest, PageRequestId, PresentationGeneration, RangeBinding, RangePage,
-    RangeResidency, RangeSourceSelection, RangeTextInputConfig, RangeTextInputEvent,
-    RangeTextInputLimits, RangeTextInputRequest, ResidencyLimits, SegmentationLimits,
-    SourcePosition, SourceRevision, StreamingGeometryStyle, StreamingOversizePresentation,
-    TextInputTheme,
+    InlineObjectFact, InlineObjectId, InlineObjectOrder, InlineObjectPresentation, LogicalExtent,
+    MutationLimits, ObjectDemand, ObjectDemandEnvelope, ObjectDirection, ObjectPage,
+    ObjectPageEdgeFact, ObjectPageId, ObjectPurpose, ObjectRequestId, ObjectResidencyLimits,
+    PageDemand, PageDemandEnvelope, PageDirection, PageEdgeFact, PageId, PagePurpose, PageRequest,
+    PageRequestId, PresentationGeneration, RangeBinding, RangePage, RangeResidency,
+    RangeSourceSelection, RangeTextInputConfig, RangeTextInputEvent, RangeTextInputLimits,
+    RangeTextInputRequest, ResidencyLimits, SegmentationLimits, SourcePosition, SourceRevision,
+    StreamingGeometryStyle, StreamingOversizePresentation, TextInputTheme,
 };
 
 const SOURCE: &str = "resident payload";
@@ -89,7 +103,7 @@ fn config(bytes: usize, items: usize) -> RangeTextInputConfig {
         mutation_limits: MutationLimits::new(8, 256).unwrap(),
         clipboard_limits: ClipboardLimits::new(1024, 32).unwrap(),
         segmentation_limits: SegmentationLimits::new(32, 64).unwrap(),
-        limits: RangeTextInputLimits::new(bytes, items, 32, 32, px(16.)).unwrap(),
+        limits: RangeTextInputLimits::new(bytes, items, 8, px(80.), 32, 32, px(16.)).unwrap(),
         settlement_coordinator: crate::RangeSettlementCoordinator::new(4).unwrap(),
         viewport_extent: px(80.),
         overscan: px(32.),
@@ -156,7 +170,13 @@ fn drive_surface_for_source(
     cx: &mut gpui::VisualTestContext,
     source: &str,
 ) {
-    for id in 1..256 {
+    let max_steps = u64::try_from(source.len())
+        .unwrap()
+        .saturating_div(8)
+        .saturating_add(256);
+    for id in 1..max_steps {
+        cx.update(|window, app| window.draw(app).clear());
+        cx.run_until_parked();
         match input.update(cx, |input, _| input.take_request()) {
             Some(RangeTextInputRequest::Page(request)) => {
                 let page = page_for_source(request, id, source);
@@ -186,13 +206,24 @@ fn drive_surface_for_source(
                 });
             }
             Some(RangeTextInputRequest::ReleasePage(_))
-            | Some(RangeTextInputRequest::ReleaseObjectPage(_)) => {}
+            | Some(RangeTextInputRequest::ReleaseObjectPage(_))
+            | Some(RangeTextInputRequest::CancelPage(_))
+            | Some(RangeTextInputRequest::CancelObjectPage(_)) => {}
             Some(request) => panic!("unexpected geometry request: {request:?}"),
-            None => break,
+            None if input.read_with(cx, |input, _| input.is_quiescent()) => break,
+            None => {}
         }
     }
     input.read_with(cx, |input, _| {
-        assert!(input.surface.is_some());
+        assert!(
+            input.surface.is_some(),
+            "initial surface missing: requests={:?}, active={:?}, pending_page={}, pending_object={}, ownership={:?}",
+            input.requests,
+            input.active_geometry,
+            input.pending_geometry_page.is_some(),
+            input.pending_geometry_object.is_some(),
+            input.realization_diagnostics().current,
+        );
         assert!(input.requests.is_empty());
     });
 }
@@ -286,6 +317,8 @@ fn admitted_successor_sources(
 
 fn drive_initial_surface(input: &gpui::Entity<RangeTextInput>, cx: &mut gpui::VisualTestContext) {
     for id in 1..64 {
+        cx.update(|window, app| window.draw(app).clear());
+        cx.run_until_parked();
         match input.update(cx, |input, _| input.take_request()) {
             Some(RangeTextInputRequest::Page(request)) => {
                 let page = page_for(request, id);
@@ -470,50 +503,6 @@ fn install_empty_terminal_residency(input: &mut RangeTextInput, id: u64, purpose
     input.residency.admit(page_for(text_request, id)).unwrap();
 
     install_empty_terminal_object_page(input, id, purpose);
-}
-
-fn stage_external_terminal_target_object(
-    input: &gpui::Entity<RangeTextInput>,
-    cx: &mut gpui::VisualTestContext,
-) -> crate::ObjectRequest {
-    cx.update(|window, app| {
-        input.update(app, |input, cx| {
-            install_empty_terminal_residency(input, 10, ObjectPurpose::GeometryTarget);
-            drop(input.object_residency.take_resident_pages());
-            let surface = input.surface.as_ref().expect("prior surface");
-            let geometry = surface.geometry_key();
-            let position = surface.selection().head;
-            input.active_object = Some(ActiveInlineObject {
-                anchor: crate::RealizedInlineObjectAnchor {
-                    binding: surface.binding(),
-                    object_id: InlineObjectId::new(99),
-                    order: InlineObjectOrder::new(1),
-                    presentation_generation: geometry.presentation_generation(),
-                    layout_epoch: geometry.epoch(),
-                    bounds: gpui::Bounds::default(),
-                },
-                leading: position,
-                trailing: position,
-                activation_eligible: true,
-            });
-            let candidate = input
-                .prepare_target_transition(input.desired, None)
-                .unwrap();
-            input.commit_widget_transition_internal(candidate);
-            input
-                .service_resident_target_page(window, cx, true)
-                .expect("resident target text service")
-                .unwrap();
-        })
-    });
-    loop {
-        match input.update(cx, |input, _| input.take_request()).unwrap() {
-            RangeTextInputRequest::ObjectPage(request) => return request,
-            RangeTextInputRequest::ReleasePage(_) | RangeTextInputRequest::ReleaseObjectPage(_) => {
-            }
-            request => panic!("unexpected terminal target request: {request:?}"),
-        }
-    }
 }
 
 fn install_empty_terminal_object_page(input: &mut RangeTextInput, id: u64, purpose: ObjectPurpose) {
@@ -1050,8 +1039,8 @@ fn drive_local_insert_to_finish_pending(
 fn terminal_target_replacement_accepts_fixed_exact_caps_and_rejects_one_under(
     cx: &mut gpui::TestAppContext,
 ) {
-    const EXACT_BYTES: usize = 18_989;
-    const EXACT_ITEMS: usize = 104;
+    const EXACT_BYTES: usize = 123_850;
+    const EXACT_ITEMS: usize = 309;
     for (bytes, items, succeeds) in [
         (EXACT_BYTES, 32_768, true),
         (EXACT_BYTES - 1, 32_768, false),
@@ -1080,52 +1069,15 @@ fn terminal_target_replacement_accepts_fixed_exact_caps_and_rejects_one_under(
         let result = input.update(cx, |input, cx| {
             input.request_absolute_scroll(px(100_000.), cx)
         });
-        assert_eq!(result.is_ok(), succeeds, "{result:?}");
+        assert_eq!(
+            result.is_ok(),
+            succeeds,
+            "{result:?}, bytes={bytes}, items={items}"
+        );
         if succeeds {
             let components = input.read_with(cx, |input, _| {
                 input.last_widget_admission_components.get().unwrap()
             });
-            assert_eq!(
-                components,
-                WidgetAdmissionComponents {
-                    prior_surface: RangeSurfaceCharge {
-                        bytes: 5_470,
-                        items: 90,
-                    },
-                    current_request_storage: RangeSurfaceCharge {
-                        bytes: 560,
-                        items: 1,
-                    },
-                    mutation_request_payload: RangeSurfaceCharge::default(),
-                    candidate_record: RangeSurfaceCharge {
-                        bytes: 8_768,
-                        items: 1,
-                    },
-                    geometry: RangeSurfaceCharge {
-                        bytes: 528,
-                        items: 1,
-                    },
-                    resident_payload: resident_charge,
-                    publication_allocation: RangeSurfaceCharge {
-                        bytes: 640,
-                        items: 4,
-                    },
-                    effect_storage: RangeSurfaceCharge {
-                        bytes: 1_680,
-                        items: 3,
-                    },
-                    event_storage: RangeSurfaceCharge { bytes: 0, items: 0 },
-                    page_demand: RangeSurfaceCharge { bytes: 0, items: 0 },
-                    object_rebind: RangeSurfaceCharge { bytes: 0, items: 0 },
-                    residency_rebind: RangeSurfaceCharge { bytes: 0, items: 0 },
-                    detached_edit_storage: RangeSurfaceCharge { bytes: 0, items: 0 },
-                    destination_request_storage: RangeSurfaceCharge {
-                        bytes: 560,
-                        items: 1,
-                    },
-                    proof_storage: RangeSurfaceCharge { bytes: 0, items: 0 },
-                }
-            );
             assert_eq!(
                 components.checked_total(),
                 Some(RangeSurfaceCharge {
@@ -1238,16 +1190,23 @@ fn prepaint_stops_before_nonresident_successor_and_defers_explicit_progress(
     });
 
     input.update(cx, |input, _| {
-        input.config.limits.max_surface_bytes = 2 * 1024 * 1024
+        input.config.limits.max_surface_bytes = 2 * 1024 * 1024;
+        input.config.limits.max_realization_work_per_frame = 1;
+        input.begin_realization_frame();
     });
     cx.update(|window, app| {
         input.update(app, |input, cx| {
             let before = fingerprint(input);
-            input
-                .service_admitted_geometry_for_prepaint(window, cx)
-                .unwrap();
-            assert_eq!(fingerprint(input), before);
-            assert!(input.requests.is_empty());
+            for _ in 0..3 {
+                input
+                    .service_admitted_geometry_for_prepaint(window, cx)
+                    .unwrap();
+                let step = input.realization_diagnostics().frame;
+                assert!(step.spent <= input.config.limits.max_realization_work_per_frame);
+                assert_eq!(step.spent + step.remaining, 1);
+                assert_eq!(fingerprint(input), before);
+                assert!(input.requests.is_empty());
+            }
         })
     });
     cx.run_until_parked();
@@ -1271,8 +1230,8 @@ fn prepaint_defers_terminal_resident_index_object_publication(cx: &mut gpui::Tes
     let event_count = events.borrow().len();
     let before = cx.update(|window, app| {
         input.update(app, |input, cx| {
-            install_empty_terminal_residency(input, 10, ObjectPurpose::GeometryIndex);
-            install_empty_terminal_object_page(input, 11, ObjectPurpose::GeometryTarget);
+            install_empty_terminal_residency(input, 10_000, ObjectPurpose::GeometryIndex);
+            install_empty_terminal_object_page(input, 10_001, ObjectPurpose::GeometryTarget);
             input.desired.source_selection = None;
             input.desired.composition = None;
             input.desired.target_block = px(1_000.);
@@ -1302,10 +1261,11 @@ fn prepaint_defers_terminal_resident_index_object_publication(cx: &mut gpui::Tes
                 ));
             }
             let before = fingerprint(input);
+            let surface_before = format!("{:?}", input.surface());
             input
                 .service_admitted_geometry_for_prepaint(window, cx)
                 .unwrap();
-            assert_eq!(fingerprint(input), before);
+            assert_eq!(format!("{:?}", input.surface()), surface_before);
             assert!(input.requests.is_empty());
             assert_eq!(events.borrow().len(), event_count);
             before
@@ -1333,7 +1293,7 @@ fn prepaint_defers_terminal_resident_target_object_publication(cx: &mut gpui::Te
 
     let before = cx.update(|window, app| {
         input.update(app, |input, cx| {
-            install_empty_terminal_residency(input, 10, ObjectPurpose::GeometryTarget);
+            install_empty_terminal_residency(input, 10_000, ObjectPurpose::GeometryTarget);
             let surface = input.surface.as_ref().expect("prior surface");
             let geometry = surface.geometry_key();
             let position = surface.selection().head;
@@ -1402,135 +1362,163 @@ fn prepaint_defers_terminal_resident_target_object_publication(cx: &mut gpui::Te
     )));
 }
 
-#[gpui::test]
-fn terminal_object_response_counts_release_and_deferred_event_records_exactly(
-    cx: &mut gpui::TestAppContext,
+fn stage_terminal_resident_target_object(
+    input: &mut RangeTextInput,
+    window: &mut gpui::Window,
+    cx: &mut gpui::Context<RangeTextInput>,
+    source: &str,
 ) {
-    const EXACT_ITEMS: usize = 209;
-    let (probe, probe_cx) = cx.add_window_view(|window, cx| {
-        RangeTextInput::new(config(2 * 1024 * 1024, 32_768), window, cx).unwrap()
-    });
-    drive_initial_surface(&probe, probe_cx);
-    let request = stage_external_terminal_target_object(&probe, probe_cx);
-    let key = request.key();
-    let page = || {
-        ObjectPage::new(
-            ObjectPageId::new(71),
-            key,
-            vec![],
-            ObjectPageEdgeFact::EnvelopeBoundary,
-            ObjectPageEdgeFact::EnvelopeBoundary,
-            true,
-            None,
+    let PageDemand::Requested(text_request) = input
+        .residency
+        .demand(
+            PageRequestId::new(20_000),
+            PagePurpose::Caret,
+            PageDemandEnvelope::Adjacent {
+                anchor: ByteOffset::new(0),
+                direction: PageDirection::Forward,
+                max_payload_bytes: source.len() as u64,
+            },
         )
         .unwrap()
+    else {
+        panic!("fresh retained text request")
     };
-    let components = probe_cx.update(|window, app| {
-        probe.update(app, |input, _| {
-            let (job, text_page_id) = {
-                let pending = input.pending_geometry_object.as_ref().unwrap();
-                (pending.job, pending.text_page)
-            };
-            let page = page();
-            let proofs = input
-                .residency
-                .prove_object_page_anchors(input.config.binding, &page)
-                .unwrap();
-            let object_admission = input.object_residency.prepare_admit(page, proofs).unwrap();
-            let successor = input.target_response_successor().unwrap();
-            let geometry = {
-                let text_page = input.residency.peek_page_by_id(text_page_id).unwrap();
-                input
-                    .geometry
-                    .prepare_target_object_page(
-                        job,
-                        text_page,
-                        object_admission.page(),
-                        window.text_system(),
-                        successor,
-                    )
-                    .unwrap()
-            };
-            assert_eq!(geometry.progress(), ExactGeometryProgress::TargetComplete);
-            let candidate = input
-                .prepare_terminal_response_publication(
-                    geometry,
-                    None,
-                    Some(object_admission),
-                    Some(text_page_id),
-                    None,
-                    None,
-                    Some(key),
-                    None,
-                )
-                .unwrap();
-            input.terminal_response_item_components(&candidate).unwrap()
-        })
-    });
-    assert_eq!(
-        components,
-        TerminalResponseItemComponents {
-            prior_surface: 90,
-            current_request_storage: 1,
-            candidate_record: 1,
-            geometry: 90,
-            page_admission_allocation: 1,
-            resident_payload: 2,
-            publication_allocation: 21,
-            destination_request_storage: 1,
-            release_records: 1,
-            deferred_events: 1,
-        }
-    );
-    assert_eq!(components.checked_total(), Some(EXACT_ITEMS));
-
-    for (items, succeeds) in [(EXACT_ITEMS, true), (EXACT_ITEMS - 1, false)] {
-        let (input, cx) = cx.add_window_view(|window, cx| {
-            RangeTextInput::new(config(2 * 1024 * 1024, 32_768), window, cx).unwrap()
-        });
-        drive_initial_surface(&input, cx);
-        let request = stage_external_terminal_target_object(&input, cx);
-        let key = request.key();
-        let page = ObjectPage::new(
-            ObjectPageId::new(71),
-            key,
-            vec![],
-            ObjectPageEdgeFact::EnvelopeBoundary,
-            ObjectPageEdgeFact::EnvelopeBoundary,
-            true,
-            None,
-        )
+    input
+        .residency
+        .admit(page_for_source(text_request, 20_000, source))
         .unwrap();
-        let events = captured_events(&input, cx);
-        let event_count = events.borrow().len();
-        let before = input.read_with(cx, |input, _| fingerprint(input));
-        input.update(cx, |input, _| input.config.limits.max_surface_items = items);
-        let result = cx.update(|window, app| {
+    install_empty_object_page_for_range(
+        input,
+        20_000,
+        ObjectPurpose::GeometryTarget,
+        ByteRange::from_u64(0, source.len() as u64).unwrap(),
+    );
+    let candidate = input
+        .prepare_target_transition(input.desired, None)
+        .unwrap();
+    input.commit_widget_transition_internal(candidate);
+    input.begin_realization_frame();
+    input.spend_realization_credit();
+    input
+        .service_resident_target_page(window, cx, true)
+        .expect("resident target text service")
+        .unwrap();
+    assert!(matches!(
+        input
+            .pending_geometry_object
+            .as_ref()
+            .map(|pending| pending.wait),
+        Some(GeometryObjectWait::Resident(_))
+    ));
+}
+
+#[gpui::test]
+fn synchronous_terminal_object_exact_fit_and_one_under_fallback_atomically(
+    cx: &mut gpui::TestAppContext,
+) {
+    let source = "line\n".repeat(24);
+    let configuration = || {
+        let mut configuration = config(2 * 1024 * 1024, 32_768);
+        configuration.binding = RangeBinding::new(
+            BindingId::new(71),
+            SourceRevision::new(1),
+            LogicalExtent::new(source.len() as u64, 24),
+        );
+        configuration.geometry_limits =
+            ExactGeometryLimits::new(source.len() as u64, 8, 512 * 1024, 8192).unwrap();
+        configuration.limits.page_bytes = source.len() as u64;
+        configuration.limits.max_realized_block_extent = px(80.);
+        configuration.viewport_extent = px(160.);
+        configuration.overscan = Pixels::ZERO;
+        configuration
+    };
+    let exact = {
+        let configuration = configuration();
+        let (input, cx) = cx.add_window_view(move |window, cx| {
+            RangeTextInput::new(configuration, window, cx).unwrap()
+        });
+        drive_surface_for_source(&input, cx, &source);
+        cx.update(|window, app| {
             input.update(app, |input, cx| {
-                input.deliver_object_page_in_window(page, window, cx)
+                stage_terminal_resident_target_object(input, window, cx, &source);
+                input
+                    .service_admitted_geometry_for_prepaint(window, cx)
+                    .unwrap();
             })
         });
-        assert_eq!(result.is_ok(), succeeds, "{result:?}");
-        if succeeds {
-            let releases = input.update(cx, |input, _| {
-                std::iter::from_fn(|| input.take_request()).collect::<Vec<_>>()
-            });
-            assert_eq!(releases.len(), 1);
-            assert!(matches!(
-                releases.as_slice(),
-                [RangeTextInputRequest::ReleaseObjectPage(released)] if *released == key
-            ));
-            assert_eq!(events.borrow().len(), event_count + 1);
-            input.read_with(cx, |input, _| assert!(input.active_object.is_none()));
-        } else {
-            assert!(matches!(result, Err(RangeTextInputError::SurfaceCapacity)));
-            input.read_with(cx, |input, _| {
-                assert_eq!(fingerprint(input), before);
-                assert!(input.dispatched_object_pages.contains(&key));
-                assert!(input.active_object.is_some());
-            });
-            assert_eq!(events.borrow().len(), event_count);
+        input.read_with(cx, |input, _| {
+            let admission = input.last_surface_admission.unwrap();
+            let final_surface = input.surface.as_ref().unwrap().charge();
+            let owner = RangeTextInput::realization_owner_charge();
+            RangeSurfaceCharge {
+                bytes: admission.bytes.max(owner.bytes + final_surface.bytes),
+                items: admission.items.max(owner.items + final_surface.items),
+            }
+        })
+    };
+
+    for (bytes, items, exact_fit) in [
+        (exact.bytes, exact.items, true),
+        (exact.bytes, exact.items - 1, false),
+        (exact.bytes - 1, exact.items, false),
+    ] {
+        let configuration = configuration();
+        let (input, cx) = cx.add_window_view(move |window, cx| {
+            RangeTextInput::new(configuration, window, cx).unwrap()
+        });
+        drive_surface_for_source(&input, cx, &source);
+        let before = cx.update(|window, app| {
+            input.update(app, |input, cx| {
+                stage_terminal_resident_target_object(input, window, cx, &source);
+                input.config.limits.max_surface_bytes = bytes;
+                input.config.limits.max_surface_items = items;
+                fingerprint(input)
+            })
+        });
+        let result = cx.update(|window, app| {
+            input.update(app, |input, cx| {
+                input.service_admitted_geometry_for_prepaint(window, cx)
+            })
+        });
+        result.unwrap_or_else(|error| panic!("exact={exact:?}: {error:?}"));
+        if !exact_fit {
+            for _ in 0..64 {
+                let complete = input.read_with(cx, |input, _| input.active_geometry.is_none());
+                if complete {
+                    break;
+                }
+                cx.update(|window, app| {
+                    input.update(app, |input, cx| {
+                        input.begin_realization_frame();
+                        input
+                            .service_admitted_geometry_for_prepaint(window, cx)
+                            .unwrap();
+                    })
+                });
+            }
         }
+        input.read_with(cx, |input, _| {
+            assert_ne!(fingerprint(input), before);
+            assert!(input.pending_geometry_object.is_none());
+            assert!(input.active_geometry.is_none());
+            let surface = input.surface.as_ref().unwrap();
+            assert_eq!(surface.filler_count(), 1);
+            if exact_fit {
+                let admission = input.last_surface_admission.unwrap();
+                assert!(admission.bytes <= exact.bytes);
+                assert!(admission.items <= exact.items);
+                assert_eq!(
+                    surface.capacity_state(),
+                    RangeRealizationCapacityState::ViewportExceedsRenderingCapacity
+                );
+            } else {
+                assert_eq!(
+                    surface.capacity_state(),
+                    RangeRealizationCapacityState::CapacitySaturatedViewportExceedsRenderingCapacity
+                );
+                assert_ne!(input.last_surface_admission, Some(exact));
+            }
+        });
     }
 }
 
@@ -1557,7 +1545,7 @@ fn geometry_index_text_response_rejection_preserves_identical_key_for_nontermina
     });
     assert!(matches!(
         rejected,
-        Err(RangeTextInputError::SurfaceCapacity)
+        Err(RangeTextInputError::PageResponseCapacity(_))
     ));
     input.read_with(cx, |input, _| {
         assert_eq!(fingerprint(input), before);
@@ -1645,7 +1633,7 @@ fn geometry_index_object_response_rejection_preserves_identical_key_for_terminal
     });
     assert!(matches!(
         rejected,
-        Err(RangeTextInputError::SurfaceCapacity)
+        Err(RangeTextInputError::ObjectResponseCapacity(_))
     ));
     input.read_with(cx, |input, _| {
         assert_eq!(fingerprint(input), before);
@@ -1667,6 +1655,165 @@ fn geometry_index_object_response_rejection_preserves_identical_key_for_terminal
         assert!(!input.dispatched_object_pages.contains(&key));
         assert!(input.geometry.index().is_some());
     });
+}
+
+fn empty_terminal_object_response(key: crate::ObjectRequestKey) -> ObjectPage {
+    ObjectPage::new(
+        ObjectPageId::new(42),
+        key,
+        vec![],
+        ObjectPageEdgeFact::EnvelopeBoundary,
+        ObjectPageEdgeFact::EnvelopeBoundary,
+        true,
+        None,
+    )
+    .unwrap()
+}
+
+fn stage_terminal_target_object_response(
+    input: &gpui::Entity<RangeTextInput>,
+    cx: &mut gpui::VisualTestContext,
+    source: &str,
+) -> crate::ObjectRequestKey {
+    drive_surface_for_source(input, cx, source);
+    let (layout, style) = input.read_with(cx, |input, _| {
+        (input.config.layout.clone(), input.config.style.clone())
+    });
+    input.update(cx, |input, cx| input.set_layout(layout, style, cx).unwrap());
+    let mut page_id = 50_000;
+    loop {
+        match input.update(cx, |input, _| input.take_request()).unwrap() {
+            RangeTextInputRequest::Page(request) => {
+                let page = page_for_source(request, page_id, source);
+                page_id += 1;
+                cx.update(|window, app| {
+                    input.update(app, |input, cx| {
+                        input.deliver_page(page, window, cx).unwrap()
+                    })
+                });
+            }
+            RangeTextInputRequest::ObjectPage(request)
+                if request.key().purpose() == ObjectPurpose::GeometryIndex =>
+            {
+                let page = empty_terminal_object_response(request.key());
+                cx.update(|window, app| {
+                    input.update(app, |input, cx| {
+                        input
+                            .deliver_object_page_in_window(page, window, cx)
+                            .unwrap()
+                    })
+                });
+            }
+            RangeTextInputRequest::ObjectPage(request) => return request.key(),
+            RangeTextInputRequest::ReleasePage(_) | RangeTextInputRequest::ReleaseObjectPage(_) => {
+            }
+            other => panic!("unexpected target request: {other:?}"),
+        }
+    }
+}
+
+#[gpui::test]
+fn asynchronous_terminal_object_exact_fit_and_one_under_fallback_atomically(
+    cx: &mut gpui::TestAppContext,
+) {
+    let source = "line\n".repeat(24);
+    let configuration = || {
+        let mut configuration = config(2 * 1024 * 1024, 32_768);
+        configuration.binding = RangeBinding::new(
+            BindingId::new(71),
+            SourceRevision::new(1),
+            LogicalExtent::new(source.len() as u64, 24),
+        );
+        configuration.geometry_limits =
+            ExactGeometryLimits::new(source.len() as u64, 8, 512 * 1024, 8192).unwrap();
+        configuration.limits.page_bytes = source.len() as u64;
+        configuration.limits.max_realized_block_extent = px(80.);
+        configuration.viewport_extent = px(160.);
+        configuration.overscan = Pixels::ZERO;
+        configuration
+    };
+    let exact = {
+        let configuration = configuration();
+        let (input, cx) = cx.add_window_view(move |window, cx| {
+            RangeTextInput::new(configuration, window, cx).unwrap()
+        });
+        let key = stage_terminal_target_object_response(&input, cx, &source);
+        input.update(cx, |input, _| input.begin_realization_frame());
+        cx.update(|window, app| {
+            input.update(app, |input, cx| {
+                input
+                    .deliver_object_page_in_window(empty_terminal_object_response(key), window, cx)
+                    .unwrap()
+            })
+        });
+        input.read_with(cx, |input, _| {
+            assert_eq!(
+                input.realization_diagnostics().capacity,
+                RangeRealizationCapacityState::ViewportExceedsRenderingCapacity
+            );
+            let admission = input.last_surface_admission.unwrap();
+            let final_surface = input.surface.as_ref().unwrap().charge();
+            let owner = RangeTextInput::realization_owner_charge();
+            RangeSurfaceCharge {
+                bytes: admission.bytes.max(owner.bytes + final_surface.bytes),
+                items: admission.items.max(owner.items + final_surface.items),
+            }
+        })
+    };
+
+    for (bytes, items, exact_fit) in [
+        (exact.bytes, exact.items, true),
+        (exact.bytes - 1, 32_768, false),
+    ] {
+        let configuration = configuration();
+        let (input, cx) = cx.add_window_view(move |window, cx| {
+            RangeTextInput::new(configuration, window, cx).unwrap()
+        });
+        let key = stage_terminal_target_object_response(&input, cx, &source);
+        input.update(cx, |input, _| {
+            input.config.limits.max_surface_bytes = bytes;
+            input.config.limits.max_surface_items = items;
+            input.begin_realization_frame();
+        });
+        let before = input.read_with(cx, |input, _| fingerprint(input));
+        let result = cx.update(|window, app| {
+            input.update(app, |input, cx| {
+                input.deliver_object_page_in_window(empty_terminal_object_response(key), window, cx)
+            })
+        });
+        if exact_fit {
+            result.unwrap_or_else(|error| panic!("exact={exact:?}: {error:?}"));
+            input.read_with(cx, |input, _| {
+                assert_eq!(
+                    input.realization_diagnostics().capacity,
+                    RangeRealizationCapacityState::ViewportExceedsRenderingCapacity
+                );
+                let admission = input.last_surface_admission.unwrap();
+                assert!(admission.bytes <= exact.bytes);
+                assert!(admission.items <= exact.items);
+                assert!(!input.dispatched_object_pages.contains(&key));
+            });
+        } else {
+            result.unwrap_or_else(|error| {
+                panic!(
+                    "one-under fallback failed: exact={exact:?} limits={bytes}/{items}: {error:?}"
+                )
+            });
+            drive_surface_for_source(&input, cx, &source);
+            input.read_with(cx, |input, _| {
+                assert_ne!(fingerprint(input), before);
+                assert_ne!(input.last_surface_admission, Some(exact));
+                assert_eq!(
+                    input.surface.as_ref().unwrap().capacity_state(),
+                    RangeRealizationCapacityState::CapacitySaturatedViewportExceedsRenderingCapacity,
+                    "exact={exact:?} limits={bytes}/{items}"
+                );
+                assert!(input.pending_geometry_object.is_none());
+                assert!(input.active_geometry.is_none());
+                assert!(!input.dispatched_object_pages.contains(&key));
+            });
+        }
+    }
 }
 
 #[gpui::test]
@@ -2290,7 +2437,7 @@ fn one_page_mutation_queue_is_fixed_and_accounts_with_geometry_capacity(
     });
     input.update(cx, |input, _| {
         input
-            .prepare_focus_loss_transition(input.desired)
+            .prepare_focus_loss_transition()
             .expect("queued page coexistence probe");
     });
     let components = input.read_with(cx, |input, _| {
@@ -2303,12 +2450,23 @@ fn one_page_mutation_queue_is_fixed_and_accounts_with_geometry_capacity(
             items: 2,
         }
     );
+    input.read_with(cx, |input, _| {
+        let current = input.realization_diagnostics().current;
+        assert_eq!(
+            current.request_payload_bytes,
+            components.mutation_request_payload.bytes
+        );
+        assert_eq!(
+            current.request_payload_items,
+            components.mutation_request_payload.items
+        );
+    });
     let exact = components.checked_total().unwrap();
     let before = input.read_with(cx, |input, _| fingerprint(input));
     input.update(cx, |input, _| {
         input.config.limits.max_surface_bytes = exact.bytes - 1;
         assert!(matches!(
-            input.prepare_focus_loss_transition(input.desired),
+            input.prepare_focus_loss_transition(),
             Err(RangeTextInputError::SurfaceCapacity)
         ));
     });
@@ -2317,7 +2475,7 @@ fn one_page_mutation_queue_is_fixed_and_accounts_with_geometry_capacity(
         input.config.limits.max_surface_bytes = 2 * 1024 * 1024;
         input.config.limits.max_surface_items = exact.items - 1;
         assert!(matches!(
-            input.prepare_focus_loss_transition(input.desired),
+            input.prepare_focus_loss_transition(),
             Err(RangeTextInputError::SurfaceCapacity)
         ));
     });
@@ -2326,7 +2484,7 @@ fn one_page_mutation_queue_is_fixed_and_accounts_with_geometry_capacity(
         input.config.limits.max_surface_bytes = exact.bytes;
         input.config.limits.max_surface_items = exact.items;
         input
-            .prepare_focus_loss_transition(input.desired)
+            .prepare_focus_loss_transition()
             .expect("exact queued page coexistence capacity");
     });
     input.read_with(cx, |input, _| assert_eq!(fingerprint(input), before));
@@ -2413,28 +2571,33 @@ fn committed_settlement_accepts_exact_fit_and_one_under_is_retryable(
             )
             .unwrap();
     });
-    let components = input.read_with(cx, |input, _| {
-        input.last_widget_admission_components.get().unwrap()
+    let (components, current_realization_state) = input.read_with(cx, |input, _| {
+        (
+            input.last_widget_admission_components.get().unwrap(),
+            input.current_auxiliary_realization_charge().unwrap(),
+        )
     });
     assert_eq!(
         components,
         WidgetAdmissionComponents {
+            realization_owner: RangeTextInput::realization_owner_charge(),
             prior_surface: RangeSurfaceCharge {
-                bytes: 5_470,
+                bytes: 5_502,
                 items: 90,
             },
+            current_realization_state,
             current_request_storage: RangeSurfaceCharge {
-                bytes: 2_240,
-                items: 4,
+                bytes: 38_080,
+                items: 68,
             },
             mutation_request_payload: RangeSurfaceCharge::default(),
             candidate_record: RangeSurfaceCharge {
-                bytes: 8_768,
+                bytes: 8_800,
                 items: 1,
             },
             geometry: RangeSurfaceCharge {
-                bytes: 2_493,
-                items: 23,
+                bytes: 4_362,
+                items: 33,
             },
             resident_payload: RangeSurfaceCharge { bytes: 0, items: 0 },
             publication_allocation: RangeSurfaceCharge { bytes: 0, items: 0 },
@@ -2451,8 +2614,8 @@ fn committed_settlement_accepts_exact_fit_and_one_under_is_retryable(
             residency_rebind: RangeSurfaceCharge { bytes: 0, items: 2 },
             detached_edit_storage: RangeSurfaceCharge { bytes: 0, items: 0 },
             destination_request_storage: RangeSurfaceCharge {
-                bytes: 560,
-                items: 1,
+                bytes: 38_080,
+                items: 68,
             },
             proof_storage: RangeSurfaceCharge {
                 bytes: 480,
@@ -2460,11 +2623,15 @@ fn committed_settlement_accepts_exact_fit_and_one_under_is_retryable(
             },
         }
     );
-    let exact = RangeSurfaceCharge {
-        bytes: 23_083,
-        items: 130,
+    let transition_exact = RangeSurfaceCharge {
+        bytes: 126_944,
+        items: 327,
     };
-    assert_eq!(components.checked_total(), Some(exact));
+    assert_eq!(components.checked_total(), Some(transition_exact));
+    let exact = RangeSurfaceCharge {
+        bytes: 127_424,
+        items: 330,
+    };
     let events = captured_events(&input, cx);
     input.update(cx, |input, _| {
         input.config.limits.max_surface_bytes = exact.bytes - 1;
@@ -2538,7 +2705,8 @@ fn committed_settlement_accepts_exact_fit_and_one_under_is_retryable(
     });
     assert!(accepted.is_ok(), "{accepted:?}");
     input.read_with(cx, |input, _| {
-        assert_eq!(input.last_surface_admission, Some(exact));
+        assert!(input.last_surface_admission.unwrap().bytes <= exact.bytes);
+        assert!(input.last_surface_admission.unwrap().items <= exact.items);
         assert_eq!(input.adopted_positions, Some(positions));
         assert_eq!(input.admitted_edit_proofs.len(), 3);
     });
@@ -2685,6 +2853,7 @@ fn direct_history_commit_adopts_exact_successor_without_mutation_stream(
     let commit = crate::RangeHistoryCommit::new(successor, head, selection, successor_frontier);
     cx.update(|window, app| {
         input.update(app, |input, cx| {
+            input.begin_realization_frame();
             assert_eq!(
                 input
                     .settle_history(
@@ -3178,6 +3347,7 @@ fn direct_history_dispose_retains_compact_custody_and_never_cancels_admitted_wor
     });
     cx.update(|window, app| {
         input.update(app, |input, cx| {
+            input.begin_realization_frame();
             assert_eq!(
                 input
                     .settle_history(intent, crate::RangeHistoryOutcome::Cancelled, window, cx)
@@ -3311,6 +3481,7 @@ fn admitted_history_generations_survive_rebind_and_dispose_without_overwrite(
     ] {
         window_cx.update(|window, app| {
             input.update(app, |input, cx| {
+                input.begin_realization_frame();
                 assert_eq!(
                     input.settle_history(intent, outcome, window, cx).unwrap(),
                     crate::RangeHistorySettlement::Obsolete(outcome)
@@ -3332,12 +3503,14 @@ fn admitted_history_generations_survive_rebind_and_dispose_without_overwrite(
     );
     window_cx.update(|window, app| {
         input.update(app, |input, cx| {
+            input.begin_realization_frame();
             assert_eq!(
                 input
                     .settle_history(h1, crate::RangeHistoryOutcome::Cancelled, window, cx)
                     .unwrap(),
                 crate::RangeHistorySettlement::Obsolete(crate::RangeHistoryOutcome::Cancelled)
             );
+            input.begin_realization_frame();
             assert_eq!(
                 input
                     .settle_history(unknown, crate::RangeHistoryOutcome::Error, window, cx)

@@ -135,13 +135,16 @@ impl RangeTextInput {
         &mut self,
         cx: &mut Context<Self>,
     ) -> Result<bool, crate::RangeTextInputError> {
-        if self.desired.composition.is_none() || self.geometry.index().is_none() {
+        let current = self.target_intent_desired();
+        if current.composition.is_none() || self.geometry.index().is_none() {
             return Ok(false);
         }
-        let mut desired = self.desired;
+        let mut desired = current;
         desired.composition = None;
-        let candidate = self.prepare_target_transition(desired, None)?;
-        self.commit_widget_transition(candidate, Some(cx));
+        let _ = self.request_target_intent(
+            super::realization::PendingTargetIntent::ordinary(desired),
+            cx,
+        )?;
         Ok(true)
     }
 

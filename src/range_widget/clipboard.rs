@@ -29,28 +29,16 @@ impl RangeTextInput {
     ) -> Result<(), RangeTextInputError> {
         let pending = self
             .pending_clipboard_page
-            .take()
+            .as_ref()
             .ok_or(RangeTextInputError::Stale)?;
         if !matches!(pending.wait, ClipboardPageWait::Coalesced(existing) if existing == page.key())
         {
-            self.pending_clipboard_page = Some(pending);
             return Err(RangeTextInputError::Stale);
         }
-        let resident = match page.clone_for_request(pending.request) {
-            Ok(resident) => resident,
-            Err(_) => {
-                self.abort_clipboard_text_request(pending.request, cx);
-                return Err(RangeTextInputError::Stale);
-            }
-        };
-        let progress = match self.clipboard.admit_text_page(resident) {
-            Ok(progress) => progress,
-            Err(_) => {
-                self.abort_clipboard_text_request(pending.request, cx);
-                return Err(RangeTextInputError::Stale);
-            }
-        };
-        self.advance_clipboard(progress, cx)
+        let request = pending.request;
+        self.admit_borrowed_page_clone(page, request, cx)?;
+        self.pending_clipboard_page = None;
+        Ok(())
     }
 
     pub(super) fn fail_coalesced_clipboard_page(
@@ -124,28 +112,14 @@ impl RangeTextInput {
                     };
                 match demand {
                     PageDemand::Requested(expected) if expected.key() == request.key() => {
-                        self.push_request(RangeTextInputRequest::Page(request), cx);
+                        self.push_request(RangeTextInputRequest::Page(request), cx)?;
                     }
                     PageDemand::ResidentAdjacent(page) => {
-                        let resident = match self
-                            .residency
-                            .page_by_id(page)
-                            .and_then(|page| page.clone_for_request(request.key()).ok())
+                        if let Err(error) = self.admit_resident_page_clone(page, request.key(), cx)
                         {
-                            Some(resident) => resident,
-                            None => {
-                                self.abort_clipboard_text_request(request.key(), cx);
-                                return Err(RangeTextInputError::Stale);
-                            }
-                        };
-                        let progress = match self.clipboard.admit_text_page(resident) {
-                            Ok(progress) => progress,
-                            Err(_) => {
-                                self.abort_clipboard_text_request(request.key(), cx);
-                                return Err(RangeTextInputError::Stale);
-                            }
-                        };
-                        return self.advance_clipboard(progress, cx);
+                            self.abort_clipboard_text_request(request.key(), cx);
+                            return Err(error);
+                        }
                     }
                     PageDemand::Coalesced(existing) => {
                         self.pending_clipboard_page = Some(PendingClipboardPage {
@@ -169,10 +143,10 @@ impl RangeTextInput {
                     .clipboard
                     .request_object_page(key, id)
                     .map_err(|_| RangeTextInputError::Busy)?;
-                self.push_request(RangeTextInputRequest::ObjectPage(request), cx);
+                self.push_request(RangeTextInputRequest::ObjectPage(request), cx)?;
             }
             crate::ClipboardProgress::Write(write) => {
-                self.push_request(RangeTextInputRequest::ClipboardWrite(write), cx);
+                self.push_request(RangeTextInputRequest::ClipboardWrite(write), cx)?;
             }
             crate::ClipboardProgress::Terminal(crate::ClipboardCompletion::Propagate(kind)) => {
                 self.clipboard_cut_proofs = None;
@@ -326,15 +300,52 @@ impl RangeTextInput {
             key.purpose(),
             crate::ObjectPurpose::GeometryIndex | crate::ObjectPurpose::GeometryTarget
         ) {
-            if !self.dispatched_object_pages.contains(&key) {
-                self.requests
-                    .push_back(RangeTextInputRequest::ReleaseObjectPage(key));
-            }
-            return Err(RangeTextInputError::Stale);
+            return Err(RangeTextInputError::ObjectResponseRejected(page));
         }
         if !self.dispatched_object_pages.contains(&key) {
-            self.requests
-                .push_back(RangeTextInputRequest::ReleaseObjectPage(key));
+            return Err(RangeTextInputError::ObjectResponseRejected(page));
+        }
+        self.admit_response_custody(super::response_custody::RangeResponseCustody::Object(page))
+            .map_err(|response| match response {
+                super::response_custody::RangeResponseCustody::Object(page) => {
+                    RangeTextInputError::ObjectResponseCapacity(page)
+                }
+                super::response_custody::RangeResponseCustody::Page(_)
+                | super::response_custody::RangeResponseCustody::PageNoAliases(_)
+                | super::response_custody::RangeResponseCustody::ResidentPage(_)
+                | super::response_custody::RangeResponseCustody::AliasFanout(_) => unreachable!(),
+            })?;
+        match self.service_object_response_custody(cx) {
+            Ok(_) => Ok(()),
+            Err(_) if self.dispatched_object_pages.contains(&key) => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+
+    pub(super) fn deliver_custodied_object_page(
+        &mut self,
+        page: ObjectPage,
+        window: Option<&mut Window>,
+        cx: &mut Context<Self>,
+    ) -> Result<(), RangeTextInputError> {
+        let key = page.key();
+        if matches!(
+            key.purpose(),
+            crate::ObjectPurpose::GeometryIndex | crate::ObjectPurpose::GeometryTarget
+        ) {
+            let window = window.ok_or(RangeTextInputError::Busy)?;
+            return match key.purpose() {
+                crate::ObjectPurpose::GeometryTarget => {
+                    self.deliver_geometry_target_object_page_inner(page, true, window, cx)
+                }
+                crate::ObjectPurpose::GeometryIndex => {
+                    self.deliver_geometry_object_page_inner(page, true, window, cx)
+                }
+                _ => unreachable!(),
+            };
+        }
+        if !self.dispatched_object_pages.contains(&key) {
+            self.commit_prepared_request(RangeTextInputRequest::ReleaseObjectPage(key));
             return Err(RangeTextInputError::Stale);
         }
         let purpose = key.purpose();
@@ -353,8 +364,7 @@ impl RangeTextInput {
             }
             _ => Err(RangeTextInputError::Stale),
         };
-        self.requests
-            .push_back(RangeTextInputRequest::ReleaseObjectPage(key));
+        self.commit_prepared_request(RangeTextInputRequest::ReleaseObjectPage(key));
         result
     }
 
@@ -364,25 +374,24 @@ impl RangeTextInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), RangeTextInputError> {
-        if matches!(
-            page.key().purpose(),
-            crate::ObjectPurpose::GeometryIndex | crate::ObjectPurpose::GeometryTarget
-        ) && !self.dispatched_object_pages.contains(&page.key())
-        {
-            self.requests
-                .push_back(RangeTextInputRequest::ReleaseObjectPage(page.key()));
-            return Err(RangeTextInputError::Stale);
+        if !self.dispatched_object_pages.contains(&page.key()) {
+            return Err(RangeTextInputError::ObjectResponseRejected(page));
         }
-        match page.key().purpose() {
-            crate::ObjectPurpose::GeometryTarget => {
-                return self.deliver_geometry_target_object_page(page, window, cx);
+        self.admit_response_custody(super::response_custody::RangeResponseCustody::Object(page))
+            .map_err(|response| match response {
+                super::response_custody::RangeResponseCustody::Object(page) => {
+                    RangeTextInputError::ObjectResponseCapacity(page)
+                }
+                super::response_custody::RangeResponseCustody::Page(_)
+                | super::response_custody::RangeResponseCustody::PageNoAliases(_)
+                | super::response_custody::RangeResponseCustody::ResidentPage(_)
+                | super::response_custody::RangeResponseCustody::AliasFanout(_) => unreachable!(),
+            })?;
+        if let Err(error) = self.service_response_custody(window, cx) {
+            if self.response_custody.is_empty() {
+                return Err(error);
             }
-            crate::ObjectPurpose::GeometryIndex => {
-                return self.deliver_geometry_object_page(page, window, cx);
-            }
-            _ => {}
         }
-        self.deliver_object_page(page, cx)?;
         self.service_geometry_until_external_boundary(window, cx)
     }
 

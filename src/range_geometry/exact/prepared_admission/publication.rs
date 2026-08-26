@@ -16,8 +16,8 @@ impl ExactGeometryOwner {
         let source_end = inputs.binding.extent().byte_len();
         let reached_source_end = page_end.get() == source_end;
         let target_ready = match &candidate.kind {
-            ActiveKind::Target { target, .. } => {
-                super::super::checkpoint::target_scan_ready(&candidate.scanner, *target)
+            ActiveKind::Target { target, anchor, .. } => {
+                super::super::checkpoint::target_scan_ready(&candidate.scanner, *target, *anchor)
             }
             ActiveKind::Index => false,
         };

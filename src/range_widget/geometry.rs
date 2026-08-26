@@ -1,5 +1,8 @@
+mod deferred;
 mod response_commit;
 mod response_preparation;
+
+pub(super) use deferred::DeferredGeometryResponse;
 
 use std::{collections::VecDeque, mem::size_of};
 
@@ -48,47 +51,12 @@ pub(super) struct PreparedTerminalResponsePublication {
     text_touch: Option<PageId>,
     object_touch: Option<ObjectPageId>,
     publication: PreparedTargetPublication,
-    requests: VecDeque<RangeTextInputRequest>,
     release_request: Option<RangeTextInputRequest>,
+    destination_requests: VecDeque<RangeTextInputRequest>,
     completed_page: Option<PageRequestKey>,
     completed_object_page: Option<ObjectRequestKey>,
     admission_charge: crate::RangeSurfaceCharge,
     next_id: Option<u64>,
-}
-
-#[cfg(test)]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct TerminalResponseItemComponents {
-    pub(super) prior_surface: usize,
-    pub(super) current_request_storage: usize,
-    pub(super) candidate_record: usize,
-    pub(super) geometry: usize,
-    pub(super) page_admission_allocation: usize,
-    pub(super) resident_payload: usize,
-    pub(super) publication_allocation: usize,
-    pub(super) destination_request_storage: usize,
-    pub(super) release_records: usize,
-    pub(super) deferred_events: usize,
-}
-
-#[cfg(test)]
-impl TerminalResponseItemComponents {
-    pub(super) fn checked_total(self) -> Option<usize> {
-        [
-            self.prior_surface,
-            self.current_request_storage,
-            self.candidate_record,
-            self.geometry,
-            self.page_admission_allocation,
-            self.resident_payload,
-            self.publication_allocation,
-            self.destination_request_storage,
-            self.release_records,
-            self.deferred_events,
-        ]
-        .into_iter()
-        .try_fold(0usize, usize::checked_add)
-    }
 }
 
 struct PreparedNonterminalResponsePublication {
@@ -101,8 +69,8 @@ struct PreparedNonterminalResponsePublication {
     object_touches: [Option<ObjectPageId>; 2],
     pending_page: Option<PendingGeometryPage>,
     pending_object: Option<PendingGeometryObject>,
-    requests: VecDeque<RangeTextInputRequest>,
     effects: [Option<RangeTextInputRequest>; 2],
+    destination_requests: VecDeque<RangeTextInputRequest>,
     completed_page: Option<PageRequestKey>,
     completed_object_page: Option<ObjectRequestKey>,
     next_id: u64,
@@ -247,10 +215,54 @@ pub(super) enum GeometryPageWait {
     Coalesced(PageRequestKey),
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum CapacityFallbackProgress {
+    Committed,
+    Pending,
+}
+
 impl RangeTextInput {
+    fn commit_capacity_fallback(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Result<CapacityFallbackProgress, RangeTextInputError> {
+        let desired = self
+            .surface_candidate
+            .as_ref()
+            .map_or(self.desired, |candidate| candidate.desired);
+        let fallback = desired
+            .next_capacity_fallback(self.config.layout.line_height)
+            .ok_or(RangeTextInputError::SurfaceCapacity)?;
+        let progress = self.request_target_intent(
+            super::realization::PendingTargetIntent::ordinary(fallback),
+            cx,
+        )?;
+        Ok(if progress.is_some() {
+            CapacityFallbackProgress::Committed
+        } else {
+            CapacityFallbackProgress::Pending
+        })
+    }
+
+    fn require_capacity_fallback_commit(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Result<(), RangeTextInputError> {
+        match self.commit_capacity_fallback(cx)? {
+            CapacityFallbackProgress::Committed => Ok(()),
+            CapacityFallbackProgress::Pending => Err(RangeTextInputError::Pending),
+        }
+    }
+
     pub(super) fn target_response_successor(
         &self,
     ) -> Result<crate::range_geometry::TargetResponseSuccessor, RangeTextInputError> {
+        let desired = self
+            .surface_candidate
+            .as_ref()
+            .filter(|candidate| Some(candidate.job) == self.active_geometry)
+            .map(|candidate| candidate.desired)
+            .ok_or(RangeTextInputError::Stale)?;
         self.next_id
             .checked_add(1)
             .ok_or(RangeTextInputError::Busy)?;
@@ -260,7 +272,7 @@ impl RangeTextInput {
             object_id: ObjectRequestId::new(self.next_id),
             max_objects: self.config.object_residency_limits.max_resident_objects(),
             max_object_bytes: self.config.object_residency_limits.max_resident_bytes(),
-            target: self.desired.target(),
+            target: desired.target(),
             anchor: None,
             select_all: false,
         })
@@ -281,6 +293,24 @@ impl RangeTextInput {
             .as_ref()
             .and_then(|candidate| candidate.restoration)
             .or(self.restoration_seed);
+        let anchor = restoration.map(|seed| seed.scroll.position).or_else(|| {
+            matches!(
+                self.desired.priority(),
+                crate::RangeRealizationPriority::Caret
+                    | crate::RangeRealizationPriority::Ime
+                    | crate::RangeRealizationPriority::DirectedSelection
+                    | crate::RangeRealizationPriority::ActiveInteraction
+            )
+            .then_some(self.desired.source_selection)
+            .flatten()
+            .map(|selection| selection.head)
+            .filter(|anchor| {
+                anchor.byte_offset.get() == self.config.binding.extent().byte_len()
+                    || self.surface.as_ref().is_none_or(|surface| {
+                        surface.position_for_source_position(*anchor).is_none()
+                    })
+            })
+        });
         Ok(crate::range_geometry::TargetResponseSuccessor {
             target_job_id: crate::GeometryJobId::new(self.next_id),
             page_id: PageRequestId::new(page_id),
@@ -288,7 +318,7 @@ impl RangeTextInput {
             max_objects: self.config.object_residency_limits.max_resident_objects(),
             max_object_bytes: self.config.object_residency_limits.max_resident_bytes(),
             target: self.desired.target(),
-            anchor: restoration.map(|seed| seed.scroll.position),
+            anchor,
             select_all: self.pending_select_all,
         })
     }
@@ -330,30 +360,6 @@ impl RangeTextInput {
         }
     }
 
-    pub(super) fn start_target(
-        &mut self,
-        cx: &mut Context<Self>,
-    ) -> Result<(), RangeTextInputError> {
-        let desired = self.desired;
-        if self.reject_restoration_task(cx)? {
-            self.desired = desired;
-            return self.start_index();
-        }
-        self.start_target_for(Some(cx))
-    }
-
-    fn start_target_for(
-        &mut self,
-        cx: Option<&mut Context<Self>>,
-    ) -> Result<(), RangeTextInputError> {
-        let candidate = self.prepare_target_transition(self.desired, None)?;
-        match self.commit_widget_transition(candidate, cx) {
-            ExactGeometryProgress::TargetComplete => Ok(()),
-            ExactGeometryProgress::Scanning | ExactGeometryProgress::PendingIndex => Ok(()),
-            _ => Err(RangeTextInputError::Stale),
-        }
-    }
-
     fn abort_geometry_demand(
         &mut self,
         job: crate::GeometryJobKey,
@@ -372,9 +378,11 @@ impl RangeTextInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), RangeTextInputError> {
-        let result = self
-            .service_geometry_object(window, cx)
-            .and_then(|()| self.service_geometry_page_inner(window, cx));
+        let result = if self.pending_geometry_object.is_some() {
+            self.service_geometry_object(window, cx)
+        } else {
+            self.service_geometry_page_inner(window, cx)
+        };
         if result.is_err() {
             self.reject_restoration_geometry(cx)?;
         }
@@ -386,20 +394,23 @@ impl RangeTextInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), RangeTextInputError> {
-        let limit = self
-            .config
-            .residency_limits
-            .max_resident_pages()
-            .saturating_add(self.config.object_residency_limits.max_resident_objects())
-            .saturating_add(2);
-        for _ in 0..limit {
-            let before = self.geometry_service_marker();
-            self.service_geometry_page(window, cx)?;
-            if self.geometry_service_marker() == before {
+        loop {
+            if !self.try_spend_realization_credit(cx) {
                 return Ok(());
             }
+            let before = self.geometry_service_marker();
+            let result = self.service_geometry_page(window, cx);
+            let progressed = self.geometry_service_marker() != before;
+            if !progressed || result.is_err() {
+                self.refund_realization_credit();
+            }
+            result?;
+            if !progressed {
+                self.last_realization_step.reached_external_boundary = true;
+                return Ok(());
+            }
+            self.observe_realization_ownership();
         }
-        Err(RangeTextInputError::Busy)
     }
 
     pub(super) fn service_admitted_geometry_for_prepaint(
@@ -407,17 +418,20 @@ impl RangeTextInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), RangeTextInputError> {
+        let _ = self.service_pending_restoration_completion(cx)?;
+        if self.deferred_geometry_response.is_some() {
+            let _ = self.service_deferred_geometry_response(window, cx)?;
+        }
         if !self.requests.is_empty() {
+            self.last_realization_step.reached_external_boundary = true;
             return Ok(());
         }
-        let limit = self
-            .config
-            .residency_limits
-            .max_resident_pages()
-            .saturating_add(self.config.object_residency_limits.max_resident_objects())
-            .saturating_add(2);
-        for _ in 0..limit {
+        loop {
             if !self.requests.is_empty() {
+                self.last_realization_step.reached_external_boundary = true;
+                return Ok(());
+            }
+            if !self.try_spend_realization_credit(cx) {
                 return Ok(());
             }
             let before = self.geometry_service_marker();
@@ -436,17 +450,22 @@ impl RangeTextInput {
             ) {
                 self.service_resident_geometry_page(window, cx, false)
             } else {
+                self.refund_realization_credit();
                 return Ok(());
             };
-            result.expect("resident geometry wait was present")?;
-            if self.geometry_service_marker() == before {
-                cx.defer_in(window, |input, window, cx| {
-                    let _ = input.service_geometry_until_external_boundary(window, cx);
-                });
+            let result = result.expect("resident geometry wait was present");
+            let progressed = self.geometry_service_marker() != before;
+            if !progressed || result.is_err() {
+                self.refund_realization_credit();
+            }
+            result?;
+            if !progressed {
+                self.last_realization_step.reached_external_boundary = true;
+                self.defer_realization_continuation(window, cx);
                 return Ok(());
             }
+            self.observe_realization_ownership();
         }
-        Ok(())
     }
 
     fn geometry_service_marker(
@@ -528,6 +547,9 @@ impl RangeTextInput {
                 None,
             ) {
                 Ok(candidate) => candidate,
+                Err(RangeTextInputError::SurfaceCapacity) => {
+                    return Some(self.require_capacity_fallback_commit(cx));
+                }
                 Err(error) => return Some(Err(error)),
             };
             self.commit_terminal_response_publication(candidate, cx);
@@ -622,6 +644,9 @@ impl RangeTextInput {
                 index_target,
             ) {
                 Ok(candidate) => candidate,
+                Err(RangeTextInputError::SurfaceCapacity) => {
+                    return Some(self.require_capacity_fallback_commit(cx));
+                }
                 Err(error) => return Some(Err(error)),
             };
             self.commit_terminal_response_publication(candidate, cx);
@@ -944,9 +969,10 @@ impl RangeTextInput {
             .is_some_and(|pending| matches!(pending.wait, GeometryPageWait::Coalesced(existing) if existing == key))
     }
 
-    pub(super) fn deliver_geometry_object_page(
+    pub(in crate::range_widget) fn deliver_geometry_object_page_inner(
         &mut self,
         page: crate::ObjectPage,
+        credit_spent: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), RangeTextInputError> {
@@ -991,6 +1017,14 @@ impl RangeTextInput {
                 | crate::ObjectPageAdmissionError::LimitExceeded(_),
             ) => return Err(RangeTextInputError::Stale),
         };
+        if !credit_spent {
+            if !self.try_spend_realization_credit(cx) {
+                return self.defer_geometry_response(
+                    DeferredGeometryResponse::IndexObject(object_admission.into_page()),
+                    cx,
+                );
+            }
+        }
         let geometry = {
             let text_page = self
                 .residency
@@ -1019,7 +1053,7 @@ impl RangeTextInput {
             .map(|_| self.prepare_index_response_target(&geometry))
             .transpose()?;
         if geometry.progress() == ExactGeometryProgress::TargetComplete {
-            let candidate = self.prepare_terminal_response_publication(
+            let candidate = match self.prepare_terminal_response_publication(
                 geometry,
                 None,
                 Some(object_admission),
@@ -1028,7 +1062,13 @@ impl RangeTextInput {
                 None,
                 Some(key),
                 index_target,
-            )?;
+            ) {
+                Ok(candidate) => candidate,
+                Err(RangeTextInputError::SurfaceCapacity) => {
+                    return self.require_capacity_fallback_commit(cx);
+                }
+                Err(error) => return Err(error),
+            };
             self.commit_terminal_response_publication(candidate, cx);
             return Ok(());
         }
@@ -1095,18 +1135,10 @@ impl RangeTextInput {
         }
     }
 
-    pub(super) fn deliver_geometry_page(
+    pub(in crate::range_widget) fn deliver_geometry_target_page_inner(
         &mut self,
         page: RangePage,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Result<(), RangeTextInputError> {
-        self.deliver_geometry_page_inner(page, window, cx)
-    }
-
-    pub(super) fn deliver_geometry_target_page(
-        &mut self,
-        page: RangePage,
+        credit_spent: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), RangeTextInputError> {
@@ -1117,22 +1149,6 @@ impl RangeTextInput {
         {
             return Err(RangeTextInputError::Stale);
         }
-        let geometry = self.geometry.prepare_target_page(
-            job,
-            &page,
-            window.text_system(),
-            self.target_response_successor()?,
-        );
-        let geometry = match geometry {
-            Ok(geometry) => geometry,
-            Err(failure) => {
-                let error = RangeTextInputError::Geometry(failure.error().clone());
-                if matches!(failure.error(), crate::ExactGeometryError::SourceContract) {
-                    self.reject_delivered_geometry_page(key, cx);
-                }
-                return Err(error);
-            }
-        };
         let text_admission = match self.residency.prepare_admit(page) {
             Ok(admission) => admission,
             Err(crate::PageAdmissionError::Malformed(_)) => {
@@ -1148,8 +1164,32 @@ impl RangeTextInput {
                 | crate::PageAdmissionError::LimitExceeded(_),
             ) => return Err(RangeTextInputError::Stale),
         };
+        if !credit_spent {
+            if !self.try_spend_realization_credit(cx) {
+                return self.defer_geometry_response(
+                    DeferredGeometryResponse::TargetPage(text_admission.into_page()),
+                    cx,
+                );
+            }
+        }
+        let geometry = self.geometry.prepare_target_page(
+            job,
+            text_admission.page(),
+            window.text_system(),
+            self.target_response_successor()?,
+        );
+        let geometry = match geometry {
+            Ok(geometry) => geometry,
+            Err(failure) => {
+                let error = RangeTextInputError::Geometry(failure.error().clone());
+                if matches!(failure.error(), crate::ExactGeometryError::SourceContract) {
+                    self.reject_delivered_geometry_page(key, cx);
+                }
+                return Err(error);
+            }
+        };
         if geometry.progress() == ExactGeometryProgress::TargetComplete {
-            let candidate = self.prepare_terminal_response_publication(
+            let candidate = match self.prepare_terminal_response_publication(
                 geometry,
                 Some(text_admission),
                 None,
@@ -1158,11 +1198,17 @@ impl RangeTextInput {
                 Some(key),
                 None,
                 None,
-            )?;
+            ) {
+                Ok(candidate) => candidate,
+                Err(RangeTextInputError::SurfaceCapacity) => {
+                    return self.require_capacity_fallback_commit(cx);
+                }
+                Err(error) => return Err(error),
+            };
             self.commit_terminal_response_publication(candidate, cx);
             return Ok(());
         }
-        let candidate = self.prepare_nonterminal_response_publication(
+        let candidate = match self.prepare_nonterminal_response_publication(
             geometry,
             Some(text_admission),
             None,
@@ -1173,14 +1219,21 @@ impl RangeTextInput {
             Some(key),
             None,
             None,
-        )?;
+        ) {
+            Ok(candidate) => candidate,
+            Err(RangeTextInputError::SurfaceCapacity) => {
+                return self.require_capacity_fallback_commit(cx);
+            }
+            Err(error) => return Err(error),
+        };
         self.commit_nonterminal_response_publication(candidate, cx);
         self.service_geometry_until_external_boundary(window, cx)
     }
 
-    pub(super) fn deliver_geometry_target_object_page(
+    pub(in crate::range_widget) fn deliver_geometry_target_object_page_inner(
         &mut self,
         page: crate::ObjectPage,
+        credit_spent: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), RangeTextInputError> {
@@ -1225,6 +1278,14 @@ impl RangeTextInput {
                 | crate::ObjectPageAdmissionError::LimitExceeded(_),
             ) => return Err(RangeTextInputError::Stale),
         };
+        if !credit_spent {
+            if !self.try_spend_realization_credit(cx) {
+                return self.defer_geometry_response(
+                    DeferredGeometryResponse::TargetObject(object_admission.into_page()),
+                    cx,
+                );
+            }
+        }
         let geometry = {
             let text_page = self
                 .residency
@@ -1249,7 +1310,7 @@ impl RangeTextInput {
             }
         };
         if geometry.progress() == ExactGeometryProgress::TargetComplete {
-            let candidate = self.prepare_terminal_response_publication(
+            let candidate = match self.prepare_terminal_response_publication(
                 geometry,
                 None,
                 Some(object_admission),
@@ -1258,11 +1319,17 @@ impl RangeTextInput {
                 None,
                 Some(key),
                 None,
-            )?;
+            ) {
+                Ok(candidate) => candidate,
+                Err(RangeTextInputError::SurfaceCapacity) => {
+                    return self.require_capacity_fallback_commit(cx);
+                }
+                Err(error) => return Err(error),
+            };
             self.commit_terminal_response_publication(candidate, cx);
             return Ok(());
         }
-        let candidate = self.prepare_nonterminal_response_publication(
+        let candidate = match self.prepare_nonterminal_response_publication(
             geometry,
             None,
             Some(object_admission),
@@ -1273,14 +1340,21 @@ impl RangeTextInput {
             None,
             Some(key),
             None,
-        )?;
+        ) {
+            Ok(candidate) => candidate,
+            Err(RangeTextInputError::SurfaceCapacity) => {
+                return self.require_capacity_fallback_commit(cx);
+            }
+            Err(error) => return Err(error),
+        };
         self.commit_nonterminal_response_publication(candidate, cx);
         self.service_geometry_until_external_boundary(window, cx)
     }
 
-    fn deliver_geometry_page_inner(
+    pub(in crate::range_widget) fn deliver_geometry_page_inner(
         &mut self,
         page: RangePage,
+        credit_spent: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), RangeTextInputError> {
@@ -1291,22 +1365,6 @@ impl RangeTextInput {
         {
             return Err(RangeTextInputError::Stale);
         }
-        let geometry = self.geometry.prepare_index_page(
-            job,
-            &page,
-            window.text_system(),
-            self.index_response_successor()?,
-        );
-        let geometry = match geometry {
-            Ok(geometry) => geometry,
-            Err(failure) => {
-                let error = RangeTextInputError::Geometry(failure.error().clone());
-                if matches!(failure.error(), crate::ExactGeometryError::SourceContract) {
-                    self.reject_delivered_geometry_page(key, cx);
-                }
-                return Err(error);
-            }
-        };
         let text_admission = match self.residency.prepare_admit(page) {
             Ok(admission) => admission,
             Err(crate::PageAdmissionError::Malformed(_)) => {
@@ -1322,12 +1380,36 @@ impl RangeTextInput {
                 | crate::PageAdmissionError::LimitExceeded(_),
             ) => return Err(RangeTextInputError::Stale),
         };
+        if !credit_spent {
+            if !self.try_spend_realization_credit(cx) {
+                return self.defer_geometry_response(
+                    DeferredGeometryResponse::IndexPage(text_admission.into_page()),
+                    cx,
+                );
+            }
+        }
+        let geometry = self.geometry.prepare_index_page(
+            job,
+            text_admission.page(),
+            window.text_system(),
+            self.index_response_successor()?,
+        );
+        let geometry = match geometry {
+            Ok(geometry) => geometry,
+            Err(failure) => {
+                let error = RangeTextInputError::Geometry(failure.error().clone());
+                if matches!(failure.error(), crate::ExactGeometryError::SourceContract) {
+                    self.reject_delivered_geometry_page(key, cx);
+                }
+                return Err(error);
+            }
+        };
         let index_target = geometry
             .terminal_index()
             .map(|_| self.prepare_index_response_target(&geometry))
             .transpose()?;
         if geometry.progress() == ExactGeometryProgress::TargetComplete {
-            let candidate = self.prepare_terminal_response_publication(
+            let candidate = match self.prepare_terminal_response_publication(
                 geometry,
                 Some(text_admission),
                 None,
@@ -1336,7 +1418,13 @@ impl RangeTextInput {
                 Some(key),
                 None,
                 index_target,
-            )?;
+            ) {
+                Ok(candidate) => candidate,
+                Err(RangeTextInputError::SurfaceCapacity) => {
+                    return self.require_capacity_fallback_commit(cx);
+                }
+                Err(error) => return Err(error),
+            };
             self.commit_terminal_response_publication(candidate, cx);
             return Ok(());
         }
@@ -1401,7 +1489,15 @@ impl RangeTextInput {
         self.surface_candidate = None;
         self.restoration_seed = None;
         self.published_restoration = None;
-        self.desired = DesiredSurface::origin(self.config.viewport_extent, self.config.overscan);
+        let viewport_extent = self.desired.viewport_extent;
+        self.desired = DesiredSurface::origin(
+            viewport_extent,
+            super::bounded_realization_extent(
+                viewport_extent,
+                self.config.limits.max_realized_block_extent,
+            ),
+            self.config.overscan,
+        );
         cx.emit(RangeTextInputEvent::RestorationRejected);
         cx.notify();
         true
@@ -1456,6 +1552,15 @@ impl RangeTextInput {
     }
 
     pub(super) fn cancel_page_dispatch(&mut self, key: crate::PageRequestKey) {
+        self.retire_page_response_custody(key);
+        if self
+            .deferred_geometry_response
+            .as_ref()
+            .and_then(DeferredGeometryResponse::page_key)
+            == Some(key)
+        {
+            self.deferred_geometry_response = None;
+        }
         if let Some(index) = self.requests.iter().position(
             |request| matches!(request, RangeTextInputRequest::Page(page) if page.key() == key),
         ) {

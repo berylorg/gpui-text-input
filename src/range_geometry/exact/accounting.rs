@@ -1,11 +1,11 @@
 use std::mem::{size_of, size_of_val};
 
 use gpui::{
-    StreamingLayoutCharge, StreamingLayoutContinuation, StreamingLayoutFragment,
-    StreamingLayoutItemCharge, TextRun,
+    StreamingLayoutBinding, StreamingLayoutCharge, StreamingLayoutContinuation,
+    StreamingLayoutFragment, StreamingLayoutItemCharge, TextRun,
 };
 
-use crate::PageRequestKey;
+use crate::{PageRequestKey, StreamingGeometryStyle};
 
 use super::{
     ActiveJob, BlockTargetPublication, DeferredObject, DesiredTarget, ExactGeometryCheckpoint,
@@ -221,16 +221,6 @@ pub(super) fn target_counts(target: &BlockTargetPublication) -> ExactGeometryCou
     result
 }
 
-pub(super) fn post_target_retirement_counts(owner: &ExactGeometryOwner) -> ExactGeometryCounts {
-    counts(
-        owner.inputs.as_deref(),
-        None,
-        None,
-        owner.index.as_deref(),
-        None,
-    )
-}
-
 pub(super) fn add_counts(
     mut left: ExactGeometryCounts,
     right: ExactGeometryCounts,
@@ -385,15 +375,45 @@ fn add_output(
 }
 
 fn input_items(inputs: &OwnerInputs) -> usize {
+    input_items_for_style(&inputs.style)
+}
+
+pub(super) fn initial_owner_counts(
+    layout: &StreamingLayoutBinding,
+    style: &StreamingGeometryStyle,
+) -> ExactGeometryCounts {
+    let _ = layout;
+    ExactGeometryCounts {
+        owner_items: 1,
+        owner_bytes: size_of::<ExactGeometryOwner>(),
+        input_bytes: size_of::<OwnerInputs>().saturating_add(style_payload_bytes_for_style(style)),
+        input_items: input_items_for_style(style),
+        ..Default::default()
+    }
+}
+
+pub(super) fn layout_style_counts(
+    layout: &StreamingLayoutBinding,
+    style: &StreamingGeometryStyle,
+) -> (usize, usize) {
+    let _ = layout;
+    (
+        size_of::<StreamingLayoutBinding>()
+            .saturating_add(size_of::<StreamingGeometryStyle>())
+            .saturating_add(style_payload_bytes_for_style(style)),
+        input_items_for_style(style).saturating_sub(2),
+    )
+}
+
+fn input_items_for_style(style: &StreamingGeometryStyle) -> usize {
     // OwnerInputs, binding, layout binding, style, oversize presentation, its bounded presentation
     // payload, and its run collection are distinct records. Each run then owns its run record,
     // family payload, feature collection and entries, plus an optional fallback collection and
     // entries.
     7usize
-        .saturating_add(text_run_metadata_items(&inputs.style.text_run))
+        .saturating_add(text_run_metadata_items(&style.text_run))
         .saturating_add(
-            inputs
-                .style
+            style
                 .oversize
                 .runs
                 .iter()
@@ -413,7 +433,10 @@ fn text_run_metadata_items(run: &TextRun) -> usize {
 }
 
 fn style_payload_bytes(inputs: &OwnerInputs) -> usize {
-    let style = &inputs.style;
+    style_payload_bytes_for_style(&inputs.style)
+}
+
+fn style_payload_bytes_for_style(style: &StreamingGeometryStyle) -> usize {
     let mut bytes = text_run_payload_bytes(&style.text_run);
     bytes = bytes.saturating_add(style.oversize.presentation.len());
     bytes = bytes.saturating_add(

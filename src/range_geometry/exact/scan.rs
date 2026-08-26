@@ -625,42 +625,44 @@ fn admit_layout(
     let admission_items = admission.fragments.len();
     let full_transient_bytes = admission.charge.total()?;
     let full_transient_items = admission.item_charge.total()?;
-    let (transient_bytes, transient_items) = if let ActiveKind::Target { target, .. } = job.kind {
-        super::target_output::update_target_source(
-            job,
-            &admission.fragments,
-            admission.continuation,
-        );
-        if super::target_output::admission_intersects_target(
-            &admission.fragments,
-            prior,
-            target,
-            binding.line_height,
-        ) {
-            job.scanner.output_charge = super::accounting::add_fragment_charge(
-                job.scanner.output_charge,
-                admission.charge,
-            )?;
-            job.scanner.output_item_charge = super::accounting::add_fragment_item_charge(
-                job.scanner.output_item_charge,
-                admission.item_charge,
-            )?;
-            job.scanner
-                .fragments
-                .extend(admission.fragments.iter().cloned());
-            // Fragment clones share GPUI's immutable payload Arcs. Only the second initialized
-            // enum records coexist; the payload charge remains single-counted in scanner output.
-            (
-                super::accounting::fragment_record_bytes(admission_items)
-                    .saturating_add(std::mem::size_of::<StreamingLayoutContinuation>()),
-                admission_items.saturating_add(1),
-            )
+    let (transient_bytes, transient_items) =
+        if let ActiveKind::Target { target, anchor, .. } = job.kind {
+            super::target_output::update_target_source(
+                job,
+                &admission.fragments,
+                admission.continuation,
+            );
+            if super::target_output::admission_intersects_target(
+                &admission.fragments,
+                prior,
+                target,
+                anchor,
+                binding.line_height,
+            ) {
+                job.scanner.output_charge = super::accounting::add_fragment_charge(
+                    job.scanner.output_charge,
+                    admission.charge,
+                )?;
+                job.scanner.output_item_charge = super::accounting::add_fragment_item_charge(
+                    job.scanner.output_item_charge,
+                    admission.item_charge,
+                )?;
+                job.scanner
+                    .fragments
+                    .extend(admission.fragments.iter().cloned());
+                // Fragment clones share GPUI's immutable payload Arcs. Only the second initialized
+                // enum records coexist; the payload charge remains single-counted in scanner output.
+                (
+                    super::accounting::fragment_record_bytes(admission_items)
+                        .saturating_add(std::mem::size_of::<StreamingLayoutContinuation>()),
+                    admission_items.saturating_add(1),
+                )
+            } else {
+                (full_transient_bytes, full_transient_items)
+            }
         } else {
             (full_transient_bytes, full_transient_items)
-        }
-    } else {
-        (full_transient_bytes, full_transient_items)
-    };
+        };
     budget.observe(job, transient_bytes, transient_items)?;
     if retain_checkpoint && matches!(job.kind, ActiveKind::Index) {
         let checkpoint =

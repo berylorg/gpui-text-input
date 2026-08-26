@@ -24,6 +24,8 @@ impl RangeTextInput {
         let local =
             event.position - self.last_origin() + gpui::point(Pixels::ZERO, surface.scroll_block());
         let Some(hit) = surface.hit_test_composite(local) else {
+            let viewport_block = event.position.y - self.last_origin().y;
+            let _ = self.request_filler_reanchor(viewport_block, cx);
             return;
         };
         let byte_offset = match hit {

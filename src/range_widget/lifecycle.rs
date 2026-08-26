@@ -23,7 +23,11 @@ impl RangeTextInput {
                     self.validate_history_commit(intent, commit)?;
                     return self.settle_committed_history_rebind(intent, commit, window, cx);
                 }
+                if !self.try_spend_realization_credit(cx) {
+                    return Err(RangeTextInputError::Busy);
+                }
                 if !self.config.settlement_coordinator.settle_history(intent) {
+                    self.refund_realization_credit();
                     return Err(RangeTextInputError::Stale);
                 }
                 self.pending_history = None;
@@ -32,7 +36,12 @@ impl RangeTextInput {
                 return Ok(RangeHistorySettlement::Current(outcome));
             }
         }
-        self.config.settlement_coordinator.settle_history(intent);
+        if !self.try_spend_realization_credit(cx) {
+            return Err(RangeTextInputError::Busy);
+        }
+        if !self.config.settlement_coordinator.settle_history(intent) {
+            self.refund_realization_credit();
+        }
         Ok(RangeHistorySettlement::Obsolete(outcome))
     }
 
@@ -69,6 +78,40 @@ impl RangeTextInput {
     }
 
     fn settle_committed_history_rebind(
+        &mut self,
+        intent: RangeHistoryIntent,
+        commit: RangeHistoryCommit,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<RangeHistorySettlement, RangeTextInputError> {
+        if self.pending_rebind_intent.as_ref().is_some_and(|pending| {
+            matches!(pending, super::realization::PendingRebindIntent::History {
+                intent: pending_intent,
+                ..
+            } if *pending_intent == intent)
+        }) {
+            return if self.service_pending_rebind_intent(window, cx)? {
+                Ok(RangeHistorySettlement::Current(
+                    RangeHistoryOutcome::Committed(commit),
+                ))
+            } else {
+                Err(RangeTextInputError::Busy)
+            };
+        }
+        self.retain_pending_rebind_intent(super::realization::PendingRebindIntent::History {
+            intent,
+            commit,
+        })?;
+        if self.service_pending_rebind_intent(window, cx)? {
+            Ok(RangeHistorySettlement::Current(
+                RangeHistoryOutcome::Committed(commit),
+            ))
+        } else {
+            Err(RangeTextInputError::Busy)
+        }
+    }
+
+    pub(super) fn commit_pending_history_rebind(
         &mut self,
         intent: RangeHistoryIntent,
         commit: RangeHistoryCommit,
@@ -127,6 +170,50 @@ impl RangeTextInput {
     }
 
     pub(super) fn settle_committed_rebind(
+        &mut self,
+        key: crate::MutationKey,
+        outcome: crate::MutationOutcome,
+        binding: crate::RangeBinding,
+        selection: RangeSourceSelection,
+        positions: crate::MutationPositions,
+        proofs: Vec<crate::range_edit::SourcePositionProof>,
+        composition: Option<crate::ByteRange>,
+        active_loss_reason: crate::InlineObjectRealizationLossReason,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<crate::MutationSettlement, RangeTextInputError> {
+        if self.pending_rebind_intent.as_ref().is_some_and(|pending| {
+            matches!(pending, super::realization::PendingRebindIntent::Mutation {
+                key: pending_key,
+                binding: pending_binding,
+                ..
+            } if *pending_key == key && *pending_binding == binding)
+        }) {
+            return if self.service_pending_rebind_intent(window, cx)? {
+                Ok(crate::MutationSettlement::Current(outcome))
+            } else {
+                Err(RangeTextInputError::Busy)
+            };
+        }
+        self.retain_pending_rebind_intent(super::realization::PendingRebindIntent::Mutation {
+            key,
+            outcome,
+            binding,
+            selection,
+            positions,
+            proofs,
+            composition,
+            active_loss_reason,
+        })?;
+        if self.service_pending_rebind_intent(window, cx)? {
+            Ok(crate::MutationSettlement::Current(outcome))
+        } else {
+            Err(RangeTextInputError::Busy)
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn commit_pending_mutation_rebind(
         &mut self,
         key: crate::MutationKey,
         outcome: crate::MutationOutcome,
@@ -213,6 +300,24 @@ impl RangeTextInput {
             };
             return self.publish_optional_source_selection(selection, selected_object, None, cx);
         }
+        self.retain_pending_rebind_intent(super::realization::PendingRebindIntent::Direct {
+            binding,
+            selection,
+        })?;
+        if self.service_pending_rebind_intent(window, cx)? {
+            Ok(())
+        } else {
+            Err(RangeTextInputError::Busy)
+        }
+    }
+
+    pub(super) fn commit_pending_direct_rebind(
+        &mut self,
+        binding: crate::RangeBinding,
+        selection: Option<RangeSourceSelection>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), RangeTextInputError> {
         let prior_scrollbar_owner = self.scrollbar.owner;
         let next_mount = prior_scrollbar_owner
             .mount_generation
@@ -434,6 +539,16 @@ impl RangeTextInput {
                 });
         self.attached_inline_object_surface = None;
         self.mounted = false;
+        self.obsolete_realization_continuation();
+        self.deferred_geometry_response = None;
+        self.response_custody = std::collections::VecDeque::new();
+        self.active_response_processing = crate::RangeSurfaceCharge::default();
+        self.pending_target_intent = None;
+        self.pending_layout_intent = None;
+        self.pending_presentation_intent = None;
+        self.pending_rebind_intent = None;
+        self.last_realization_step.remaining = 0;
+        self.last_realization_step.reached_external_boundary = true;
         let mut edits = std::mem::replace(
             &mut self.edits,
             RangeEditCoordinator::new(self.config.binding, self.config.mutation_limits),
@@ -455,7 +570,7 @@ impl RangeTextInput {
             self.cancel_object_page_dispatch(key);
         }
         self.pending_geometry_object = None;
-        self.pending_page_aliases.clear();
+        self.pending_page_aliases = Vec::new();
         if let Some(cancel) = self.clipboard.dispose() {
             if let Some(page) = cancel.pending_text_page() {
                 self.cancel_page_dispatch(page);
@@ -487,7 +602,7 @@ impl RangeTextInput {
         self.platform_ready = None;
         self.mutation_positions = None;
         self.adopted_positions = None;
-        self.admitted_edit_proofs.clear();
+        self.admitted_edit_proofs = Vec::new();
         self.mutation_composition = None;
         self.pending_local_mutation = None;
         self.prepared_local_operation = None;
@@ -500,7 +615,10 @@ impl RangeTextInput {
             .scrollbar
             .state
             .unmount_viewport(self.scrollbar.owner, window, cx);
-        let requests = self.requests.drain(..).collect();
+        let requests = std::mem::take(&mut self.requests).into_iter().collect();
+        self.dispatched_pages.release_backing();
+        self.dispatched_object_pages.release_backing();
+        self.dispatched_mutations.release_backing();
         if let Some(loss) = active_loss {
             cx.emit(RangeTextInputEvent::InlineObjectRealizationLost(loss));
             cx.notify();
@@ -523,7 +641,7 @@ impl RangeTextInput {
             )
         });
         if self.dispatched_mutations.remove(&key) {
-            self.requests.push_back(if detached {
+            self.commit_prepared_request(if detached {
                 RangeTextInputRequest::DetachedMutation(key)
             } else {
                 RangeTextInputRequest::CancelMutation(crate::MutationCancelRequest::new(key))
@@ -532,6 +650,15 @@ impl RangeTextInput {
     }
 
     pub(super) fn cancel_object_page_dispatch(&mut self, key: crate::ObjectRequestKey) {
+        self.retire_object_response_custody(key);
+        if self
+            .deferred_geometry_response
+            .as_ref()
+            .and_then(super::geometry::DeferredGeometryResponse::object_key)
+            == Some(key)
+        {
+            self.deferred_geometry_response = None;
+        }
         if let Some(index) = self.requests.iter().position(|request| {
             matches!(request, RangeTextInputRequest::ObjectPage(request) if request.key() == key)
         }) {

@@ -6,8 +6,8 @@ use gpui::{
 use gpui_scrollbar::{Axis, ScrollDirection, ScrollbarScrollState, render_scrollbar};
 
 use super::PendingScroll;
-use crate::RangeTextInput;
 use crate::actions::TEXT_INPUT_KEY_CONTEXT;
+use crate::{RangeTextInput, RangeTextInputError};
 
 impl Render for RangeTextInput {
     fn render(&mut self, _window: &mut Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
@@ -120,31 +120,35 @@ impl RangeTextInput {
         let Some(state) = self.scrollbar_state() else {
             return;
         };
+        let current = self.target_intent_desired();
         let next = match request {
             PendingScroll::Set(offset) => offset,
             PendingScroll::Page(ScrollDirection::Backward, distance) => {
-                self.desired.target_block - distance
+                current.target_block - distance
             }
             PendingScroll::Page(ScrollDirection::Forward, distance) => {
-                self.desired.target_block + distance
+                current.target_block + distance
             }
         }
         .clamp(
             Pixels::ZERO,
             (state.content_size.height - state.viewport_bounds.size.height).max(Pixels::ZERO),
         );
-        if next == self.desired.target_block {
+        if next == current.target_block {
             return;
         }
-        let mut desired = self.desired;
+        let mut desired = current;
         desired.target_block = next;
+        desired.realization_anchor_block = next;
         desired.scroll.intra_anchor = Pixels::ZERO;
         desired.preserve_scroll_anchor = false;
         desired.reveal_caret = false;
-        let Ok(candidate) = self.prepare_target_transition(desired, None) else {
+        let Ok(_) = self.request_target_intent(
+            super::realization::PendingTargetIntent::ordinary(desired),
+            cx,
+        ) else {
             return;
         };
-        let _ = self.commit_widget_transition(candidate, Some(cx));
         self.note_scroll_activity(window, cx);
     }
 
@@ -156,7 +160,7 @@ impl RangeTextInput {
         cx.notify();
     }
 
-    fn scroll_wheel(
+    pub(super) fn scroll_wheel(
         &mut self,
         event: &gpui::ScrollWheelEvent,
         window: &mut Window,
@@ -172,19 +176,23 @@ impl RangeTextInput {
         };
         let delta = event.delta.pixel_delta(window.line_height());
         let max = (state.content_size.height - state.viewport_bounds.size.height).max(Pixels::ZERO);
-        let next = (self.desired.target_block - delta.y).clamp(Pixels::ZERO, max);
-        if next == self.desired.target_block {
+        let current = self.target_intent_desired();
+        let next = (current.target_block - delta.y).clamp(Pixels::ZERO, max);
+        if next == current.target_block {
             cx.propagate();
             return;
         }
-        let mut desired = self.desired;
+        let mut desired = current;
         desired.target_block = next;
+        desired.realization_anchor_block = next;
         desired.preserve_scroll_anchor = false;
         desired.reveal_caret = false;
-        let Ok(candidate) = self.prepare_target_transition(desired, None) else {
+        let Ok(_) = self.request_target_intent(
+            super::realization::PendingTargetIntent::ordinary(desired),
+            cx,
+        ) else {
             return;
         };
-        let _ = self.commit_widget_transition(candidate, Some(cx));
         self.note_scroll_activity(window, cx);
     }
 }
@@ -236,6 +244,24 @@ impl Element for RangeTextInputElement {
         cx: &mut App,
     ) -> RangePrepaint {
         self.input.update(cx, |input, cx| {
+            if !input.mounted {
+                return;
+            }
+            input.begin_realization_frame();
+            let _ = input.service_response_custody(window, cx);
+            let _ = input.service_pending_configuration_intent(cx);
+            let _ = input.service_pending_rebind_intent(window, cx);
+            if bounds.size.height > Pixels::ZERO && f32::from(bounds.size.height).is_finite() {
+                match input.set_realization_viewport_extent(bounds.size.height, cx) {
+                    Ok(())
+                    | Err(RangeTextInputError::Busy)
+                    | Err(RangeTextInputError::SurfaceCapacity) => {}
+                    Err(error) => {
+                        debug_assert!(false, "finite widget bounds rejected: {error}");
+                    }
+                }
+            }
+            let _ = input.service_pending_target_intent(cx);
             let _ = input.service_admitted_geometry_for_prepaint(window, cx);
         });
         let input = self.input.read(cx);

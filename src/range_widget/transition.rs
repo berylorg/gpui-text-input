@@ -32,10 +32,10 @@ pub(super) struct WidgetTransitionCandidate {
         gpui_scrollbar::ScrollbarOwnerKey,
     )>,
     effects: Vec<RangeTextInputRequest>,
+    destination_requests: VecDeque<RangeTextInputRequest>,
     events: Vec<RangeTextInputEvent>,
     active_object: Option<Option<super::ActiveInlineObject>>,
-    pointer_anchor: Option<Option<crate::SourcePosition>>,
-    requests: VecDeque<RangeTextInputRequest>,
+    pub(super) pointer_anchor: Option<Option<crate::SourcePosition>>,
     admission_charge: crate::RangeSurfaceCharge,
     reject_restoration: bool,
     settling_mutation: Option<crate::MutationKey>,
@@ -54,7 +54,9 @@ impl WidgetTransitionCandidate {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) struct WidgetAdmissionComponents {
+    pub(super) realization_owner: crate::RangeSurfaceCharge,
     pub(super) prior_surface: crate::RangeSurfaceCharge,
+    pub(super) current_realization_state: crate::RangeSurfaceCharge,
     pub(super) current_request_storage: crate::RangeSurfaceCharge,
     pub(super) mutation_request_payload: crate::RangeSurfaceCharge,
     pub(super) candidate_record: crate::RangeSurfaceCharge,
@@ -74,7 +76,9 @@ pub(super) struct WidgetAdmissionComponents {
 impl WidgetAdmissionComponents {
     pub(super) fn checked_total(self) -> Option<crate::RangeSurfaceCharge> {
         [
+            self.realization_owner,
             self.prior_surface,
+            self.current_realization_state,
             self.current_request_storage,
             self.mutation_request_payload,
             self.candidate_record,
@@ -144,8 +148,43 @@ enum TransitionConfigUpdate {
 
 pub(super) struct CommittedWidgetTransition {
     progress: ExactGeometryProgress,
-    effects: Vec<RangeTextInputRequest>,
     events: Vec<RangeTextInputEvent>,
+}
+
+fn exact_priority_block(
+    index: &crate::ExactGeometryIndex,
+    anchor: crate::SourcePosition,
+) -> Option<gpui::Pixels> {
+    let include_preceding_object = matches!(
+        anchor.gap,
+        crate::InlineObjectGap::Between { .. } | crate::InlineObjectGap::After(_)
+    );
+    index
+        .checkpoints()
+        .iter()
+        .rev()
+        .find(|checkpoint| {
+            checkpoint
+                .source()
+                .compare_in_revision(anchor)
+                .is_some_and(|ordering| {
+                    ordering.is_lt() || (!include_preceding_object && ordering.is_eq())
+                })
+        })
+        .map(crate::ExactGeometryCheckpoint::block_offset)
+}
+
+fn clamp_exact_scroll_block(desired: &mut DesiredSurface, content_height: gpui::Pixels) -> bool {
+    let max_scroll = (content_height - desired.viewport_extent).max(gpui::Pixels::ZERO);
+    desired.realization_anchor_block = desired
+        .realization_anchor_block
+        .clamp(gpui::Pixels::ZERO, content_height);
+    if desired.target_block > max_scroll {
+        desired.target_block = max_scroll;
+        true
+    } else {
+        false
+    }
 }
 
 impl RangeTextInput {
@@ -162,16 +201,50 @@ impl RangeTextInput {
             .and_then(|candidate| candidate.restoration)
             .or(self.restoration_seed);
         let mut desired = self.desired;
+        if desired.preserve_scroll_anchor {
+            let byte_len = self.config.binding.extent().byte_len();
+            if byte_len > 0 {
+                let ratio = desired.scroll.source.get() as f64 / byte_len as f64;
+                desired.target_block = gpui::px(
+                    (f64::from(f32::from(index.aggregate().content_height())) * ratio) as f32,
+                );
+                desired.realization_anchor_block = desired.target_block;
+            }
+        }
         if self.pending_select_all {
             desired.source_selection = Some(index.document_selection());
             desired.composition = None;
             desired.target_block = index.aggregate().content_height();
+            desired.realization_anchor_block = desired.target_block;
             desired.reveal_caret = true;
             desired.inline_object_interaction = self.active_object.map(|_| {
                 super::DesiredInlineObjectInteraction::Clear(
                     crate::InlineObjectRealizationLossReason::SelectionChanged,
                 )
             });
+        }
+        if restoration.is_none()
+            && matches!(
+                desired.priority(),
+                crate::RangeRealizationPriority::Caret
+                    | crate::RangeRealizationPriority::Ime
+                    | crate::RangeRealizationPriority::DirectedSelection
+                    | crate::RangeRealizationPriority::ActiveInteraction
+            )
+            && let Some(anchor) = desired.source_selection.map(|selection| selection.head)
+            && (anchor.byte_offset.get() == self.config.binding.extent().byte_len()
+                || self
+                    .surface
+                    .as_ref()
+                    .is_none_or(|surface| surface.position_for_source_position(anchor).is_none()))
+        {
+            desired.realization_anchor_block = exact_priority_block(index, anchor)
+                .ok_or(RangeTextInputError::IncompleteSurface)?;
+        }
+        if clamp_exact_scroll_block(&mut desired, index.aggregate().content_height())
+            && restoration.is_none()
+        {
+            desired.preserve_scroll_anchor = false;
         }
         let committed_next_id = self
             .next_id
@@ -258,12 +331,6 @@ impl RangeTextInput {
                 (Some(active), events)
             }
         };
-        let prior = self
-            .surface
-            .as_ref()
-            .map_or(crate::RangeSurfaceCharge::default(), |surface| {
-                surface.charge()
-            });
         let event_bytes = events
             .capacity()
             .checked_mul(size_of::<RangeTextInputEvent>())
@@ -274,21 +341,15 @@ impl RangeTextInput {
         let candidate_items = 1usize
             .checked_add(events.capacity())
             .ok_or(RangeTextInputError::SurfaceCapacity)?;
+        let current = self.current_realization_ownership();
         let admission_charge = crate::RangeSurfaceCharge {
-            bytes: prior
-                .bytes
-                .checked_add(
-                    self.requests
-                        .capacity()
-                        .checked_mul(size_of::<RangeTextInputRequest>())
-                        .ok_or(RangeTextInputError::SurfaceCapacity)?,
-                )
-                .and_then(|bytes| bytes.checked_add(candidate_bytes))
+            bytes: current
+                .owned_bytes
+                .checked_add(candidate_bytes)
                 .ok_or(RangeTextInputError::SurfaceCapacity)?,
-            items: prior
-                .items
-                .checked_add(self.requests.capacity())
-                .and_then(|items| items.checked_add(candidate_items))
+            items: current
+                .owned_items
+                .checked_add(candidate_items)
                 .ok_or(RangeTextInputError::SurfaceCapacity)?,
         };
         if admission_charge.bytes > self.config.limits.max_surface_bytes
@@ -323,11 +384,25 @@ impl RangeTextInput {
     pub(super) fn prepare_index_transition(
         &self,
     ) -> Result<WidgetTransitionCandidate, RangeTextInputError> {
+        self.prepare_index_transition_with_desired(None)
+    }
+
+    pub(super) fn prepare_restoration_index_transition(
+        &self,
+        desired: DesiredSurface,
+    ) -> Result<WidgetTransitionCandidate, RangeTextInputError> {
+        self.prepare_index_transition_with_desired(Some(desired))
+    }
+
+    fn prepare_index_transition_with_desired(
+        &self,
+        desired: Option<DesiredSurface>,
+    ) -> Result<WidgetTransitionCandidate, RangeTextInputError> {
         let (job_id, request_id, committed_next_id) = self.transition_ids()?;
         let geometry = self.geometry.prepare_start_index(job_id, request_id)?;
         self.prepare_widget_transition(
             geometry,
-            None,
+            desired,
             None,
             None,
             None,
@@ -337,6 +412,7 @@ impl RangeTextInput {
         )
     }
 
+    #[cfg(test)]
     pub(super) fn prepare_target_transition(
         &self,
         desired: DesiredSurface,
@@ -349,33 +425,17 @@ impl RangeTextInput {
         )
     }
 
-    pub(super) fn prepare_pointer_target_transition(
-        &self,
-        desired: DesiredSurface,
-        pointer_anchor: Option<crate::SourcePosition>,
-    ) -> Result<WidgetTransitionCandidate, RangeTextInputError> {
-        let mut candidate = self.prepare_target_transition(desired, None)?;
-        candidate.pointer_anchor = Some(pointer_anchor);
-        Ok(candidate)
-    }
-
+    #[cfg(test)]
     pub(super) fn prepare_focus_loss_transition(
         &self,
-        mut desired: DesiredSurface,
     ) -> Result<WidgetTransitionCandidate, RangeTextInputError> {
-        desired.composition = None;
-        let active_transition = if self
-            .attached_inline_object_surface
-            .is_some_and(|(_, anchor)| {
-                self.active_object.map(|active| active.anchor) == Some(anchor)
-            }) {
-            ActiveObjectTransition::Preserve
-        } else {
-            ActiveObjectTransition::Clear(crate::InlineObjectRealizationLossReason::FocusLost)
-        };
-        let mut candidate =
-            self.prepare_interaction_target_transition(desired, None, active_transition)?;
-        candidate.pointer_anchor = Some(None);
+        let intent = self.focus_loss_intent();
+        let mut candidate = self.prepare_interaction_target_transition(
+            intent.desired,
+            intent.restoration,
+            intent.interaction,
+        )?;
+        candidate.pointer_anchor = intent.pointer_anchor;
         Ok(candidate)
     }
 
@@ -385,18 +445,63 @@ impl RangeTextInput {
         restoration: Option<crate::RangeRestorationSeed>,
         interaction: ActiveObjectTransition,
     ) -> Result<WidgetTransitionCandidate, RangeTextInputError> {
+        let mut desired = desired;
+        if let Some(index) = self.geometry.index()
+            && clamp_exact_scroll_block(&mut desired, index.aggregate().content_height())
+            && restoration.is_none()
+        {
+            desired.preserve_scroll_anchor = false;
+        }
+        if restoration.is_none()
+            && matches!(
+                desired.priority(),
+                crate::RangeRealizationPriority::Caret
+                    | crate::RangeRealizationPriority::Ime
+                    | crate::RangeRealizationPriority::DirectedSelection
+                    | crate::RangeRealizationPriority::ActiveInteraction
+            )
+            && let (Some(selection), Some(index)) =
+                (desired.source_selection, self.geometry.index())
+        {
+            let byte_len = self.config.binding.extent().byte_len();
+            if let Some((block, visible_start, visible_end)) =
+                self.interactive_surface().and_then(|surface| {
+                    surface
+                        .position_for_source_position(selection.head)
+                        .map(|position| {
+                            (
+                                position.y,
+                                surface.scroll_block(),
+                                surface.scroll_block() + desired.realization_extent,
+                            )
+                        })
+                })
+            {
+                if block < visible_start || block >= visible_end {
+                    desired.realization_anchor_block = block;
+                }
+            } else if byte_len > 0 {
+                desired.realization_anchor_block = exact_priority_block(index, selection.head)
+                    .ok_or(RangeTextInputError::IncompleteSurface)?;
+            }
+        }
         let (job_id, request_id, committed_next_id) = self.transition_ids()?;
         let target_anchor = restoration.map(|seed| seed.scroll.position).or_else(|| {
-            desired
-                .reveal_caret
-                .then_some(desired.source_selection)
-                .flatten()
-                .map(|selection| selection.head)
-                .filter(|position| {
-                    let offset = position.byte_offset.get();
-                    (offset == 0 || offset == self.config.binding.extent().byte_len())
-                        && !matches!(position.gap, crate::InlineObjectGap::NoObjects)
-                })
+            matches!(
+                desired.priority(),
+                crate::RangeRealizationPriority::Caret
+                    | crate::RangeRealizationPriority::Ime
+                    | crate::RangeRealizationPriority::DirectedSelection
+                    | crate::RangeRealizationPriority::ActiveInteraction
+            )
+            .then_some(desired.source_selection)
+            .flatten()
+            .map(|selection| selection.head)
+            .filter(|anchor| {
+                self.surface
+                    .as_ref()
+                    .is_none_or(|surface| surface.position_for_source_position(*anchor).is_none())
+            })
         });
         let geometry = self.geometry.prepare_target_replacement(
             job_id,
@@ -411,7 +516,21 @@ impl RangeTextInput {
             restoration,
         };
         let (surface_candidate, target_publication) = if geometry.terminal_target().is_some() {
-            match self.prepare_terminal_target_publication(&geometry, state)? {
+            let preparation = match self.prepare_terminal_target_publication(&geometry, state) {
+                Ok(preparation) => preparation,
+                Err(RangeTextInputError::SurfaceCapacity) => {
+                    let fallback = desired
+                        .next_capacity_fallback(self.config.layout.line_height)
+                        .ok_or(RangeTextInputError::SurfaceCapacity)?;
+                    return self.prepare_interaction_target_transition(
+                        fallback,
+                        restoration,
+                        interaction,
+                    );
+                }
+                Err(error) => return Err(error),
+            };
+            match preparation {
                 TerminalTargetPreparation::Retarget(desired) => {
                     return self.prepare_interaction_target_transition(
                         desired,
@@ -424,7 +543,7 @@ impl RangeTextInput {
         } else {
             (Some(state), None)
         };
-        self.prepare_widget_transition(
+        let candidate = self.prepare_widget_transition(
             geometry,
             Some(desired),
             surface_candidate,
@@ -433,13 +552,23 @@ impl RangeTextInput {
             committed_next_id,
             interaction,
             None,
-        )
+        );
+        match candidate {
+            Err(RangeTextInputError::SurfaceCapacity) => {
+                let fallback = desired
+                    .next_capacity_fallback(self.config.layout.line_height)
+                    .ok_or(RangeTextInputError::SurfaceCapacity)?;
+                self.prepare_interaction_target_transition(fallback, restoration, interaction)
+            }
+            result => result,
+        }
     }
 
     pub(super) fn prepare_layout_transition(
         &self,
         layout: gpui::StreamingLayoutBinding,
         style: crate::StreamingGeometryStyle,
+        target: Option<super::realization::PendingTargetIntent>,
     ) -> Result<WidgetTransitionCandidate, RangeTextInputError> {
         let (job_id, request_id, committed_next_id) = self.transition_ids()?;
         let geometry = self.geometry.prepare_layout_and_index(
@@ -448,23 +577,32 @@ impl RangeTextInput {
             job_id,
             request_id,
         )?;
-        let mut desired = self.desired;
-        desired.preserve_scroll_anchor = true;
-        self.prepare_widget_transition(
+        let mut desired = target.map_or(self.desired, |intent| intent.desired);
+        if target.is_none() {
+            desired.preserve_scroll_anchor = true;
+        }
+        let mut candidate = self.prepare_widget_transition(
             geometry,
             Some(desired),
             None,
             None,
             Some(TransitionConfigUpdate::Layout(layout, style)),
             committed_next_id,
-            ActiveObjectTransition::Preserve,
+            target.map_or(ActiveObjectTransition::Preserve, |intent| {
+                intent.interaction
+            }),
             None,
-        )
+        )?;
+        if let Some(pointer_anchor) = target.and_then(|intent| intent.pointer_anchor) {
+            candidate.pointer_anchor = Some(pointer_anchor);
+        }
+        Ok(candidate)
     }
 
     pub(super) fn prepare_presentation_transition(
         &self,
         presentation_generation: crate::PresentationGeneration,
+        target: Option<super::realization::PendingTargetIntent>,
     ) -> Result<WidgetTransitionCandidate, RangeTextInputError> {
         let (job_id, request_id, committed_next_id) = self.transition_ids()?;
         let geometry = self.geometry.prepare_presentation_and_index(
@@ -472,9 +610,11 @@ impl RangeTextInput {
             job_id,
             request_id,
         )?;
-        let mut desired = self.desired;
-        desired.preserve_scroll_anchor = true;
-        self.prepare_widget_transition(
+        let mut desired = target.map_or(self.desired, |intent| intent.desired);
+        if target.is_none() {
+            desired.preserve_scroll_anchor = true;
+        }
+        let mut candidate = self.prepare_widget_transition(
             geometry,
             Some(desired),
             None,
@@ -483,9 +623,15 @@ impl RangeTextInput {
                 presentation_generation,
             )),
             committed_next_id,
-            ActiveObjectTransition::Preserve,
+            target.map_or(ActiveObjectTransition::Preserve, |intent| {
+                intent.interaction
+            }),
             None,
-        )
+        )?;
+        if let Some(pointer_anchor) = target.and_then(|intent| intent.pointer_anchor) {
+            candidate.pointer_anchor = Some(pointer_anchor);
+        }
+        Ok(candidate)
     }
 
     pub(super) fn prepare_rebind_transition(
@@ -509,7 +655,14 @@ impl RangeTextInput {
             job_id,
             request_id,
         )?;
-        let mut desired = DesiredSurface::origin(self.config.viewport_extent, self.config.overscan);
+        let mut desired = DesiredSurface::origin(
+            self.config.viewport_extent,
+            super::bounded_realization_extent(
+                self.config.viewport_extent,
+                self.config.limits.max_realized_block_extent,
+            ),
+            self.config.overscan,
+        );
         desired.source_selection = selection;
         desired.scroll.source = selection.map_or(crate::ByteOffset::new(0), |selection| {
             selection.head.byte_offset
@@ -860,13 +1013,23 @@ impl RangeTextInput {
         let destination_capacity = surviving_requests
             .checked_add(effects.len())
             .ok_or(RangeTextInputError::SurfaceCapacity)?;
-        let requests = VecDeque::with_capacity(destination_capacity);
+        let max_queued_requests = super::checked_request_capacity(&self.config)
+            .ok_or(RangeTextInputError::SurfaceCapacity)?;
+        if destination_capacity > max_queued_requests {
+            return Err(RangeTextInputError::SurfaceCapacity);
+        }
+        let destination_requests = VecDeque::with_capacity(max_queued_requests);
+        if destination_requests.capacity() > max_queued_requests {
+            return Err(RangeTextInputError::SurfaceCapacity);
+        }
+        let destination_request_bytes = checked_capacity_product(
+            destination_requests.capacity(),
+            size_of::<RangeTextInputRequest>(),
+        )?;
         let effect_bytes =
             checked_capacity_product(effects.capacity(), size_of::<RangeTextInputRequest>())?;
         let event_bytes =
             checked_capacity_product(events.capacity(), size_of::<RangeTextInputEvent>())?;
-        let destination_request_bytes =
-            checked_capacity_product(requests.capacity(), size_of::<RangeTextInputRequest>())?;
         let proof_bytes = checked_capacity_product(
             adopted_mutation
                 .as_ref()
@@ -888,9 +1051,13 @@ impl RangeTextInput {
                 surface.charge()
             });
         let mutation_request_payload =
-            queued_mutation_payload_charge(self.requests.iter().chain(effects.iter()))?;
+            queued_request_payload_charge(self.requests.iter().chain(effects.iter()))?;
+        let current_realization_state = self.current_auxiliary_realization_charge()?;
+        let current_resident_payload = self.non_surface_resident_charge()?;
         let admission_components = WidgetAdmissionComponents {
+            realization_owner: Self::realization_owner_charge(),
             prior_surface: prior_charge,
+            current_realization_state,
             current_request_storage: crate::RangeSurfaceCharge {
                 bytes: current_request_bytes,
                 items: self.requests.capacity(),
@@ -901,11 +1068,11 @@ impl RangeTextInput {
                 items: 1,
             },
             geometry: crate::RangeSurfaceCharge {
-                bytes: geometry.retained_bytes(),
-                items: geometry.retained_items(),
+                bytes: geometry.admission_required_bytes(),
+                items: geometry.admission_required_items(),
             },
             resident_payload: target_publication.as_ref().map_or(
-                crate::RangeSurfaceCharge::default(),
+                current_resident_payload,
                 PreparedTargetPublication::resident_payload_charge,
             ),
             publication_allocation: target_publication.as_ref().map_or(
@@ -943,7 +1110,7 @@ impl RangeTextInput {
             detached_edit_storage: crate::RangeSurfaceCharge { bytes: 0, items: 0 },
             destination_request_storage: crate::RangeSurfaceCharge {
                 bytes: destination_request_bytes,
-                items: requests.capacity(),
+                items: destination_requests.capacity(),
             },
             proof_storage: crate::RangeSurfaceCharge {
                 bytes: proof_bytes,
@@ -953,11 +1120,27 @@ impl RangeTextInput {
         let admission_charge = admission_components
             .checked_total()
             .ok_or(RangeTextInputError::SurfaceCapacity)?;
+        let final_publication_charge = target_publication
+            .as_ref()
+            .map(PreparedTargetPublication::final_charge)
+            .map(|publication| {
+                Ok::<_, RangeTextInputError>(crate::RangeSurfaceCharge {
+                    bytes: Self::realization_owner_charge()
+                        .bytes
+                        .checked_add(publication.bytes)
+                        .ok_or(RangeTextInputError::SurfaceCapacity)?,
+                    items: Self::realization_owner_charge()
+                        .items
+                        .checked_add(publication.items)
+                        .ok_or(RangeTextInputError::SurfaceCapacity)?,
+                })
+            })
+            .transpose()?;
         if admission_charge.bytes > self.config.limits.max_surface_bytes
             || admission_charge.items > self.config.limits.max_surface_items
-            || target_publication.as_ref().is_some_and(|publication| {
-                publication.final_charge().bytes > self.config.limits.max_surface_bytes
-                    || publication.final_charge().items > self.config.limits.max_surface_items
+            || final_publication_charge.is_some_and(|publication| {
+                publication.bytes > self.config.limits.max_surface_bytes
+                    || publication.items > self.config.limits.max_surface_items
             })
         {
             return Err(RangeTextInputError::SurfaceCapacity);
@@ -981,10 +1164,10 @@ impl RangeTextInput {
             edit_disposal,
             scrollbar_replacement: None,
             effects,
+            destination_requests,
             events,
             active_object,
             pointer_anchor: None,
-            requests,
             admission_charge,
             reject_restoration,
             settling_mutation,
@@ -1033,19 +1216,19 @@ impl RangeTextInput {
             replacement_edits,
             edit_disposal,
             scrollbar_replacement,
-            effects,
+            mut effects,
+            mut destination_requests,
             events,
             active_object,
             pointer_anchor,
-            requests,
             admission_charge,
             reject_restoration,
             settling_mutation,
             adopted_mutation,
             ..
         } = candidate;
-        let mut prior_requests = std::mem::replace(&mut self.requests, requests);
-        while let Some(request) = prior_requests.pop_front() {
+        let prior_requests = std::mem::take(&mut self.requests);
+        for request in prior_requests {
             if request_survives_transition(
                 &request,
                 geometry.release(),
@@ -1055,9 +1238,11 @@ impl RangeTextInput {
                 edit_disposal,
                 rebind_binding_from_update(&config_update).is_some(),
             ) {
-                self.requests.push_back(request);
+                destination_requests.push_back(request);
             }
         }
+        debug_assert!(destination_requests.len() <= destination_requests.capacity());
+        self.requests = destination_requests;
         let successor_page = geometry.page_request();
         let start = self.geometry.commit_prepared_transition(geometry);
         self.next_id = committed_next_id;
@@ -1081,6 +1266,9 @@ impl RangeTextInput {
             self.desired = desired;
         }
         let committed_rebind_binding = rebind_binding_from_update(&config_update);
+        if config_update.is_some() {
+            self.obsolete_realization_continuation();
+        }
         match config_update {
             Some(TransitionConfigUpdate::Layout(layout, style)) => {
                 self.config.layout = layout;
@@ -1091,15 +1279,19 @@ impl RangeTextInput {
             }
             Some(TransitionConfigUpdate::Rebind { binding, .. }) => {
                 self.config.binding = binding;
+                self.pending_target_intent = None;
+                self.pending_layout_intent = None;
+                self.pending_presentation_intent = None;
                 self.pending_local_mutation = None;
                 self.prepared_local_operation = None;
                 self.pending_select_all = false;
                 self.mutation_positions = None;
                 self.adopted_positions = None;
-                self.admitted_edit_proofs.clear();
+                self.admitted_edit_proofs = Vec::new();
                 self.mutation_composition = None;
                 self.pending_geometry_object = None;
-                self.pending_page_aliases.clear();
+                self.pending_page_aliases = Vec::new();
+                self.response_custody.clear();
                 self.pending_clipboard_page = None;
                 self.clipboard_cut_proofs = None;
                 self.segmentation = None;
@@ -1148,14 +1340,21 @@ impl RangeTextInput {
         }
         self.surface_candidate = surface_candidate;
         if reject_restoration {
+            let viewport_extent = self.desired.viewport_extent;
             self.active_geometry = None;
             self.pending_geometry_page = None;
             self.pending_geometry_object = None;
             self.surface_candidate = None;
             self.restoration_seed = None;
             self.published_restoration = None;
-            self.desired =
-                DesiredSurface::origin(self.config.viewport_extent, self.config.overscan);
+            self.desired = DesiredSurface::origin(
+                viewport_extent,
+                super::bounded_realization_extent(
+                    viewport_extent,
+                    self.config.limits.max_realized_block_extent,
+                ),
+                self.config.overscan,
+            );
         }
         match start.progress() {
             ExactGeometryProgress::Scanning => {
@@ -1185,9 +1384,12 @@ impl RangeTextInput {
             self.admitted_edit_proofs = proofs;
         }
         self.last_surface_admission = Some(admission_charge);
+        self.observe_surface_admission_peak(admission_charge);
+        for effect in effects.drain(..) {
+            self.commit_prepared_request(effect);
+        }
         CommittedWidgetTransition {
             progress: start.progress(),
-            effects,
             events,
         }
     }
@@ -1197,10 +1399,7 @@ impl RangeTextInput {
         committed: CommittedWidgetTransition,
         cx: Option<&mut Context<Self>>,
     ) -> ExactGeometryProgress {
-        for effect in committed.effects {
-            debug_assert!(self.requests.len() < self.requests.capacity());
-            self.requests.push_back(effect);
-        }
+        self.observe_realization_ownership();
         if let Some(cx) = cx {
             for event in committed.events {
                 cx.emit(event);
@@ -1211,6 +1410,21 @@ impl RangeTextInput {
     }
 
     fn commit_geometry_retirement(&mut self, release: &crate::ExactGeometryRelease) {
+        let retires_deferred = self
+            .deferred_geometry_response
+            .as_ref()
+            .is_some_and(|response| {
+                response
+                    .page_key()
+                    .is_some_and(|key| release.pages.contains(&key))
+                    || response
+                        .object_key()
+                        .is_some_and(|key| release.object_pages.contains(&key))
+            });
+        let mut retires_response_custody = false;
+        if retires_deferred {
+            self.deferred_geometry_response = None;
+        }
         if self.pending_geometry_page.as_ref().is_some_and(|pending| {
             release.jobs.contains(&pending.job) || release.pages.contains(&pending.request.key())
         }) {
@@ -1227,14 +1441,24 @@ impl RangeTextInput {
             self.pending_geometry_object = None;
         }
         for key in &release.pages {
+            let retained = self.response_custody.len();
+            self.retire_page_response_custody(*key);
+            retires_response_custody |= self.response_custody.len() != retained;
             self.remove_queued_page(*key);
             self.dispatched_pages.remove(key);
             let _ = self.residency.cancel(*key);
         }
         for key in &release.object_pages {
+            let retained = self.response_custody.len();
+            self.retire_object_response_custody(*key);
+            retires_response_custody |= self.response_custody.len() != retained;
             self.remove_queued_object_page(*key);
             self.dispatched_object_pages.remove(key);
             let _ = self.object_residency.cancel(*key);
+        }
+        if retires_deferred || retires_response_custody {
+            self.realization_frame_generation = self.realization_frame_generation.wrapping_add(1);
+            self.realization_continuation_scheduled = false;
         }
     }
 
@@ -1354,7 +1578,7 @@ fn checked_capacity_product(count: usize, width: usize) -> Result<usize, RangeTe
         .ok_or(RangeTextInputError::SurfaceCapacity)
 }
 
-fn queued_mutation_payload_charge<'a, I>(
+pub(super) fn queued_request_payload_charge<'a, I>(
     requests: I,
 ) -> Result<crate::RangeSurfaceCharge, RangeTextInputError>
 where
@@ -1362,6 +1586,18 @@ where
 {
     let mut total = crate::RangeSurfaceCharge::default();
     for (index, request) in requests.clone().enumerate() {
+        if let RangeTextInputRequest::ClipboardWrite(write) = request {
+            let (bytes, items) = write.payload_allocation_charge();
+            total.bytes = total
+                .bytes
+                .checked_add(bytes)
+                .ok_or(RangeTextInputError::SurfaceCapacity)?;
+            total.items = total
+                .items
+                .checked_add(items)
+                .ok_or(RangeTextInputError::SurfaceCapacity)?;
+            continue;
+        }
         let page = match request {
             RangeTextInputRequest::MutationSourcePage(request)
             | RangeTextInputRequest::MutationProposalPage(request) => request.page(),

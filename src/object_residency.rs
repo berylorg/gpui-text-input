@@ -179,6 +179,10 @@ impl PreparedObjectPageAdmission {
         self.retained_items
     }
 
+    pub(crate) fn into_page(self) -> ObjectPage {
+        self.page
+    }
+
     pub(crate) fn projected_resident_pages<'a>(
         &'a self,
         residency: &'a ObjectResidency,
@@ -253,6 +257,47 @@ pub(crate) fn page_proves_gap(page: &ObjectPage, position: SourcePosition) -> bo
 }
 
 impl ObjectResidency {
+    pub(crate) fn checked_initial_owner_storage_charge(
+        limits: ObjectResidencyLimits,
+    ) -> Option<crate::RangeSurfaceCharge> {
+        Some(crate::RangeSurfaceCharge {
+            bytes: std::mem::size_of::<Self>()
+                .checked_add(
+                    limits
+                        .max_resident_pages()
+                        .checked_mul(std::mem::size_of::<ObjectPage>())?,
+                )?
+                .checked_add(
+                    limits
+                        .max_pending_requests()
+                        .checked_mul(std::mem::size_of::<ObjectRequestKey>())?,
+                )?
+                .checked_add(
+                    limits
+                        .max_pending_requests()
+                        .checked_mul(std::mem::size_of::<ObjectRequestKey>())?,
+                )?,
+            items: 1usize
+                .checked_add(limits.max_resident_pages())?
+                .checked_add(limits.max_pending_requests())?
+                .checked_add(limits.max_pending_requests())?,
+        })
+    }
+
+    pub(crate) fn owner_storage_charge(&self) -> crate::RangeSurfaceCharge {
+        crate::RangeSurfaceCharge {
+            bytes: std::mem::size_of::<Self>()
+                + (self.resident.capacity() - self.resident.len())
+                    * std::mem::size_of::<ObjectPage>()
+                + self.pending.capacity() * std::mem::size_of::<ObjectRequestKey>()
+                + self.cancelled.capacity() * std::mem::size_of::<ObjectRequestKey>(),
+            items: 1
+                + (self.resident.capacity() - self.resident.len())
+                + self.pending.capacity()
+                + self.cancelled.capacity(),
+        }
+    }
+
     /// Creates an empty projection for one exact source and presentation generation.
     pub fn new(
         binding: RangeBinding,
@@ -942,8 +987,14 @@ impl ObjectResidency {
     /// Releases every resident page and pending request without installing another binding.
     pub fn dispose(&mut self) -> Vec<ObjectRequestKey> {
         let cancelled = self.pending.iter().copied().collect();
-        self.clear_capacity();
-        self.cancelled.clear();
+        self.resident = VecDeque::new();
+        self.pending = VecDeque::new();
+        self.cancelled = VecDeque::new();
+        self.resident_bytes = 0;
+        self.resident_objects = 0;
+        self.resident_presentation_bytes = 0;
+        self.pending_bytes = 0;
+        self.pending_objects = 0;
         cancelled
     }
 

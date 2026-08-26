@@ -196,7 +196,7 @@ impl RangeTextInput {
         }
         self.admit_edit_positions(base_positions, text, objects)?;
         self.edits.begin(request)?;
-        self.push_request(RangeTextInputRequest::MutationBegin(request), cx);
+        self.push_request(RangeTextInputRequest::MutationBegin(request), cx)?;
         Ok(proposal.key())
     }
 
@@ -223,10 +223,10 @@ impl RangeTextInput {
         };
         match lane {
             MutationLane::Source => {
-                self.push_request(RangeTextInputRequest::MutationSourcePage(request), cx)
+                self.push_request(RangeTextInputRequest::MutationSourcePage(request), cx)?;
             }
             MutationLane::Proposal => {
-                self.push_request(RangeTextInputRequest::MutationProposalPage(request), cx)
+                self.push_request(RangeTextInputRequest::MutationProposalPage(request), cx)?;
             }
         }
         Ok(acceptance)
@@ -242,7 +242,7 @@ impl RangeTextInput {
         }
         self.edits.finish_input(finish)?;
         self.mutation_positions = Some((finish.key(), finish.intended()));
-        self.push_request(RangeTextInputRequest::MutationFinishInput(finish), cx);
+        self.push_request(RangeTextInputRequest::MutationFinishInput(finish), cx)?;
         Ok(())
     }
 
@@ -528,7 +528,7 @@ impl RangeTextInput {
         let begin = MutationBeginRequest::new(proposal, source_cursor, proposal_cursor);
         self.edits.begin(begin)?;
         self.pending_local_mutation = Some(PendingLocalMutation { key, page, finish });
-        self.push_request(RangeTextInputRequest::MutationBegin(begin), cx);
+        self.push_request(RangeTextInputRequest::MutationBegin(begin), cx)?;
         Ok(())
     }
 
@@ -601,7 +601,7 @@ impl RangeTextInput {
             self.push_request(
                 RangeTextInputRequest::CancelMutation(crate::MutationCancelRequest::new(key)),
                 cx,
-            );
+            )?;
         }
         Ok(cancellation)
     }
@@ -622,7 +622,7 @@ impl RangeTextInput {
                 return Err(error.into());
             }
         };
-        self.push_request(RangeTextInputRequest::MutationCommit(request), cx);
+        self.push_request(RangeTextInputRequest::MutationCommit(request), cx)?;
         Ok(())
     }
 
@@ -736,13 +736,19 @@ impl RangeTextInput {
                     cx,
                 );
             }
+            if !self.try_spend_realization_credit(cx) {
+                return Err(RangeTextInputError::Busy);
+            }
             if !self.config.settlement_coordinator.settle_mutation(key) {
+                self.refund_realization_credit();
                 return Err(RangeTextInputError::Stale);
             }
             let settlement = match self.edits.settle(key, outcome) {
                 Ok(settlement) => settlement,
                 Err(error) => {
-                    self.config.settlement_coordinator.reserve_mutation(key)?;
+                    let reserve = self.config.settlement_coordinator.reserve_mutation(key);
+                    self.refund_realization_credit();
+                    reserve?;
                     return Err(error.into());
                 }
             };
@@ -763,7 +769,11 @@ impl RangeTextInput {
         if self.edits.is_retired(key) {
             return Err(MutationError::ObsoleteOperation(key).into());
         }
+        if !self.try_spend_realization_credit(cx) {
+            return Err(RangeTextInputError::Busy);
+        }
         if !self.config.settlement_coordinator.settle_mutation(key) {
+            self.refund_realization_credit();
             return Err(RangeTextInputError::Stale);
         }
         self.dispatched_mutations.remove(&key);
@@ -832,8 +842,10 @@ impl RangeTextInput {
         cx: &mut Context<Self>,
     ) -> Result<(), RangeTextInputError> {
         let desired = self.desired_for_source_selection(selection, selected_object, activation)?;
-        let candidate = self.prepare_target_transition(desired, None)?;
-        self.commit_widget_transition(candidate, Some(cx));
+        let _ = self.request_target_intent(
+            super::realization::PendingTargetIntent::ordinary(desired),
+            cx,
+        )?;
         Ok(())
     }
 
@@ -847,8 +859,9 @@ impl RangeTextInput {
     ) -> Result<(), RangeTextInputError> {
         let desired =
             self.desired_for_source_selection(Some(selection), selected_object, activation)?;
-        let candidate = self.prepare_pointer_target_transition(desired, pointer_anchor)?;
-        self.commit_widget_transition(candidate, Some(cx));
+        let mut intent = super::realization::PendingTargetIntent::ordinary(desired);
+        intent.pointer_anchor = Some(pointer_anchor);
+        let _ = self.request_target_intent(intent, cx)?;
         Ok(())
     }
 
@@ -859,9 +872,16 @@ impl RangeTextInput {
         activation: Option<crate::InlineObjectInputOrigin>,
     ) -> Result<super::DesiredSurface, RangeTextInputError> {
         let mut desired = if selection.is_some() {
-            self.desired
+            self.target_intent_desired()
         } else {
-            super::DesiredSurface::origin(self.config.viewport_extent, self.config.overscan)
+            super::DesiredSurface::origin(
+                self.config.viewport_extent,
+                super::bounded_realization_extent(
+                    self.config.viewport_extent,
+                    self.config.limits.max_realized_block_extent,
+                ),
+                self.config.overscan,
+            )
         };
         desired.source_selection = selection;
         desired.composition = None;
@@ -957,9 +977,12 @@ impl RangeTextInput {
                     .map_err(|_| RangeTextInputError::Busy)?;
                 self.segmentation = Some(continuation);
                 self.segmentation_action = Some(action);
-                let resident = self.accept_page_demand(crate::PageRequest::new(key), demand, cx)?;
-                if let Some(page) = resident {
-                    self.deliver_segmentation_page(page, window, cx)?;
+                if let Err(error) =
+                    self.accept_range_continuation_demand(crate::PageRequest::new(key), demand, cx)
+                {
+                    self.segmentation = None;
+                    self.segmentation_action = None;
+                    return Err(error);
                 }
                 Ok(())
             }

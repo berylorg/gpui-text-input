@@ -547,6 +547,25 @@ impl ExactGeometryOwner {
                 successor,
             );
         }
+        let target_ready = match &candidate.kind {
+            ActiveKind::Target { target, anchor, .. } => {
+                anchor.is_some_and(|anchor| {
+                    matches!(
+                        anchor.gap,
+                        crate::InlineObjectGap::Before(_) | crate::InlineObjectGap::Between { .. }
+                    )
+                }) && super::checkpoint::target_scan_ready(&candidate.scanner, *target, *anchor)
+            }
+            ActiveKind::Index => false,
+        };
+        if target_ready {
+            let ActiveKind::Target { predecessor, .. } = candidate.kind.clone() else {
+                unreachable!("target readiness is false for index scans")
+            };
+            candidate.scanner.deferred_object = None;
+            candidate.text_page = None;
+            return self.finish_target_publication(candidate, predecessor, release, shared, budget);
+        }
         if !object_page.complete() {
             observe_prepared(&mut budget, &candidate, 0, 0)?;
             return self.finish_active_target_response(

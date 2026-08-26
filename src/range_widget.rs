@@ -10,8 +10,10 @@ mod object_surface;
 mod page_delivery;
 mod platform;
 mod pointer;
+mod realization;
 mod render;
 mod replacement;
+mod response_custody;
 mod restoration;
 mod surface;
 #[cfg(test)]
@@ -20,16 +22,12 @@ mod transition;
 mod types;
 
 pub use surface::{
-    CoherentRangeSurface, RangeSurfaceCharge, RangeSurfaceHit, RealizedInlineObjectGeometry,
-    RealizedInlineObjectPresentation, RealizedObjectGapGeometry,
+    CoherentRangeSurface, RangeSurfaceCharge, RangeSurfaceFiller, RangeSurfaceHit,
+    RealizedInlineObjectGeometry, RealizedInlineObjectPresentation, RealizedObjectGapGeometry,
 };
 pub use types::*;
 
-use std::{
-    cell::Cell,
-    collections::{HashSet, VecDeque},
-    rc::Rc,
-};
+use std::{cell::Cell, collections::VecDeque, rc::Rc};
 
 use gpui::{Bounds, Context, EventEmitter, FocusHandle, Focusable, Pixels, Subscription, Window};
 use gpui_scrollbar::{
@@ -60,14 +58,26 @@ pub struct RangeTextInput {
     dispatched_clipboard_write: Option<crate::ClipboardKey>,
     surface: Option<CoherentRangeSurface>,
     last_surface_admission: Option<RangeSurfaceCharge>,
+    last_realization_step: RangeRealizationStep,
+    realization_frame_generation: u64,
+    realization_continuation_scheduled: bool,
+    realization_high_water: RangeRealizationOwnership,
+    surface_high_water: RangeSurfaceCharge,
+    deferred_geometry_response: Option<geometry::DeferredGeometryResponse>,
+    response_custody: VecDeque<response_custody::RangeResponseCustody>,
+    active_response_processing: RangeSurfaceCharge,
+    pending_target_intent: Option<realization::PendingTargetIntent>,
+    pending_layout_intent: Option<realization::PendingLayoutIntent>,
+    pending_presentation_intent: Option<crate::PresentationGeneration>,
+    pending_rebind_intent: Option<realization::PendingRebindIntent>,
     #[cfg(test)]
     last_widget_admission_components:
         std::cell::Cell<Option<transition::WidgetAdmissionComponents>>,
     desired: DesiredSurface,
     requests: VecDeque<RangeTextInputRequest>,
-    dispatched_pages: HashSet<crate::PageRequestKey>,
-    dispatched_object_pages: HashSet<crate::ObjectRequestKey>,
-    dispatched_mutations: HashSet<crate::MutationKey>,
+    dispatched_pages: realization::DispatchedKeys<crate::PageRequestKey>,
+    dispatched_object_pages: realization::DispatchedKeys<crate::ObjectRequestKey>,
+    dispatched_mutations: realization::DispatchedKeys<crate::MutationKey>,
     active_geometry: Option<crate::GeometryJobKey>,
     pending_geometry_page: Option<geometry::PendingGeometryPage>,
     pending_geometry_object: Option<geometry::PendingGeometryObject>,
@@ -135,9 +145,14 @@ impl RangeTextInput {
             config.viewport_extent,
             config.overscan,
             config.limits.max_intra_anchor,
+            config.limits.max_realized_block_extent,
         ];
         if config.limits.page_bytes < 4
             || config.limits.platform_bytes < 4
+            || config.limits.max_surface_bytes == 0
+            || config.limits.max_surface_items == 0
+            || config.limits.max_realization_work_per_frame == 0
+            || config.limits.max_realized_block_extent <= Pixels::ZERO
             || config.viewport_extent <= Pixels::ZERO
             || config.overscan < Pixels::ZERO
             || finite_metrics
@@ -150,11 +165,132 @@ impl RangeTextInput {
                 > config.residency_limits.max_pending_bytes()
             || config.limits.page_bytes > config.residency_limits.max_pending_bytes()
             || config.limits.platform_bytes > config.residency_limits.max_pending_bytes()
+            || usize::try_from(config.limits.page_bytes).is_err()
+            || usize::try_from(config.limits.platform_bytes).is_err()
+            || usize::try_from(config.geometry_limits.max_page_bytes()).is_err()
+            || usize::try_from(config.residency_limits.max_pending_bytes()).is_err()
+            || usize::try_from(config.clipboard_limits.max_text_page_bytes()).is_err()
+            || usize::try_from(config.segmentation_limits.max_page_bytes()).is_err()
             || config.object_residency_limits.max_pending_requests() < 1
             || config.object_residency_limits.max_resident_objects()
                 > config.object_residency_limits.max_pending_objects()
             || config.object_residency_limits.max_resident_bytes()
                 > config.object_residency_limits.max_pending_bytes()
+        {
+            return Err(RangeTextInputError::InvalidLimits);
+        }
+        let initial_realization_extent = bounded_realization_extent(
+            config.viewport_extent,
+            config.limits.max_realized_block_extent,
+        );
+        let maximum_target_extent =
+            f32::from(config.limits.max_realized_block_extent) + f32::from(config.overscan);
+        let realization_owner = Self::realization_owner_charge();
+        let response_custody_capacity = config
+            .residency_limits
+            .max_pending_requests()
+            .checked_add(config.object_residency_limits.max_pending_requests())
+            .ok_or(RangeTextInputError::InvalidLimits)?;
+        let request_capacity =
+            checked_request_capacity(&config).ok_or(RangeTextInputError::InvalidLimits)?;
+        let requests = VecDeque::with_capacity(request_capacity);
+        let request_storage = RangeSurfaceCharge {
+            bytes: requests
+                .capacity()
+                .checked_mul(std::mem::size_of::<RangeTextInputRequest>())
+                .ok_or(RangeTextInputError::InvalidLimits)?,
+            items: requests.capacity(),
+        };
+        let response_custody_storage = RangeSurfaceCharge {
+            bytes: response_custody_capacity
+                .checked_mul(std::mem::size_of::<response_custody::RangeResponseCustody>())
+                .ok_or(RangeTextInputError::InvalidLimits)?,
+            items: response_custody_capacity,
+        };
+        let dispatch_charge = [
+            realization::DispatchedKeys::<crate::PageRequestKey>::checked_allocation_charge(
+                config.residency_limits.max_pending_requests(),
+            ),
+            realization::DispatchedKeys::<crate::ObjectRequestKey>::checked_allocation_charge(
+                config.object_residency_limits.max_pending_requests(),
+            ),
+            realization::DispatchedKeys::<crate::MutationKey>::checked_allocation_charge(
+                Self::MAX_QUEUED_MUTATION_REQUESTS,
+            ),
+        ]
+        .into_iter()
+        .try_fold(RangeSurfaceCharge::default(), |total, charge| {
+            let charge = charge?;
+            Some(RangeSurfaceCharge {
+                bytes: total.bytes.checked_add(charge.bytes)?,
+                items: total.items.checked_add(charge.items)?,
+            })
+        });
+        let geometry_owner_charge =
+            ExactGeometryOwner::initial_required_charge(&config.layout, &config.style)
+                .map(|(bytes, items)| RangeSurfaceCharge { bytes, items })
+                .map_err(RangeTextInputError::Geometry)?;
+        let initial_owner_charge = [
+            Some(realization_owner),
+            Some(request_storage),
+            Some(response_custody_storage),
+            dispatch_charge,
+            crate::residency::RangeResidency::checked_initial_owner_storage_charge(
+                config.residency_limits,
+            ),
+            crate::object_residency::ObjectResidency::checked_initial_owner_storage_charge(
+                config.object_residency_limits,
+            ),
+            Some(geometry_owner_charge),
+        ]
+        .into_iter()
+        .try_fold(RangeSurfaceCharge::default(), |total, charge| {
+            let charge = charge?;
+            Some(RangeSurfaceCharge {
+                bytes: total.bytes.checked_add(charge.bytes)?,
+                items: total.items.checked_add(charge.items)?,
+            })
+        });
+        let bounded_usize_ceilings = [
+            usize::try_from(config.limits.page_bytes).ok(),
+            usize::try_from(config.limits.platform_bytes).ok(),
+            usize::try_from(config.geometry_limits.max_page_bytes()).ok(),
+            usize::try_from(config.residency_limits.max_pending_bytes()).ok(),
+            usize::try_from(config.clipboard_limits.max_text_page_bytes()).ok(),
+            usize::try_from(config.segmentation_limits.max_page_bytes()).ok(),
+            Some(config.object_residency_limits.max_pending_bytes()),
+            Some(config.geometry_limits.max_retained_bytes()),
+        ];
+        if !maximum_target_extent.is_finite()
+            || config
+                .residency_limits
+                .max_resident_pages()
+                .checked_mul(2)
+                .is_none()
+            || config
+                .object_residency_limits
+                .max_resident_objects()
+                .checked_mul(2)
+                .is_none()
+            || realization_owner.bytes > config.limits.max_surface_bytes
+            || realization_owner.items > config.limits.max_surface_items
+            || initial_owner_charge.is_none_or(|charge| {
+                charge.bytes > config.limits.max_surface_bytes
+                    || charge.items > config.limits.max_surface_items
+            })
+            || dispatch_charge.is_none_or(|dispatch| {
+                realization_owner
+                    .bytes
+                    .checked_add(dispatch.bytes)
+                    .is_none_or(|bytes| bytes > config.limits.max_surface_bytes)
+                    || realization_owner
+                        .items
+                        .checked_add(dispatch.items)
+                        .is_none_or(|items| items > config.limits.max_surface_items)
+            })
+            || bounded_usize_ceilings.iter().any(|ceiling| {
+                ceiling.is_none_or(|ceiling| ceiling.checked_add(realization_owner.bytes).is_none())
+            })
         {
             return Err(RangeTextInputError::InvalidLimits);
         }
@@ -227,13 +363,40 @@ impl RangeTextInput {
             dispatched_clipboard_write: None,
             surface: None,
             last_surface_admission: None,
+            last_realization_step: RangeRealizationStep {
+                spent: 0,
+                remaining: config.limits.max_realization_work_per_frame,
+                progressed: false,
+                reached_external_boundary: false,
+            },
+            realization_frame_generation: 0,
+            realization_continuation_scheduled: false,
+            realization_high_water: RangeRealizationOwnership::default(),
+            surface_high_water: RangeSurfaceCharge::default(),
+            deferred_geometry_response: None,
+            response_custody: VecDeque::with_capacity(response_custody_capacity),
+            active_response_processing: RangeSurfaceCharge::default(),
+            pending_target_intent: None,
+            pending_layout_intent: None,
+            pending_presentation_intent: None,
+            pending_rebind_intent: None,
             #[cfg(test)]
             last_widget_admission_components: std::cell::Cell::new(None),
-            desired: DesiredSurface::origin(config.viewport_extent, config.overscan),
-            requests: VecDeque::new(),
-            dispatched_pages: HashSet::new(),
-            dispatched_object_pages: HashSet::new(),
-            dispatched_mutations: HashSet::new(),
+            desired: DesiredSurface::origin(
+                config.viewport_extent,
+                initial_realization_extent,
+                config.overscan,
+            ),
+            requests,
+            dispatched_pages: realization::DispatchedKeys::with_capacity(
+                config.residency_limits.max_pending_requests(),
+            ),
+            dispatched_object_pages: realization::DispatchedKeys::with_capacity(
+                config.object_residency_limits.max_pending_requests(),
+            ),
+            dispatched_mutations: realization::DispatchedKeys::with_capacity(
+                Self::MAX_QUEUED_MUTATION_REQUESTS,
+            ),
             active_geometry: None,
             pending_geometry_page: None,
             pending_geometry_object: None,
@@ -274,11 +437,11 @@ impl RangeTextInput {
             config,
         };
         this.start_index()?;
+        this.observe_realization_ownership();
         let focus = this.focus_handle.clone();
         this.focus_subscription = Some(cx.on_focus_out(&focus, window, |input, _, _, cx| {
-            if let Ok(candidate) = input.prepare_focus_loss_transition(input.desired) {
-                let _ = input.commit_widget_transition(candidate, Some(cx));
-            }
+            let intent = input.focus_loss_intent();
+            let _ = input.request_target_intent(intent, cx);
             cx.emit(RangeTextInputEvent::FocusLost);
             cx.notify();
         }));
@@ -333,6 +496,7 @@ impl RangeTextInput {
             }
             _ => {}
         }
+        self.observe_realization_ownership();
         Some(request)
     }
 
@@ -340,6 +504,13 @@ impl RangeTextInput {
         self.active_geometry.is_none()
             && self.pending_geometry_page.is_none()
             && self.pending_geometry_object.is_none()
+            && self.deferred_geometry_response.is_none()
+            && self.response_custody.is_empty()
+            && self.pending_target_intent.is_none()
+            && self.pending_layout_intent.is_none()
+            && self.pending_presentation_intent.is_none()
+            && self.pending_rebind_intent.is_none()
+            && !self.realization_continuation_scheduled
             && self.residency.counts().pending_requests == 0
             && self.object_residency.counts().pending_requests == 0
             && self.segmentation.is_none()
@@ -405,9 +576,10 @@ impl RangeTextInput {
         if !self.mounted {
             return Err(RangeTextInputError::NotMounted);
         }
-        let candidate = self.prepare_layout_transition(layout, style)?;
-        let progress = self.commit_widget_transition(candidate, Some(cx));
-        debug_assert_eq!(progress, crate::ExactGeometryProgress::Scanning);
+        let progress = self.request_layout_intent(layout, style, cx)?;
+        debug_assert!(
+            progress.is_none_or(|progress| { progress == crate::ExactGeometryProgress::Scanning })
+        );
         Ok(())
     }
 
@@ -420,37 +592,13 @@ impl RangeTextInput {
             return Err(RangeTextInputError::NotMounted);
         }
         if self.config.presentation_generation == presentation_generation {
+            self.pending_presentation_intent = None;
             return Ok(());
         }
-        let candidate = self.prepare_presentation_transition(presentation_generation)?;
-        let progress = self.commit_widget_transition(candidate, Some(cx));
-        debug_assert_eq!(progress, crate::ExactGeometryProgress::Scanning);
-        Ok(())
-    }
-
-    pub fn request_absolute_scroll(
-        &mut self,
-        block_offset: Pixels,
-        cx: &mut Context<Self>,
-    ) -> Result<(), RangeTextInputError> {
-        if !self.mounted {
-            return Err(RangeTextInputError::NotMounted);
-        }
-        if !f32::from(block_offset).is_finite() || block_offset < Pixels::ZERO {
-            return Err(RangeTextInputError::InvalidLimits);
-        }
-        let mut desired = self.desired;
-        desired.target_block = block_offset;
-        desired.preserve_scroll_anchor = false;
-        desired.reveal_caret = false;
-        if self.restoration.is_none() && self.restoration_seed.is_none() {
-            let candidate = self.prepare_target_transition(desired, None)?;
-            let _ = self.commit_widget_transition(candidate, Some(cx));
-        } else {
-            // Restoration owns its own exact rejection path until that task is retired.
-            self.desired = desired;
-            self.start_target(cx)?;
-        }
+        let progress = self.request_presentation_intent(presentation_generation, cx)?;
+        debug_assert!(
+            progress.is_none_or(|progress| { progress == crate::ExactGeometryProgress::Scanning })
+        );
         Ok(())
     }
 
@@ -472,9 +620,44 @@ impl RangeTextInput {
         Ok(operation)
     }
 
-    fn push_request(&mut self, request: RangeTextInputRequest, cx: &mut Context<Self>) {
+    fn push_request(
+        &mut self,
+        request: RangeTextInputRequest,
+        cx: &mut Context<Self>,
+    ) -> Result<(), RangeTextInputError> {
+        if self.requests.len() == self.requests.capacity() {
+            return Err(RangeTextInputError::SurfaceCapacity);
+        }
+        let payload = transition::queued_request_payload_charge(std::iter::once(&request))?;
+        let current = self.current_realization_ownership();
+        let peak = RangeSurfaceCharge {
+            bytes: current
+                .owned_bytes
+                .checked_add(payload.bytes)
+                .ok_or(RangeTextInputError::SurfaceCapacity)?,
+            items: current
+                .owned_items
+                .checked_add(payload.items)
+                .ok_or(RangeTextInputError::SurfaceCapacity)?,
+        };
+        if peak.bytes > self.config.limits.max_surface_bytes
+            || peak.items > self.config.limits.max_surface_items
+        {
+            return Err(RangeTextInputError::SurfaceCapacity);
+        }
+        self.observe_surface_admission_peak(peak);
         self.requests.push_back(request);
+        self.observe_realization_ownership();
         cx.notify();
+        Ok(())
+    }
+
+    pub(super) fn commit_prepared_request(&mut self, request: RangeTextInputRequest) {
+        assert!(
+            self.requests.len() < self.requests.capacity(),
+            "prepared request exceeds the admitted fixed queue"
+        );
+        self.requests.push_back(request);
     }
 
     fn mutation_queue_has_capacity(&self, key: crate::MutationKey) -> bool {
@@ -500,4 +683,29 @@ impl RangeTextInput {
             .take(Self::MAX_QUEUED_MUTATION_REQUESTS)
             .count()
     }
+}
+
+pub(super) fn bounded_realization_extent(
+    viewport_extent: Pixels,
+    max_realized_block_extent: Pixels,
+) -> Pixels {
+    viewport_extent.min(max_realized_block_extent)
+}
+
+fn checked_request_capacity(config: &RangeTextInputConfig) -> Option<usize> {
+    config
+        .residency_limits
+        .max_pending_requests()
+        .checked_add(config.residency_limits.max_resident_pages())
+        .and_then(|count| count.checked_mul(2))
+        .and_then(|count| {
+            config
+                .object_residency_limits
+                .max_pending_requests()
+                .checked_add(config.object_residency_limits.max_resident_pages())
+                .and_then(|objects| objects.checked_mul(2))
+                .and_then(|objects| count.checked_add(objects))
+        })
+        .and_then(|count| count.checked_add(RangeTextInput::MAX_QUEUED_MUTATION_REQUESTS * 2))
+        .and_then(|count| count.checked_add(16))
 }

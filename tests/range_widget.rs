@@ -24,9 +24,9 @@ use gpui_text_input::{
     PageDemand, PageDemandEnvelope, PageDirection, PageEdgeFact, PageFailure, PageId, PagePurpose,
     PageRequestId, PlatformRangeResult, PresentationGeneration, RangeBinding, RangePage,
     RangeResidency, RangeRestorationScrollAnchor, RangeRestorationSeed, RangeSelection,
-    RangeSourceSelection, RangeTextInput, RangeTextInputConfig, RangeTextInputEvent,
-    RangeTextInputLimits, RangeTextInputRequest, ResidencyLimits, SegmentationLimits,
-    SourcePosition, SourceRange, SourceRevision, StreamingGeometryStyle,
+    RangeSourceSelection, RangeSurfaceHit, RangeTextInput, RangeTextInputConfig,
+    RangeTextInputEvent, RangeTextInputLimits, RangeTextInputRequest, ResidencyLimits,
+    SegmentationLimits, SourcePosition, SourceRange, SourceRevision, StreamingGeometryStyle,
     StreamingOversizePresentation, TextInputAtomClipboardPolicy, TextInputEnterKey,
     TextInputRichPastePolicy, TextInputTheme, ensure_text_input_bindings,
 };
@@ -398,7 +398,9 @@ fn recurrent_platform_page_rejects_old_result_before_touching_new_replay(
         input.update(app, |input, cx| {
             assert!(matches!(
                 input.deliver_page(late, window, cx),
-                Err(gpui_text_input::RangeTextInputError::Stale)
+                Err(gpui_text_input::RangeTextInputError::PageResponseRejected(
+                    _
+                ))
             ));
         })
     });
@@ -576,7 +578,8 @@ fn obsolete_target_completion_cannot_publish_newer_scroll_intent(cx: &mut gpui::
     });
     let _ = drive_pages(&input, cx, source);
     input.read_with(cx, |input, _| {
-        assert!(input.surface().unwrap().scroll_block() >= px(224.));
+        let block = input.surface().unwrap().scroll_block();
+        assert_eq!(block, px(216.));
         assert!(input.is_quiescent());
     });
 }
@@ -642,7 +645,8 @@ fn config(source: &str, revision: u64) -> RangeTextInputConfig {
         mutation_limits: MutationLimits::new(8, 256).unwrap(),
         clipboard_limits: ClipboardLimits::new(1024, 32).unwrap(),
         segmentation_limits: SegmentationLimits::new(32, 64).unwrap(),
-        limits: RangeTextInputLimits::new(2 * 1024 * 1024, 32768, 32, 32, px(16.)).unwrap(),
+        limits: RangeTextInputLimits::new(2 * 1024 * 1024, 32768, 8, px(80.), 32, 32, px(16.))
+            .unwrap(),
         settlement_coordinator: gpui_text_input::RangeSettlementCoordinator::new(4).unwrap(),
         viewport_extent: px(80.),
         overscan: px(32.),
@@ -864,6 +868,44 @@ fn restoration_object_page(
     .unwrap()
 }
 
+fn forward_object_page_with_limit(
+    request: gpui_text_input::ObjectRequest,
+    facts: &[InlineObjectFact],
+    id: u64,
+    page_limit: usize,
+) -> ObjectPage {
+    let demand = request.key().demand();
+    assert_eq!(demand.direction(), ObjectDirection::Forward);
+    let eligible = facts
+        .iter()
+        .filter(|fact| demand.contains_anchor(fact.anchor()))
+        .filter(|fact| demand.cursor().is_none_or(|cursor| fact.cursor() > cursor))
+        .collect::<Vec<_>>();
+    let count = eligible.len().min(page_limit).min(demand.max_objects());
+    let objects = eligible[..count]
+        .iter()
+        .map(|fact| (*fact).clone())
+        .collect::<Vec<_>>();
+    let complete = count == eligible.len();
+    let continuation = (!complete).then(|| objects.last().unwrap().cursor());
+    ObjectPage::new(
+        ObjectPageId::new(id),
+        request.key(),
+        objects,
+        demand.cursor().map_or(
+            ObjectPageEdgeFact::EnvelopeBoundary,
+            ObjectPageEdgeFact::Continues,
+        ),
+        continuation.map_or(
+            ObjectPageEdgeFact::EnvelopeBoundary,
+            ObjectPageEdgeFact::Continues,
+        ),
+        complete,
+        continuation,
+    )
+    .unwrap()
+}
+
 fn restoration_validation_page_with_fallback(
     request: gpui_text_input::PageRequest,
     fallback: &str,
@@ -936,7 +978,12 @@ fn validate_restoration_to_first_geometry_page(
                     input.update(app, |input, cx| {
                         input
                             .deliver_object_page_in_window(page, window, cx)
-                            .unwrap()
+                            .unwrap_or_else(|error| {
+                                panic!(
+                                    "object page delivery failed: {error:?}; diagnostics: {:?}",
+                                    input.realization_diagnostics()
+                                )
+                            })
                     })
                 });
             }
@@ -984,6 +1031,7 @@ fn drive_pages(
     let mut page_id = 1;
     for _ in 0..256 {
         let request = input.update(cx, |input, _| input.take_request());
+        let had_request = request.is_some();
         match request {
             Some(RangeTextInputRequest::Page(request)) => {
                 let page = page_for(source, page_id, request);
@@ -1001,7 +1049,12 @@ fn drive_pages(
                     input.update(app, |input, cx| {
                         input
                             .deliver_object_page_in_window(page, window, cx)
-                            .unwrap()
+                            .unwrap_or_else(|error| {
+                                panic!(
+                                    "driven object page failed: {error:?}; diagnostics: {:?}",
+                                    input.realization_diagnostics()
+                                )
+                            })
                     })
                 });
             }
@@ -1010,8 +1063,17 @@ fn drive_pages(
             | Some(RangeTextInputRequest::ReleaseObjectPage(_))
             | Some(RangeTextInputRequest::CancelObjectPage(_)) => {}
             Some(request) => other.push(request),
-            None => break,
+            None if input.read_with(cx, |input, _| input.is_quiescent()) => break,
+            None => {}
         }
+        if had_request {
+            continue;
+        }
+        if input.read_with(cx, |input, _| input.is_quiescent()) {
+            break;
+        }
+        cx.update(|window, app| window.draw(app).clear());
+        cx.run_until_parked();
     }
     other
 }
@@ -1024,7 +1086,9 @@ fn drive_pages_with_objects(
 ) {
     let mut page_id = 91_000;
     for _ in 0..512 {
-        match input.update(cx, |input, _| input.take_request()) {
+        let request = input.update(cx, |input, _| input.take_request());
+        let had_request = request.is_some();
+        match request {
             Some(RangeTextInputRequest::Page(request)) => {
                 let page = page_for(source, page_id, request);
                 page_id += 1;
@@ -1049,9 +1113,26 @@ fn drive_pages_with_objects(
             | Some(RangeTextInputRequest::CancelPage(_))
             | Some(RangeTextInputRequest::ReleaseObjectPage(_))
             | Some(RangeTextInputRequest::CancelObjectPage(_)) => {}
-            None => break,
+            None if input.read_with(cx, |input, _| input.is_quiescent()) => break,
+            None => {}
             Some(request) => panic!("unexpected object geometry request: {request:?}"),
         }
+        if had_request {
+            continue;
+        }
+        let geometry_quiet = input.read_with(cx, |input, _| {
+            let diagnostics = input.realization_diagnostics();
+            diagnostics.current.queued_requests == 0
+                && diagnostics.current.active_geometry_jobs == 0
+                && diagnostics.current.pending_geometry_pages == 0
+                && diagnostics.current.pending_geometry_objects == 0
+                && diagnostics.current.candidates == 0
+        });
+        if geometry_quiet {
+            break;
+        }
+        cx.update(|window, app| window.draw(app).clear());
+        cx.run_until_parked();
     }
 }
 
@@ -1065,6 +1146,8 @@ fn drive_pages_observing_cancel(
     let mut cancellations = 0;
     let mut page_id = 81_000;
     for _ in 0..256 {
+        cx.update(|window, app| window.draw(app).clear());
+        cx.run_until_parked();
         match input.update(cx, |input, _| input.take_request()) {
             Some(RangeTextInputRequest::Page(request)) => {
                 let page = page_for(source, page_id, request);
@@ -1564,7 +1647,11 @@ fn post_validation_restoration_geometry_failure_rejects_once_and_can_retry(
     assert!(drive_pages(&input, cx, source).is_empty());
     input.read_with(cx, |input, _| {
         assert!(input.surface().is_none());
-        assert!(input.is_quiescent());
+        assert!(
+            input.is_quiescent(),
+            "restoration rejection did not retire: {:?}",
+            input.realization_diagnostics()
+        );
     });
     assert_eq!(
         events
@@ -1656,7 +1743,7 @@ fn post_validation_select_all_rejects_restoration_once_and_runs_ordinary_target(
 }
 
 #[gpui::test]
-fn post_validation_host_scroll_rejects_restoration_once_and_can_retry(
+fn post_validation_host_scroll_busy_preserves_restoration_and_geometry(
     cx: &mut gpui::TestAppContext,
 ) {
     let source = &(0..80)
@@ -1677,27 +1764,16 @@ fn post_validation_host_scroll_rejects_restoration_once_and_can_retry(
     let restoration_geometry =
         validate_restoration_to_first_geometry_page(&input, cx, source, seed);
 
-    input.update(cx, |input, cx| {
-        input.request_absolute_scroll(px(96.), cx).unwrap()
+    assert!(matches!(
+        input.update(cx, |input, cx| input.request_absolute_scroll(px(96.), cx)),
+        Err(gpui_text_input::RangeTextInputError::Busy)
+    ));
+    let page = page_for(source, 84_000, restoration_geometry);
+    cx.update(|window, app| {
+        input.update(app, |input, cx| {
+            input.deliver_page(page, window, cx).unwrap()
+        })
     });
-    let (requests, cancellations) =
-        drive_pages_observing_cancel(&input, cx, source, restoration_geometry.key());
-    assert!(requests.is_empty());
-    assert_eq!(cancellations, 1);
-    input.read_with(cx, |input, _| {
-        assert!(input.surface().unwrap().scroll_block() >= px(96.));
-        assert!(input.is_quiescent());
-    });
-    assert_eq!(
-        events
-            .borrow()
-            .iter()
-            .filter(|event| matches!(event, RangeTextInputEvent::RestorationRejected))
-            .count(),
-        1
-    );
-
-    input.update(cx, |input, cx| input.import_restoration(seed, cx).unwrap());
     assert!(drive_pages(&input, cx, source).is_empty());
     input.read_with(cx, |input, _| {
         assert_eq!(input.export_restoration(None).unwrap(), seed);
@@ -1709,12 +1785,12 @@ fn post_validation_host_scroll_rejects_restoration_once_and_can_retry(
             .iter()
             .filter(|event| matches!(event, RangeTextInputEvent::RestorationRejected))
             .count(),
-        1
+        0
     );
 }
 
 #[gpui::test]
-fn pre_validation_queued_scroll_retargets_without_host_cancellation_and_can_retry(
+fn pre_validation_queued_scroll_busy_preserves_validation_without_cancellation(
     cx: &mut gpui::TestAppContext,
 ) {
     let source = &(0..80)
@@ -1733,22 +1809,16 @@ fn pre_validation_queued_scroll_retargets_without_host_cancellation_and_can_retr
     });
     let seed = restoration_seed(source, 1, ordinary_position(0));
     input.update(cx, |input, cx| input.import_restoration(seed, cx).unwrap());
-    input.update(cx, |input, cx| {
-        input.request_absolute_scroll(px(96.), cx).unwrap()
-    });
+    assert!(matches!(
+        input.update(cx, |input, cx| input.request_absolute_scroll(px(96.), cx)),
+        Err(gpui_text_input::RangeTextInputError::Busy)
+    ));
 
     let first = input.update(cx, |input, _| input.take_request()).unwrap();
     let RangeTextInputRequest::Page(first) = first else {
-        panic!("queued validation is removed without host cancellation")
+        panic!("queued validation remains unchanged")
     };
-    assert!(
-        matches!(
-            first.key().purpose(),
-            PagePurpose::GeometryIndex | PagePurpose::GeometryTarget
-        ),
-        "unexpected first rebind page purpose: {:?}",
-        first.key().purpose()
-    );
+    assert_eq!(first.key().purpose(), PagePurpose::Restoration);
     let page = page_for(source, 84_000, first);
     cx.update(|window, app| {
         input.update(app, |input, cx| {
@@ -1757,7 +1827,7 @@ fn pre_validation_queued_scroll_retargets_without_host_cancellation_and_can_retr
     });
     assert!(drive_pages(&input, cx, source).is_empty());
     input.read_with(cx, |input, _| {
-        assert!(input.surface().unwrap().scroll_block() >= px(96.));
+        assert_eq!(input.export_restoration(None).unwrap(), seed);
         assert!(input.is_quiescent());
     });
     assert_eq!(
@@ -1766,19 +1836,12 @@ fn pre_validation_queued_scroll_retargets_without_host_cancellation_and_can_retr
             .iter()
             .filter(|event| matches!(event, RangeTextInputEvent::RestorationRejected))
             .count(),
-        1
+        0
     );
-
-    input.update(cx, |input, cx| input.import_restoration(seed, cx).unwrap());
-    assert!(drive_pages(&input, cx, source).is_empty());
-    input.read_with(cx, |input, _| {
-        assert_eq!(input.export_restoration(None).unwrap(), seed);
-        assert!(input.is_quiescent());
-    });
 }
 
 #[gpui::test]
-fn pre_validation_dispatched_text_and_object_scroll_cancel_exactly_and_can_retry(
+fn pre_validation_dispatched_scroll_busy_preserves_text_and_object_custody(
     cx: &mut gpui::TestAppContext,
 ) {
     let source = &(0..80)
@@ -1805,23 +1868,19 @@ fn pre_validation_dispatched_text_and_object_scroll_cancel_exactly_and_can_retry
             _ => None,
         })
         .expect("text validation is dispatched");
-    text_input.update(cx, |input, cx| {
-        input.request_absolute_scroll(px(96.), cx).unwrap()
-    });
     assert!(matches!(
-        text_input.update(cx, |input, _| input.take_request()),
-        Some(RangeTextInputRequest::CancelPage(key)) if key == text.key()
+        text_input.update(cx, |input, cx| input.request_absolute_scroll(px(96.), cx)),
+        Err(gpui_text_input::RangeTextInputError::Busy)
     ));
     let late = page_for(source, 84_100, text);
-    assert!(matches!(
-        cx.update(|window, app| {
-            text_input.update(app, |input, cx| input.deliver_page(late, window, cx))
-        }),
-        Err(gpui_text_input::RangeTextInputError::Stale)
-    ));
+    cx.update(|window, app| {
+        text_input.update(app, |input, cx| {
+            input.deliver_page(late, window, cx).unwrap()
+        })
+    });
     assert!(drive_pages(&text_input, cx, source).is_empty());
     text_input.read_with(cx, |input, _| {
-        assert!(input.surface().unwrap().scroll_block() >= px(96.));
+        assert_eq!(input.export_restoration(None).unwrap(), seed);
         assert!(input.is_quiescent());
     });
     assert_eq!(
@@ -1830,13 +1889,8 @@ fn pre_validation_dispatched_text_and_object_scroll_cancel_exactly_and_can_retry
             .iter()
             .filter(|event| matches!(event, RangeTextInputEvent::RestorationRejected))
             .count(),
-        1
+        0
     );
-    text_input.update(cx, |input, cx| input.import_restoration(seed, cx).unwrap());
-    assert!(drive_pages(&text_input, cx, source).is_empty());
-    text_input.read_with(cx, |input, _| {
-        assert_eq!(input.export_restoration(None).unwrap(), seed)
-    });
 
     let (object_input, cx) = cx
         .add_window_view(|window, cx| RangeTextInput::new(config(source, 1), window, cx).unwrap());
@@ -1850,29 +1904,17 @@ fn pre_validation_dispatched_text_and_object_scroll_cancel_exactly_and_can_retry
         .detach();
     });
     let object = validate_restoration_to_first_object_page(&object_input, cx, source, seed);
-    object_input.update(cx, |input, cx| {
-        input.request_absolute_scroll(px(96.), cx).unwrap()
-    });
-    let mut exact_object_cancellations = 0;
-    for _ in 0..4 {
-        match object_input.update(cx, |input, _| input.take_request()) {
-            Some(RangeTextInputRequest::CancelObjectPage(key)) if key == object.key() => {
-                exact_object_cancellations += 1;
-                break;
-            }
-            Some(RangeTextInputRequest::ReleasePage(_)) => {}
-            other => panic!("unexpected object-validation cancellation ordering: {other:?}"),
-        }
-    }
-    assert_eq!(exact_object_cancellations, 1);
-    let late = restoration_object_page(object, &[], 84_101);
     assert!(matches!(
-        object_input.update(cx, |input, cx| input.deliver_object_page(late, cx)),
-        Err(gpui_text_input::RangeTextInputError::Stale)
+        object_input.update(cx, |input, cx| input.request_absolute_scroll(px(96.), cx)),
+        Err(gpui_text_input::RangeTextInputError::Busy)
     ));
+    let late = restoration_object_page(object, &[], 84_101);
+    object_input
+        .update(cx, |input, cx| input.deliver_object_page(late, cx))
+        .unwrap();
     assert!(drive_pages(&object_input, cx, source).is_empty());
     object_input.read_with(cx, |input, _| {
-        assert!(input.surface().unwrap().scroll_block() >= px(96.));
+        assert_eq!(input.export_restoration(None).unwrap(), seed);
         assert!(input.is_quiescent());
     });
     assert_eq!(
@@ -1881,13 +1923,8 @@ fn pre_validation_dispatched_text_and_object_scroll_cancel_exactly_and_can_retry
             .iter()
             .filter(|event| matches!(event, RangeTextInputEvent::RestorationRejected))
             .count(),
-        1
+        0
     );
-    object_input.update(cx, |input, cx| input.import_restoration(seed, cx).unwrap());
-    assert!(drive_pages(&object_input, cx, source).is_empty());
-    object_input.read_with(cx, |input, _| {
-        assert_eq!(input.export_restoration(None).unwrap(), seed)
-    });
 }
 
 #[gpui::test]
@@ -1988,12 +2025,16 @@ fn pre_validation_rebind_and_dispose_distinguish_queued_from_dispatched_requests
         "unexpected first dispatched rebind effect: {first_after_rebind:?}"
     );
     let late = page_for(source, 84_201, validation);
-    assert!(matches!(
-        cx.update(|window, app| {
-            dispatched_rebind.update(app, |input, cx| input.deliver_page(late, window, cx))
-        }),
-        Err(gpui_text_input::RangeTextInputError::Stale)
-    ));
+    let late_result = cx.update(|window, app| {
+        dispatched_rebind.update(app, |input, cx| input.deliver_page(late, window, cx))
+    });
+    assert!(
+        matches!(
+            late_result,
+            Err(gpui_text_input::RangeTextInputError::Stale)
+        ),
+        "{late_result:?}"
+    );
     assert!(drive_pages(&dispatched_rebind, cx, source).is_empty());
     dispatched_rebind.read_with(cx, |input, _| assert!(input.is_quiescent()));
     assert_eq!(
@@ -2035,12 +2076,15 @@ fn pre_validation_rebind_and_dispose_distinguish_queued_from_dispatched_requests
         cx.update(|window, app| {
             dispatched_dispose.update(app, |input, cx| input.deliver_page(late, window, cx))
         }),
-        Err(gpui_text_input::RangeTextInputError::Stale)
+        Err(gpui_text_input::RangeTextInputError::PageResponseRejected(
+            _
+        ))
     ));
-    assert!(matches!(
-        dispatched_dispose.update(cx, |input, _| input.take_request()),
-        Some(RangeTextInputRequest::ReleasePage(key)) if key == validation.key()
-    ));
+    assert!(
+        dispatched_dispose
+            .update(cx, |input, _| input.take_request())
+            .is_none()
+    );
     dispatched_dispose.read_with(cx, |input, _| assert!(input.is_quiescent()));
     assert_eq!(
         dispatched_dispose_events
@@ -2683,12 +2727,11 @@ fn malformed_exact_geometry_index_text_page_terminates_and_can_restart(
         cx.update(|window, app| {
             input.update(app, |input, cx| input.deliver_page(late, window, cx))
         }),
-        Err(gpui_text_input::RangeTextInputError::Stale)
+        Err(gpui_text_input::RangeTextInputError::PageResponseRejected(
+            _
+        ))
     ));
-    assert!(matches!(
-        input.update(cx, |input, _| input.take_request()),
-        Some(RangeTextInputRequest::ReleasePage(key)) if key == request.key()
-    ));
+    assert!(input.update(cx, |input, _| input.take_request()).is_none());
     input.update(cx, |input, cx| input.set_layout(layout, style, cx).unwrap());
     cx.update(|window, app| window.draw(app).clear());
     assert!(drive_pages(&input, cx, source).is_empty());
@@ -2777,12 +2820,11 @@ fn malformed_exact_geometry_target_text_page_retains_prior_surface_and_can_resta
         cx.update(|window, app| {
             input.update(app, |input, cx| input.deliver_page(late, window, cx))
         }),
-        Err(gpui_text_input::RangeTextInputError::Stale)
+        Err(gpui_text_input::RangeTextInputError::PageResponseRejected(
+            _
+        ))
     ));
-    assert!(matches!(
-        input.update(cx, |input, _| input.take_request()),
-        Some(RangeTextInputRequest::ReleasePage(key)) if key == target.key()
-    ));
+    assert!(input.update(cx, |input, _| input.take_request()).is_none());
     input.update(cx, |input, cx| {
         input.request_absolute_scroll(px(0.), cx).unwrap()
     });
@@ -2900,12 +2942,11 @@ fn malformed_geometry_index_text_residency_conflict_terminates_and_can_restart(
         cx.update(|window, app| {
             input.update(app, |input, cx| input.deliver_page(late, window, cx))
         }),
-        Err(gpui_text_input::RangeTextInputError::Stale)
+        Err(gpui_text_input::RangeTextInputError::PageResponseRejected(
+            _
+        ))
     ));
-    assert!(matches!(
-        input.update(cx, |input, _| input.take_request()),
-        Some(RangeTextInputRequest::ReleasePage(key)) if key == conflict_request.key()
-    ));
+    assert!(input.update(cx, |input, _| input.take_request()).is_none());
     input.update(cx, |input, cx| input.set_layout(layout, style, cx).unwrap());
     assert!(drive_pages(&input, cx, &source).is_empty());
     input.read_with(cx, |input, _| {
@@ -3018,12 +3059,11 @@ fn malformed_geometry_target_text_residency_conflict_retains_surface_and_restart
         cx.update(|window, app| {
             input.update(app, |input, cx| input.deliver_page(late, window, cx))
         }),
-        Err(gpui_text_input::RangeTextInputError::Stale)
+        Err(gpui_text_input::RangeTextInputError::PageResponseRejected(
+            _
+        ))
     ));
-    assert!(matches!(
-        input.update(cx, |input, _| input.take_request()),
-        Some(RangeTextInputRequest::ReleasePage(key)) if key == conflict_request.key()
-    ));
+    assert!(input.update(cx, |input, _| input.take_request()).is_none());
     input.update(cx, |input, cx| {
         input.request_absolute_scroll(px(0.), cx).unwrap()
     });
@@ -3087,12 +3127,9 @@ fn malformed_exact_geometry_index_object_page_terminates_and_can_restart(
 
     assert!(matches!(
         input.update(cx, |input, cx| input.deliver_object_page(late, cx)),
-        Err(gpui_text_input::RangeTextInputError::Stale)
+        Err(gpui_text_input::RangeTextInputError::ObjectResponseRejected(_))
     ));
-    assert!(matches!(
-        input.update(cx, |input, _| input.take_request()),
-        Some(RangeTextInputRequest::ReleaseObjectPage(key)) if key == request.key()
-    ));
+    assert!(input.update(cx, |input, _| input.take_request()).is_none());
     input.update(cx, |input, cx| input.set_layout(layout, style, cx).unwrap());
     cx.update(|window, app| window.draw(app).clear());
     assert!(drive_pages(&input, cx, source).is_empty());
@@ -3311,12 +3348,9 @@ fn malformed_geometry_object_residency_conflict(cx: &mut gpui::TestAppContext, t
     input.read_with(cx, |input, _| assert!(input.is_quiescent()));
     assert!(matches!(
         input.update(cx, |input, cx| input.deliver_object_page(late, cx)),
-        Err(gpui_text_input::RangeTextInputError::Stale)
+        Err(gpui_text_input::RangeTextInputError::ObjectResponseRejected(_))
     ));
-    assert!(matches!(
-        input.update(cx, |input, _| input.take_request()),
-        Some(RangeTextInputRequest::ReleaseObjectPage(key)) if key == conflict_request.key()
-    ));
+    assert!(input.update(cx, |input, _| input.take_request()).is_none());
     if target {
         input.update(cx, |input, cx| {
             input.request_absolute_scroll(px(0.), cx).unwrap()
@@ -3346,7 +3380,7 @@ fn malformed_geometry_target_object_residency_conflict_retains_surface_and_resta
 }
 
 #[gpui::test]
-fn failed_successor_geometry_retains_prior_surface_and_late_page_is_released(
+fn failed_successor_geometry_retains_prior_surface_and_returns_late_page(
     cx: &mut gpui::TestAppContext,
 ) {
     let source = "prior surface";
@@ -3380,17 +3414,18 @@ fn failed_successor_geometry_retains_prior_surface_and_late_page_is_released(
     let late = page_for(successor, 99, request);
     cx.update(|window, app| {
         input.update(app, |input, cx| {
-            assert!(input.deliver_page(late, window, cx).is_err());
+            assert!(matches!(
+                input.deliver_page(late, window, cx),
+                Err(gpui_text_input::RangeTextInputError::PageResponseRejected(
+                    _
+                ))
+            ));
         })
     });
     let lifecycle = (0..8)
         .filter_map(|_| input.update(cx, |input, _| input.take_request()))
         .collect::<Vec<_>>();
-    assert!(
-        lifecycle
-            .iter()
-            .any(|request| matches!(request, RangeTextInputRequest::ReleasePage(_)))
-    );
+    assert!(lifecycle.is_empty());
     assert_eq!(
         input.read_with(cx, |input, _| input.surface().unwrap().binding()),
         prior
@@ -3492,6 +3527,105 @@ fn boundary_overlapping_object_pages_realize_wrapped_adjacent_objects_once(
             .collect::<Vec<_>>();
         assert_eq!(gaps.len(), 1);
         assert_eq!(gaps[0].caret_bounds(), realized[1].leading_caret_bounds());
+    });
+}
+
+#[gpui::test]
+fn same_anchor_objects_cross_pages_keep_order_gaps_hits_and_bounded_residency(
+    cx: &mut gpui::TestAppContext,
+) {
+    cx.update(ensure_text_input_bindings);
+    let source = "ab";
+    let facts = (0..96)
+        .map(|index| object_fact(300 + index, 1, index + 1))
+        .collect::<Vec<_>>();
+    let (input, cx) = cx.add_window_view(|window, cx| {
+        let mut configuration = config(source, 1);
+        configuration.object_residency_limits =
+            ObjectResidencyLimits::new(12, 96, 512 * 1024, 64 * 1024, 4, 96, 512 * 1024).unwrap();
+        let input = RangeTextInput::new(configuration, window, cx).unwrap();
+        input.focus(window);
+        input
+    });
+    let mut page_id = 96_000;
+    let mut delivered_object_pages = 0usize;
+    for _ in 0..128 {
+        match input.update(cx, |input, _| input.take_request()) {
+            Some(RangeTextInputRequest::Page(request)) => {
+                let page = page_for(source, page_id, request);
+                page_id += 1;
+                cx.update(|window, app| {
+                    input.update(app, |input, cx| {
+                        input.deliver_page(page, window, cx).unwrap()
+                    })
+                });
+            }
+            Some(RangeTextInputRequest::ObjectPage(request)) => {
+                let page = forward_object_page_with_limit(request, &facts, page_id, 8);
+                page_id += 1;
+                delivered_object_pages += 1;
+                cx.update(|window, app| {
+                    input.update(app, |input, cx| {
+                        input
+                            .deliver_object_page_in_window(page, window, cx)
+                            .unwrap()
+                    })
+                });
+            }
+            Some(RangeTextInputRequest::ReleasePage(_))
+            | Some(RangeTextInputRequest::CancelPage(_))
+            | Some(RangeTextInputRequest::ReleaseObjectPage(_))
+            | Some(RangeTextInputRequest::CancelObjectPage(_)) => {}
+            None => break,
+            Some(request) => panic!("unexpected same-anchor request: {request:?}"),
+        }
+    }
+
+    input.read_with(cx, |input, _| {
+        let surface = input.surface().unwrap();
+        assert!(delivered_object_pages > 1);
+        assert_eq!(surface.object_pages().len(), 12);
+        assert!(
+            surface
+                .object_pages()
+                .iter()
+                .all(|page| page.objects().len() <= 8)
+        );
+        assert_eq!(
+            surface
+                .realized_objects()
+                .iter()
+                .map(|object| object.id())
+                .collect::<Vec<_>>(),
+            facts.iter().map(InlineObjectFact::id).collect::<Vec<_>>()
+        );
+        for pair in facts.windows(2) {
+            let position = SourcePosition::new(
+                ByteOffset::new(1),
+                InlineObjectGap::between(
+                    object_neighbor(pair[0].id().get(), pair[0].order().get()),
+                    object_neighbor(pair[1].id().get(), pair[1].order().get()),
+                )
+                .unwrap(),
+            );
+            assert_eq!(
+                surface
+                    .realized_object_gaps()
+                    .iter()
+                    .filter(|gap| gap.position() == position)
+                    .count(),
+                1
+            );
+        }
+        for object in surface.realized_objects() {
+            let bounds = object.bounds();
+            let hit = surface
+                .hit_test_composite(point(bounds.origin.x + px(1.), bounds.origin.y + px(1.)));
+            assert!(matches!(hit, Some(RangeSurfaceHit::Object(hit)) if hit.id() == object.id()));
+        }
+        let diagnostics = input.realization_diagnostics();
+        assert!(diagnostics.current.resident_objects <= 96);
+        assert!(surface.object_pages().len() <= 12);
     });
 }
 
@@ -4523,7 +4657,13 @@ fn rejected_layout_replacements_preserve_active_coherent_surface_without_loss(
         assert_eq!(surface.charge(), charge);
         assert_eq!(input.last_surface_admission_charge(), admission);
         assert_eq!(surface.realized_objects()[0].id(), InlineObjectId::new(902));
-        assert!(input.is_quiescent());
+        assert_eq!(
+            input
+                .realization_diagnostics()
+                .current
+                .pending_layout_intents,
+            1
+        );
     });
     assert_eq!(events.borrow().len(), event_count);
     assert!(
@@ -4676,7 +4816,13 @@ fn rejected_presentation_replacement_preserves_active_coherent_surface_without_l
         assert_eq!(surface.geometry_key(), geometry);
         assert_eq!(surface.selection(), selection);
         assert_eq!(surface.realized_objects()[0].id(), InlineObjectId::new(904));
-        assert!(input.is_quiescent());
+        assert_eq!(
+            input
+                .realization_diagnostics()
+                .current
+                .pending_presentation_intents,
+            1
+        );
     });
     assert!(
         events
@@ -4727,9 +4873,7 @@ fn rejected_true_rebind_preserves_active_coherent_surface_without_loss(
             window,
             cx
         ))),
-        Err(gpui_text_input::RangeTextInputError::Geometry(
-            gpui_text_input::ExactGeometryError::CapacityExceeded
-        ))
+        Err(gpui_text_input::RangeTextInputError::Busy)
     ));
     input.read_with(cx, |input, _| {
         let surface = input.surface().unwrap();
@@ -4738,7 +4882,13 @@ fn rejected_true_rebind_preserves_active_coherent_surface_without_loss(
         assert_eq!(surface.binding(), binding(source, 1));
         assert_eq!(surface.selection(), selection);
         assert_eq!(surface.realized_objects()[0].id(), InlineObjectId::new(905));
-        assert!(input.is_quiescent());
+        assert_eq!(
+            input
+                .realization_diagnostics()
+                .current
+                .pending_rebind_intents,
+            1
+        );
     });
     assert!(
         events
@@ -4756,8 +4906,9 @@ fn repeated_wheel_retarget_rejection_preserves_full_publication_fingerprint(
         .map(|line| format!("line-{line:03}\n"))
         .collect::<String>();
     let mut rejected_config = config(&source, 1);
-    rejected_config.limits.max_surface_bytes = 44_536;
-    rejected_config.limits.max_surface_items = 436;
+    rejected_config.limits.max_surface_bytes = 2 * 1024 * 1024;
+    rejected_config.limits.max_surface_items = 644;
+    rejected_config.limits.max_realization_work_per_frame = 1_024;
     let (rejected, cx) =
         cx.add_window_view(|window, cx| RangeTextInput::new(rejected_config, window, cx).unwrap());
     drive_pages(&rejected, cx, &source);
@@ -4821,12 +4972,15 @@ fn repeated_rendered_scrollbar_retarget_rejection_preserves_full_publication_fin
         .map(|line| format!("line-{line:03}\n"))
         .collect::<String>();
     let mut configuration = config(&source, 1);
-    configuration.limits.max_surface_bytes = 45_000;
-    configuration.limits.max_surface_items = 430;
+    configuration.limits.max_surface_bytes = 2 * 1024 * 1024;
+    configuration.limits.max_surface_items = 644;
+    configuration.limits.max_realization_work_per_frame = 1_024;
     let (input, cx) =
         cx.add_window_view(|window, cx| RangeTextInput::new(configuration, window, cx).unwrap());
     drive_pages(&input, cx, &source);
     let events = restoration_events(&input, cx);
+    cx.update(|window, app| window.draw(app).clear());
+    cx.run_until_parked();
     cx.simulate_event(ScrollWheelEvent {
         position: point(px(1.), px(1.)),
         delta: ScrollDelta::Pixels(point(px(0.), px(-48.))),

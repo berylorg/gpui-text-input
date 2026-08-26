@@ -445,9 +445,27 @@ impl RangeTextInput {
             .caret_bounds(self.config.layout.line_height)
             .map(|bounds| bounds.origin)
         else {
+            let filler = if delta.is_positive() {
+                surface.fillers().last()
+            } else {
+                surface.fillers().next()
+            };
+            if let Some(filler) = filler {
+                let block = filler.block_start() - surface.scroll_block();
+                let _ = self.request_filler_reanchor(block, cx);
+            }
             return;
         };
         point.y += self.config.layout.line_height * f32::from(delta);
+        let crossed_filler = surface.fillers().find(|filler| {
+            point.y + self.config.layout.line_height >= filler.block_start()
+                && point.y < filler.block_end()
+        });
+        if let Some(filler) = crossed_filler {
+            let block = filler.block_start() - surface.scroll_block();
+            let _ = self.request_filler_reanchor(block, cx);
+            return;
+        }
         if let Some(crate::RangeSurfaceHit::Gap(position)) = surface.hit_test_composite(point) {
             let selection = if extend {
                 RangeSourceSelection {
@@ -459,6 +477,13 @@ impl RangeTextInput {
             };
             let selected_object = surface.object_selected_by(selection);
             let _ = self.publish_source_selection(selection, selected_object, None, cx);
+        } else if let Some(filler) = if delta.is_positive() {
+            surface.fillers().last()
+        } else {
+            surface.fillers().next()
+        } {
+            let block = filler.block_start() - surface.scroll_block();
+            let _ = self.request_filler_reanchor(block, cx);
         }
     }
     pub(super) fn move_up(&mut self, _: &MoveUp, _: &mut Window, cx: &mut Context<Self>) {

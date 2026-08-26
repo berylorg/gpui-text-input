@@ -10,6 +10,7 @@ use crate::{
 };
 
 use super::{DesiredSurface, RangeSelection};
+use super::{RangeRealizationCapacityState, RangeRealizationPriority};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct RangeSurfaceCharge {
@@ -127,6 +128,31 @@ pub enum RangeSurfaceHit {
     Object(RealizedInlineObjectGeometry),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RangeSurfaceFiller {
+    block_start: Pixels,
+    block_end: Pixels,
+    successor_block: Pixels,
+}
+
+impl RangeSurfaceFiller {
+    pub const fn block_start(self) -> Pixels {
+        self.block_start
+    }
+
+    pub const fn block_end(self) -> Pixels {
+        self.block_end
+    }
+
+    pub const fn successor_block(self) -> Pixels {
+        self.successor_block
+    }
+
+    pub fn contains(self, block: Pixels) -> bool {
+        block >= self.block_start && block < self.block_end
+    }
+}
+
 #[derive(Debug)]
 pub struct CoherentRangeSurface {
     binding: RangeBinding,
@@ -153,6 +179,9 @@ pub struct CoherentRangeSurface {
     composition_geometry: Box<[Bounds<Pixels>]>,
     caret_geometry: Option<Bounds<Pixels>>,
     placeholder: Option<SharedString>,
+    priority: RangeRealizationPriority,
+    capacity_state: RangeRealizationCapacityState,
+    fillers: [Option<RangeSurfaceFiller>; 2],
     charge: RangeSurfaceCharge,
 }
 
@@ -178,6 +207,9 @@ pub(super) struct PreparedCoherentRangeSurface {
     composition_geometry: Box<[Bounds<Pixels>]>,
     caret_geometry: Option<Bounds<Pixels>>,
     placeholder: Option<SharedString>,
+    priority: RangeRealizationPriority,
+    capacity_state: RangeRealizationCapacityState,
+    fillers: [Option<RangeSurfaceFiller>; 2],
     charge: RangeSurfaceCharge,
     candidate_charge: RangeSurfaceCharge,
 }
@@ -492,11 +524,19 @@ impl CoherentRangeSurface {
                         })
                 })
                 .flatten();
-        let anchor_block = ordinary_anchor_block
+        let explicit_scroll_block = (!desired.preserve_scroll_anchor
+            && matches!(
+                desired.priority(),
+                RangeRealizationPriority::ScrollAnchor | RangeRealizationPriority::NearbyContent
+            ))
+        .then_some(desired.target_block);
+        let anchor_block = explicit_scroll_block
+            .or(ordinary_anchor_block)
             .or_else(|| {
                 position_for_composite_fragments(target.fragments(), scroll_position)
                     .map(|position| position.y)
             })
+            .or_else(|| (!desired.preserve_scroll_anchor).then_some(desired.target_block))
             .or_else(|| {
                 // A terminal-complete target at the exact source end owns no fragment window.
                 // Its caret is on the final visual line, one line height before total content.
@@ -514,7 +554,21 @@ impl CoherentRangeSurface {
         } else {
             (desired.target_block - anchor_block).max(Pixels::ZERO)
         };
-        let scroll_block = (anchor_block + scroll_intra_anchor).max(Pixels::ZERO);
+        let max_scroll = (content_height - desired.viewport_extent).max(Pixels::ZERO);
+        let scroll_block = (anchor_block + scroll_intra_anchor)
+            .max(Pixels::ZERO)
+            .min(max_scroll);
+        let scroll_intra_anchor = (scroll_block - anchor_block).max(Pixels::ZERO);
+        let fillers = filler_for_exact_surface(desired, scroll_block, content_height);
+        let has_filler = fillers.iter().any(Option::is_some);
+        let capacity_state = match (desired.capacity_saturated, has_filler) {
+            (false, false) => RangeRealizationCapacityState::Normal,
+            (true, false) => RangeRealizationCapacityState::CapacitySaturated,
+            (false, true) => RangeRealizationCapacityState::ViewportExceedsRenderingCapacity,
+            (true, true) => {
+                RangeRealizationCapacityState::CapacitySaturatedViewportExceedsRenderingCapacity
+            }
+        };
         Ok(PreparedCoherentRangeSurface {
             binding,
             geometry: target.key().geometry(),
@@ -537,6 +591,9 @@ impl CoherentRangeSurface {
             composition_geometry: composition_geometry.into_boxed_slice(),
             caret_geometry,
             placeholder,
+            priority: desired.priority(),
+            capacity_state,
+            fillers,
             charge,
             candidate_charge,
         })
@@ -574,6 +631,9 @@ impl CoherentRangeSurface {
             composition_geometry: prepared.composition_geometry,
             caret_geometry: prepared.caret_geometry,
             placeholder: prepared.placeholder,
+            priority: prepared.priority,
+            capacity_state: prepared.capacity_state,
+            fillers: prepared.fillers,
             charge: prepared.charge,
         }
     }
@@ -636,6 +696,30 @@ impl CoherentRangeSurface {
     }
     pub const fn charge(&self) -> RangeSurfaceCharge {
         self.charge
+    }
+    pub const fn realization_priority(&self) -> RangeRealizationPriority {
+        self.priority
+    }
+    pub const fn capacity_state(&self) -> RangeRealizationCapacityState {
+        self.capacity_state
+    }
+    pub fn filler_count(&self) -> usize {
+        self.fillers
+            .iter()
+            .filter(|filler| filler.is_some())
+            .count()
+    }
+    pub const fn filler(&self) -> Option<RangeSurfaceFiller> {
+        match self.fillers[1] {
+            Some(filler) => Some(filler),
+            None => self.fillers[0],
+        }
+    }
+    pub fn fillers(&self) -> impl Iterator<Item = RangeSurfaceFiller> + '_ {
+        self.fillers.iter().flatten().copied()
+    }
+    pub fn filler_at(&self, block: Pixels) -> Option<RangeSurfaceFiller> {
+        self.fillers().find(|filler| filler.contains(block))
     }
     pub fn pages(&self) -> &[RangePage] {
         &self.pages
@@ -809,6 +893,9 @@ impl CoherentRangeSurface {
     }
 
     pub fn hit_test_composite(&self, position: Point<Pixels>) -> Option<RangeSurfaceHit> {
+        if self.filler_at(position.y).is_some() {
+            return None;
+        }
         let mut realized_index = 0usize;
         self.fragments().iter().find_map(|fragment| {
             let current_object = matches!(fragment, StreamingLayoutFragment::InlineObject(_))
@@ -950,6 +1037,31 @@ impl CoherentRangeSurface {
         }
         first_last_bounds_for_fragment_maps(self.fragments(), selected, line_height, wrap_width)
     }
+}
+
+fn filler_for_exact_surface(
+    desired: DesiredSurface,
+    scroll_block: Pixels,
+    content_height: Pixels,
+) -> [Option<RangeSurfaceFiller>; 2] {
+    let exact_remaining = (content_height - scroll_block).max(Pixels::ZERO);
+    let exact_visible = exact_remaining.min(desired.viewport_extent);
+    let visible_end = scroll_block + exact_visible;
+    let realized_start = desired
+        .realization_anchor_block
+        .clamp(scroll_block, visible_end);
+    let realized_end = (realized_start + desired.realization_extent).min(visible_end);
+    let leading = (realized_start > scroll_block).then(|| RangeSurfaceFiller {
+        block_start: scroll_block,
+        block_end: realized_start,
+        successor_block: (realized_start - desired.realization_extent).max(scroll_block),
+    });
+    let trailing = (visible_end > realized_end).then(|| RangeSurfaceFiller {
+        block_start: realized_end,
+        block_end: scroll_block + exact_visible,
+        successor_block: realized_end.min(content_height),
+    });
+    [leading, trailing]
 }
 
 fn source_position_for_byte(
@@ -1124,46 +1236,59 @@ fn gap_bounds(
 fn collect_owned_fragment_maps(
     fragments: &[StreamingLayoutFragment],
 ) -> Result<Vec<StreamingLayoutMap>, crate::RangeTextInputError> {
-    let count = fragments
-        .iter()
-        .map(|fragment| match fragment {
-            StreamingLayoutFragment::Text(fragment) => fragment.maps().len().saturating_sub(1),
-            StreamingLayoutFragment::OversizeAtom(_) | StreamingLayoutFragment::InlineObject(_) => {
-                1
-            }
-            StreamingLayoutFragment::Boundary(fragment) => match fragment.kind {
-                StreamingBoundaryKind::LogicalLine => usize::from(fragment.maps().len() > 1),
-                StreamingBoundaryKind::EndOfSource => usize::from(!fragment.maps().is_empty()),
-            },
-        })
-        .try_fold(0usize, usize::checked_add)
-        .ok_or(crate::RangeTextInputError::SurfaceCapacity)?;
-    let mut maps = Vec::with_capacity(count);
+    let mut count = 0usize;
+    let mut previous = None;
     for fragment in fragments {
-        match fragment {
-            StreamingLayoutFragment::Text(fragment) => {
-                maps.extend(
-                    fragment
-                        .maps()
-                        .iter()
-                        .copied()
-                        .take(fragment.maps().len().saturating_sub(1)),
-                );
+        for_each_owned_fragment_map(fragment, &mut |map| {
+            if previous != Some(map.logical_position) {
+                count = count.checked_add(1).unwrap_or(usize::MAX);
+                previous = Some(map.logical_position);
             }
-            StreamingLayoutFragment::OversizeAtom(fragment) => maps.push(fragment.maps()[0]),
-            StreamingLayoutFragment::InlineObject(fragment) => maps.push(fragment.maps()[0]),
-            StreamingLayoutFragment::Boundary(fragment) => match fragment.kind {
-                StreamingBoundaryKind::LogicalLine if fragment.maps().len() > 1 => {
-                    maps.push(fragment.maps()[0]);
-                }
-                StreamingBoundaryKind::EndOfSource if !fragment.maps().is_empty() => {
-                    maps.push(fragment.maps()[0]);
-                }
-                StreamingBoundaryKind::LogicalLine | StreamingBoundaryKind::EndOfSource => {}
-            },
-        }
+        });
+    }
+    if count == usize::MAX {
+        return Err(crate::RangeTextInputError::SurfaceCapacity);
+    }
+    let mut maps = Vec::with_capacity(count);
+    previous = None;
+    for fragment in fragments {
+        for_each_owned_fragment_map(fragment, &mut |map| {
+            if previous != Some(map.logical_position) {
+                maps.push(map);
+                previous = Some(map.logical_position);
+            }
+        });
     }
     Ok(maps)
+}
+
+fn for_each_owned_fragment_map(
+    fragment: &StreamingLayoutFragment,
+    visit: &mut impl FnMut(StreamingLayoutMap),
+) {
+    match fragment {
+        StreamingLayoutFragment::Text(fragment) => fragment
+            .maps()
+            .iter()
+            .copied()
+            .take(fragment.maps().len().saturating_sub(1))
+            .for_each(visit),
+        StreamingLayoutFragment::OversizeAtom(fragment) => {
+            fragment.maps().first().copied().into_iter().for_each(visit)
+        }
+        StreamingLayoutFragment::InlineObject(fragment) => {
+            fragment.maps().iter().copied().for_each(visit)
+        }
+        StreamingLayoutFragment::Boundary(fragment) => match fragment.kind {
+            StreamingBoundaryKind::LogicalLine if fragment.maps().len() > 1 => {
+                fragment.maps().first().copied().into_iter().for_each(visit)
+            }
+            StreamingBoundaryKind::EndOfSource => {
+                fragment.maps().first().copied().into_iter().for_each(visit)
+            }
+            StreamingBoundaryKind::LogicalLine => {}
+        },
+    }
 }
 
 fn bounds_for_owned_fragment_maps(

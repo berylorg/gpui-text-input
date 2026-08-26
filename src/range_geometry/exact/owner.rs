@@ -9,6 +9,22 @@ use crate::{
 use super::*;
 
 impl ExactGeometryOwner {
+    pub fn initial_required_charge(
+        layout: &StreamingLayoutBinding,
+        style: &StreamingGeometryStyle,
+    ) -> Result<(usize, usize), ExactGeometryError> {
+        validation::validate_inputs(layout, style)?;
+        let counts = accounting::initial_owner_counts(layout, style);
+        Ok((counts.total_bytes(), counts.total_items()))
+    }
+
+    pub(crate) fn pending_layout_style_charge(
+        layout: &StreamingLayoutBinding,
+        style: &StreamingGeometryStyle,
+    ) -> (usize, usize) {
+        accounting::layout_style_counts(layout, style)
+    }
+
     pub fn new(
         binding: RangeBinding,
         presentation_generation: PresentationGeneration,

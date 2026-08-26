@@ -193,6 +193,7 @@ enum ActiveKind {
     Target {
         target: BlockTarget,
         predecessor: SourcePosition,
+        anchor: Option<SourcePosition>,
     },
 }
 

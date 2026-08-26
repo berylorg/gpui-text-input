@@ -133,8 +133,7 @@ impl super::RangeTextInput {
     fn request_platform_page(
         &mut self,
         start: crate::ByteOffset,
-        cx: &mut gpui::Context<Self>,
-    ) -> Result<(crate::PageRequestKey, Option<crate::RangePage>), crate::RangeTextInputError> {
+    ) -> Result<(crate::PageRequestKey, crate::PageDemand), crate::RangeTextInputError> {
         let extent = self.config.binding.extent().byte_len();
         if start.get() >= extent && extent != 0 {
             return Err(crate::RangeTextInputError::Stale);
@@ -162,8 +161,7 @@ impl super::RangeTextInput {
             self.config.limits.platform_bytes,
         )?);
         let key = request.key();
-        let resident = self.accept_page_demand(request, demand, cx)?;
-        Ok((key, resident))
+        Ok((key, demand))
     }
 
     /// Begins or retrieves one exact nonresident platform UTF-16 query.
@@ -186,7 +184,7 @@ impl super::RangeTextInput {
             }
             return Err(crate::RangeTextInputError::Busy);
         }
-        let (key, resident) = self.request_platform_page(crate::ByteOffset::new(0), cx)?;
+        let (key, demand) = self.request_platform_page(crate::ByteOffset::new(0))?;
         self.platform = Some(PlatformReplay::new(
             range,
             PlatformReplayKind::Query,
@@ -195,8 +193,11 @@ impl super::RangeTextInput {
                 .map_err(|_| crate::RangeTextInputError::SurfaceCapacity)?,
         ));
         cx.notify();
-        if let Some(page) = resident {
-            self.deliver_platform_page(page, cx)?;
+        if let Err(error) =
+            self.accept_range_continuation_demand(crate::PageRequest::new(key), demand, cx)
+        {
+            self.platform = None;
+            return Err(error);
         }
         Ok(crate::PlatformRangeResult::Pending(key))
     }
@@ -219,7 +220,7 @@ impl super::RangeTextInput {
         if text.len() > self.config.mutation_limits.max_page_bytes() {
             return Err(crate::RangeTextInputError::SurfaceCapacity);
         }
-        let (key, resident) = self.request_platform_page(crate::ByteOffset::new(0), cx)?;
+        let (key, demand) = self.request_platform_page(crate::ByteOffset::new(0))?;
         self.platform = Some(PlatformReplay::new(
             range,
             PlatformReplayKind::Replace { text, marked: None },
@@ -228,8 +229,11 @@ impl super::RangeTextInput {
                 .map_err(|_| crate::RangeTextInputError::SurfaceCapacity)?,
         ));
         cx.notify();
-        if let Some(page) = resident {
-            self.deliver_platform_page(page, cx)?;
+        if let Err(error) =
+            self.accept_range_continuation_demand(crate::PageRequest::new(key), demand, cx)
+        {
+            self.platform = None;
+            return Err(error);
         }
         Ok(key)
     }
@@ -252,7 +256,7 @@ impl super::RangeTextInput {
         if text.len() > self.config.mutation_limits.max_page_bytes() {
             return Err(crate::RangeTextInputError::SurfaceCapacity);
         }
-        let (key, resident) = self.request_platform_page(crate::ByteOffset::new(0), cx)?;
+        let (key, demand) = self.request_platform_page(crate::ByteOffset::new(0))?;
         self.platform = Some(PlatformReplay::new(
             range,
             PlatformReplayKind::Replace {
@@ -264,8 +268,11 @@ impl super::RangeTextInput {
                 .map_err(|_| crate::RangeTextInputError::SurfaceCapacity)?,
         ));
         cx.notify();
-        if let Some(page) = resident {
-            self.deliver_platform_page(page, cx)?;
+        if let Err(error) =
+            self.accept_range_continuation_demand(crate::PageRequest::new(key), demand, cx)
+        {
+            self.platform = None;
+            return Err(error);
         }
         Ok(key)
     }
@@ -294,11 +301,14 @@ impl super::RangeTextInput {
         let (mut replay, progress) = admitted.map_err(|_| crate::RangeTextInputError::Stale)?;
         match progress.ok_or(crate::RangeTextInputError::Stale)? {
             ReplayProgress::Continue(start) => {
-                let (key, resident) = self.request_platform_page(start, cx)?;
+                let (key, demand) = self.request_platform_page(start)?;
                 replay.set_pending(key);
                 self.platform = Some(replay);
-                if let Some(page) = resident {
-                    self.deliver_platform_page(page, cx)?;
+                if let Err(error) =
+                    self.accept_range_continuation_demand(crate::PageRequest::new(key), demand, cx)
+                {
+                    self.platform = None;
+                    return Err(error);
                 }
             }
             ReplayProgress::QueryReady(text) => {

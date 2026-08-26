@@ -124,6 +124,14 @@ impl PreparedGeometryTransition {
             .saturating_add(self.release.pages.capacity())
             .saturating_add(self.release.object_pages.capacity())
     }
+
+    pub(crate) const fn admission_required_bytes(&self) -> usize {
+        self.admission_required_bytes
+    }
+
+    pub(crate) const fn admission_required_items(&self) -> usize {
+        self.admission_required_items
+    }
 }
 
 impl ExactGeometryOwner {
@@ -349,7 +357,11 @@ impl ExactGeometryOwner {
                         .source
                         .compare_in_revision(anchor)
                         .is_some_and(|ordering| {
-                            ordering.is_lt() || (!include_preceding_object && ordering.is_eq())
+                            ordering.is_lt()
+                                || (!include_preceding_object
+                                    && ordering.is_eq()
+                                    && anchor.byte_offset.get()
+                                        < inputs.binding.extent().byte_len())
                         })
                 })
                 .ok_or(ExactGeometryError::SourceContract)?
@@ -368,7 +380,7 @@ impl ExactGeometryOwner {
         };
         let mut target = target;
         if anchor.is_some() {
-            target.block_offset = predecessor.block_offset();
+            target.block_offset = predecessor.block_offset;
         }
         if predecessor.source.byte_offset.get() == inputs.binding.extent().byte_len() {
             return self.finish_prepared(
@@ -397,6 +409,7 @@ impl ExactGeometryOwner {
             key,
             target,
             predecessor.source,
+            anchor,
             Scanner::from_checkpoint(&predecessor),
             request_id,
             fixed,
@@ -458,6 +471,7 @@ impl ExactGeometryOwner {
         key: GeometryJobKey,
         target: BlockTarget,
         predecessor: SourcePosition,
+        anchor: Option<SourcePosition>,
         scanner: Scanner,
         request_id: PageRequestId,
         fixed: usize,
@@ -482,6 +496,7 @@ impl ExactGeometryOwner {
             kind: ActiveKind::Target {
                 target,
                 predecessor,
+                anchor,
             },
             page_use: ActivePageUse::Traverse {
                 anchor: predecessor.byte_offset,

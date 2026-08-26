@@ -176,6 +176,10 @@ impl ClipboardWriteRequest {
     pub fn into_text(self) -> String {
         self.text
     }
+
+    pub(crate) fn payload_allocation_charge(&self) -> (usize, usize) {
+        (self.text.capacity(), self.text.capacity())
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -407,6 +411,10 @@ impl RangeClipboardCoordinator {
                 retained_object_facts: active.queued_objects.len()
                     + usize::from(active.current_object.is_some()),
             })
+    }
+
+    pub(crate) fn pending_text_page(&self) -> Option<PageRequestKey> {
+        self.active.as_ref().and_then(|active| active.pending_text)
     }
 
     pub fn begin(

@@ -81,8 +81,19 @@ pub(super) fn retain_checkpoint(
     checkpoints.push_back(checkpoint);
 }
 
-pub(super) fn target_scan_ready(scanner: &Scanner, target: BlockTarget) -> bool {
+pub(super) fn target_scan_ready(
+    scanner: &Scanner,
+    target: BlockTarget,
+    anchor: Option<SourcePosition>,
+) -> bool {
     let end = target.block_offset + target.viewport_extent + target.overscan;
-    scanner.target_source.is_some()
+    let anchor_reached = anchor.is_none_or(|anchor| {
+        SourcePosition::try_from(scanner.continuation.next_position)
+            .ok()
+            .and_then(|position| position.compare_in_revision(anchor))
+            .is_some_and(|ordering| !ordering.is_lt())
+    });
+    anchor_reached
+        && scanner.target_source.is_some()
         && scanner.continuation.block_offset + scanner.continuation.line_block_extent >= end
 }

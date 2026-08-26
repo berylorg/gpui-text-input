@@ -1,4 +1,4 @@
-use gpui::{Pixels, SharedString, StreamingLayoutBinding};
+use gpui::{Pixels, SharedString, StreamingLayoutBinding, px};
 use gpui_scrollbar::ScrollbarStyle;
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -16,6 +16,8 @@ use crate::{
 pub struct RangeTextInputLimits {
     pub max_surface_bytes: usize,
     pub max_surface_items: usize,
+    pub max_realization_work_per_frame: usize,
+    pub max_realized_block_extent: Pixels,
     pub page_bytes: u64,
     pub platform_bytes: u64,
     pub max_intra_anchor: Pixels,
@@ -25,12 +27,17 @@ impl RangeTextInputLimits {
     pub fn new(
         max_surface_bytes: usize,
         max_surface_items: usize,
+        max_realization_work_per_frame: usize,
+        max_realized_block_extent: Pixels,
         page_bytes: u64,
         platform_bytes: u64,
         max_intra_anchor: Pixels,
     ) -> Result<Self, RangeTextInputError> {
         if max_surface_bytes == 0
             || max_surface_items == 0
+            || max_realization_work_per_frame == 0
+            || max_realized_block_extent <= Pixels::ZERO
+            || !f32::from(max_realized_block_extent).is_finite()
             || page_bytes == 0
             || platform_bytes == 0
             || max_intra_anchor < Pixels::ZERO
@@ -41,11 +48,140 @@ impl RangeTextInputLimits {
         Ok(Self {
             max_surface_bytes,
             max_surface_items,
+            max_realization_work_per_frame,
+            max_realized_block_extent,
             page_bytes,
             platform_bytes,
             max_intra_anchor,
         })
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RangeRealizationCapacityState {
+    Normal,
+    CapacitySaturated,
+    ViewportExceedsRenderingCapacity,
+    CapacitySaturatedViewportExceedsRenderingCapacity,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum RangeRealizationPriority {
+    Caret,
+    Ime,
+    DirectedSelection,
+    ActiveInteraction,
+    ScrollAnchor,
+    NearbyContent,
+}
+
+impl RangeRealizationPriority {
+    pub const ORDERED: [Self; 6] = [
+        Self::Caret,
+        Self::Ime,
+        Self::DirectedSelection,
+        Self::ActiveInteraction,
+        Self::ScrollAnchor,
+        Self::NearbyContent,
+    ];
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RangeRealizationStep {
+    pub spent: usize,
+    pub remaining: usize,
+    pub progressed: bool,
+    pub reached_external_boundary: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RangeRealizationOwnership {
+    pub owned_bytes: usize,
+    pub owned_items: usize,
+    pub resident_page_bytes: usize,
+    pub resident_object_bytes: usize,
+    pub pending_page_bytes: usize,
+    pub pending_object_bytes: usize,
+    pub geometry_bytes: usize,
+    pub geometry_items: usize,
+    pub request_storage_bytes: usize,
+    pub request_storage_items: usize,
+    pub request_payload_bytes: usize,
+    pub request_payload_items: usize,
+    pub deferred_response_bytes: usize,
+    pub deferred_response_items: usize,
+    pub response_custody_bytes: usize,
+    pub response_custody_items: usize,
+    pub response_custody_count: usize,
+    pub response_processing_bytes: usize,
+    pub response_processing_items: usize,
+    pub page_alias_storage_bytes: usize,
+    pub page_alias_storage_items: usize,
+    pub page_alias_waits: usize,
+    pub pending_configuration_bytes: usize,
+    pub pending_configuration_items: usize,
+    pub candidate_bytes: usize,
+    pub candidate_items: usize,
+    pub pending_geometry_record_bytes: usize,
+    pub pending_geometry_record_items: usize,
+    pub dispatched_record_bytes: usize,
+    pub dispatched_record_items: usize,
+    pub resident_pages: usize,
+    pub resident_objects: usize,
+    pub pending_page_requests: usize,
+    pub pending_object_requests: usize,
+    pub dispatched_page_requests: usize,
+    pub dispatched_object_requests: usize,
+    pub active_geometry_jobs: usize,
+    pub pending_geometry_pages: usize,
+    pub pending_geometry_objects: usize,
+    pub resident_geometry_page_waits: usize,
+    pub coalesced_geometry_page_waits: usize,
+    pub index_geometry_page_waits: usize,
+    pub target_geometry_page_waits: usize,
+    pub deferred_geometry_responses: usize,
+    pub pending_target_intents: usize,
+    pub pending_layout_intents: usize,
+    pub pending_presentation_intents: usize,
+    pub pending_rebind_intents: usize,
+    pub scheduled_continuations: usize,
+    pub queued_requests: usize,
+    pub candidates: usize,
+    pub checkpoints: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RangeRealizationDiagnostics {
+    pub max_surface_bytes: usize,
+    pub max_surface_items: usize,
+    pub max_realization_work_per_frame: usize,
+    pub max_realized_block_extent: Pixels,
+    pub max_resident_pages: usize,
+    pub max_resident_page_bytes: usize,
+    pub max_owned_pages: usize,
+    pub max_pending_page_requests: usize,
+    pub max_pending_page_bytes: u64,
+    pub max_resident_object_pages: usize,
+    pub max_resident_objects: usize,
+    pub max_resident_object_bytes: usize,
+    pub max_owned_objects: usize,
+    pub max_pending_object_requests: usize,
+    pub max_pending_object_bytes: usize,
+    pub max_queued_requests: usize,
+    pub max_geometry_bytes: usize,
+    pub max_geometry_items: usize,
+    pub max_checkpoints: usize,
+    pub frame_generation: u64,
+    pub continuation_scheduled: bool,
+    pub frame: RangeRealizationStep,
+    pub capacity: RangeRealizationCapacityState,
+    pub filler_count: usize,
+    pub current: RangeRealizationOwnership,
+    pub high_water: RangeRealizationOwnership,
+    pub surface_charge: crate::RangeSurfaceCharge,
+    pub surface_high_water: crate::RangeSurfaceCharge,
+    pub geometry_high_water_bytes: usize,
+    pub geometry_high_water_items: usize,
 }
 
 #[derive(Clone)]
@@ -553,6 +689,10 @@ pub enum RangeTextInputError {
     MalformedSeed,
     NotQuiescent,
     SurfaceCapacity,
+    PageResponseCapacity(crate::RangePage),
+    ObjectResponseCapacity(crate::ObjectPage),
+    PageResponseRejected(crate::RangePage),
+    ObjectResponseRejected(crate::ObjectPage),
     DetachedCapacity,
     IncompleteSurface,
     Geometry(ExactGeometryError),
@@ -586,17 +726,20 @@ impl From<crate::RangeContractError> for RangeTextInputError {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct DesiredSurface {
     pub source_selection: Option<RangeSourceSelection>,
     pub composition: Option<ByteRange>,
     pub scroll: RangeScrollAnchor,
     pub target_block: Pixels,
+    pub realization_anchor_block: Pixels,
     pub viewport_extent: Pixels,
+    pub realization_extent: Pixels,
     pub overscan: Pixels,
     pub preserve_scroll_anchor: bool,
     pub reveal_caret: bool,
     pub inline_object_interaction: Option<DesiredInlineObjectInteraction>,
+    pub capacity_saturated: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -619,7 +762,7 @@ pub(super) struct SurfaceCandidate {
 }
 
 impl DesiredSurface {
-    pub fn origin(viewport_extent: Pixels, overscan: Pixels) -> Self {
+    pub fn origin(viewport_extent: Pixels, realization_extent: Pixels, overscan: Pixels) -> Self {
         Self {
             source_selection: None,
             composition: None,
@@ -628,15 +771,63 @@ impl DesiredSurface {
                 intra_anchor: Pixels::ZERO,
             },
             target_block: Pixels::ZERO,
+            realization_anchor_block: Pixels::ZERO,
             viewport_extent,
+            realization_extent,
             overscan,
             preserve_scroll_anchor: false,
             reveal_caret: true,
             inline_object_interaction: None,
+            capacity_saturated: false,
         }
     }
 
     pub fn target(self) -> BlockTarget {
-        BlockTarget::new(self.target_block, self.viewport_extent, self.overscan)
+        BlockTarget::new(
+            self.realization_anchor_block,
+            self.realization_extent.min(self.viewport_extent),
+            self.overscan,
+        )
+    }
+
+    pub fn priority(self) -> RangeRealizationPriority {
+        RangeRealizationPriority::ORDERED
+            .into_iter()
+            .find(|priority| match priority {
+                RangeRealizationPriority::Caret => {
+                    self.reveal_caret
+                        && self.source_selection.is_some_and(|selection| {
+                            selection.range().is_ok_and(|range| range.is_empty())
+                        })
+                }
+                RangeRealizationPriority::Ime => self.composition.is_some(),
+                RangeRealizationPriority::DirectedSelection => {
+                    self.reveal_caret && self.source_selection.is_some()
+                }
+                RangeRealizationPriority::ActiveInteraction => matches!(
+                    self.inline_object_interaction,
+                    Some(DesiredInlineObjectInteraction::Set { .. })
+                ),
+                RangeRealizationPriority::ScrollAnchor => {
+                    !self.reveal_caret || self.preserve_scroll_anchor
+                }
+                RangeRealizationPriority::NearbyContent => true,
+            })
+            .expect("nearby content is the terminal realization priority")
+    }
+
+    pub fn next_capacity_fallback(self, line_height: Pixels) -> Option<Self> {
+        let minimum = self.realization_extent.min(line_height).max(px(1.));
+        let mut next = self;
+        if next.overscan > Pixels::ZERO {
+            next.overscan = Pixels::ZERO;
+        } else if next.realization_extent > minimum {
+            next.realization_extent =
+                px((f32::from(next.realization_extent) * 0.5).max(f32::from(minimum)));
+        } else {
+            return None;
+        }
+        next.capacity_saturated = true;
+        Some(next)
     }
 }

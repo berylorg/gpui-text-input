@@ -12,7 +12,7 @@ pub(super) struct RestorationValidation {
     text_next: usize,
     object_positions: Vec<SourcePosition>,
     object_next: usize,
-    pending_text: Option<PageRequestKey>,
+    pub(super) pending_text: Option<PageRequestKey>,
     pending_object: Option<ObjectRequestKey>,
     object_cursor: Option<ObjectCursor>,
     prior_object: Option<ObjectCursor>,
@@ -58,6 +58,21 @@ impl RestorationValidation {
     pub const fn pending_object(&self) -> Option<ObjectRequestKey> {
         self.pending_object
     }
+
+    #[cfg(test)]
+    pub(super) fn complete_for_test(seed: RangeRestorationSeed) -> Self {
+        let mut validation = Self::new(seed);
+        validation.text_next = validation.text_offsets.len();
+        validation.object_next = validation.object_positions.len();
+        validation
+    }
+
+    fn is_complete(&self) -> bool {
+        self.text_next == self.text_offsets.len()
+            && self.object_next == self.object_positions.len()
+            && self.pending_text.is_none()
+            && self.pending_object.is_none()
+    }
 }
 
 impl RangeTextInput {
@@ -81,7 +96,7 @@ impl RangeTextInput {
             )?;
             validation.pending_text = Some(key);
             self.restoration = Some(validation);
-            self.push_request(RangeTextInputRequest::Page(PageRequest::new(key)), cx);
+            self.push_request(RangeTextInputRequest::Page(PageRequest::new(key)), cx)?;
             return Ok(());
         }
         if validation.object_next < validation.object_positions.len() {
@@ -111,11 +126,10 @@ impl RangeTextInput {
             self.push_request(
                 RangeTextInputRequest::ObjectPage(ObjectRequest::new(key)),
                 cx,
-            );
+            )?;
             return Ok(());
         }
-        let seed = validation.seed;
-        self.finish_restoration_validation(seed, cx)
+        self.finish_restoration_validation(validation, cx)
     }
 
     pub(super) fn deliver_restoration_page(
@@ -207,28 +221,60 @@ impl RangeTextInput {
 
     fn finish_restoration_validation(
         &mut self,
-        seed: RangeRestorationSeed,
+        validation: RestorationValidation,
         cx: &mut gpui::Context<Self>,
     ) -> Result<(), RangeTextInputError> {
-        self.desired.source_selection = Some(seed.selection);
-        self.desired.composition = None;
-        self.desired.scroll = super::RangeScrollAnchor {
+        self.restoration = Some(validation);
+        let _ = self.service_pending_restoration_completion(cx)?;
+        Ok(())
+    }
+
+    pub(super) fn service_pending_restoration_completion(
+        &mut self,
+        cx: &mut gpui::Context<Self>,
+    ) -> Result<bool, RangeTextInputError> {
+        if !self
+            .restoration
+            .as_ref()
+            .is_some_and(RestorationValidation::is_complete)
+        {
+            return Ok(false);
+        }
+        if !self.try_spend_realization_credit(cx) {
+            return Ok(false);
+        }
+        let validation = self
+            .restoration
+            .take()
+            .expect("complete restoration validation exists");
+        let seed = validation.seed;
+        let mut desired = self.desired;
+        desired.source_selection = Some(seed.selection);
+        desired.composition = None;
+        desired.scroll = super::RangeScrollAnchor {
             source: seed.scroll.position.byte_offset,
             intra_anchor: seed.scroll.intra_anchor,
         };
-        self.desired.viewport_extent = self.config.viewport_extent;
-        self.desired.overscan = self.config.overscan;
-        self.desired.target_block = gpui::Pixels::ZERO;
-        self.desired.preserve_scroll_anchor = true;
-        self.desired.reveal_caret = false;
-        self.restoration = None;
+        desired.viewport_extent = self.config.viewport_extent;
+        desired.overscan = self.config.overscan;
+        desired.target_block = gpui::Pixels::ZERO;
+        desired.realization_anchor_block = gpui::Pixels::ZERO;
+        desired.preserve_scroll_anchor = true;
+        desired.reveal_caret = false;
+        let candidate = match self.prepare_restoration_index_transition(desired) {
+            Ok(candidate) => candidate,
+            Err(error) => {
+                self.restoration = Some(validation);
+                self.refund_realization_credit();
+                self.schedule_realization_continuation(cx);
+                return Err(error);
+            }
+        };
+        let progress = self.commit_widget_transition(candidate, None);
+        debug_assert_eq!(progress, crate::ExactGeometryProgress::Scanning);
         self.restoration_seed = Some(seed);
-        if let Err(error) = self.start_index() {
-            self.reject_restoration_geometry(cx)?;
-            return Err(error);
-        }
         cx.notify();
-        Ok(())
+        Ok(true)
     }
 
     pub(super) fn reject_restoration_task(

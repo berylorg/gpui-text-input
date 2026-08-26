@@ -1,19 +1,43 @@
 use gpui::{Pixels, StreamingLayoutContinuation, StreamingLayoutFragment};
 
+use crate::SourcePosition;
+
 use super::{ActiveJob, ActiveKind, BlockTarget};
 
 pub(super) fn admission_intersects_target(
     fragments: &[StreamingLayoutFragment],
     prior: StreamingLayoutContinuation,
     target: BlockTarget,
+    anchor: Option<SourcePosition>,
     line_height: Pixels,
 ) -> bool {
     let window_start = target.block_offset;
     let window_end = target.block_offset + target.viewport_extent + target.overscan;
     fragments.iter().any(|fragment| {
         let (start, end) = fragment_vertical_bounds(fragment, prior, line_height);
-        end > window_start && start < window_end
+        (end > window_start && start < window_end)
+            || anchor.is_some_and(|anchor| fragment_contains_anchor(fragment, anchor))
     })
+}
+
+fn fragment_contains_anchor(fragment: &StreamingLayoutFragment, anchor: SourcePosition) -> bool {
+    let anchor = anchor.into();
+    match fragment {
+        StreamingLayoutFragment::Text(fragment) => fragment
+            .position_for_logical_position(anchor)
+            .ok()
+            .flatten()
+            .is_some(),
+        StreamingLayoutFragment::OversizeAtom(fragment) => {
+            fragment.position_for_logical_position(anchor).is_some()
+        }
+        StreamingLayoutFragment::InlineObject(fragment) => {
+            fragment.position_for_logical_position(anchor).is_some()
+        }
+        StreamingLayoutFragment::Boundary(fragment) => {
+            fragment.position_for_logical_position(anchor).is_some()
+        }
+    }
 }
 
 fn fragment_vertical_bounds(

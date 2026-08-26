@@ -119,13 +119,15 @@ impl ExactGeometryOwner {
     fn start_target(
         &mut self,
         key: GeometryJobKey,
-        mut target: BlockTarget,
+        target: BlockTarget,
         anchor: Option<SourcePosition>,
     ) -> Result<ExactGeometryStart, ExactGeometryError> {
         let index = self
             .index
             .as_deref()
             .ok_or(ExactGeometryError::IndexIncomplete)?;
+        let inputs = self.inputs()?;
+        let source_len = inputs.binding.extent().byte_len();
         let predecessor = if let Some(anchor) = anchor {
             let include_preceding_object = matches!(
                 anchor.gap,
@@ -140,11 +142,13 @@ impl ExactGeometryOwner {
                         .source
                         .compare_in_revision(anchor)
                         .is_some_and(|ordering| {
-                            ordering.is_lt() || (!include_preceding_object && ordering.is_eq())
+                            ordering.is_lt()
+                                || (!include_preceding_object
+                                    && ordering.is_eq()
+                                    && anchor.byte_offset.get() < source_len)
                         })
                 })
                 .ok_or(ExactGeometryError::SourceContract)?;
-            target.block_offset = checkpoint.block_offset();
             checkpoint.clone()
         } else {
             index
@@ -158,8 +162,6 @@ impl ExactGeometryOwner {
                 .expect("index has origin")
                 .clone()
         };
-        let inputs = self.inputs()?;
-        let source_len = inputs.binding.extent().byte_len();
         if predecessor.source.byte_offset.get() == source_len {
             let candidate = BlockTargetPublication {
                 key,
@@ -204,6 +206,7 @@ impl ExactGeometryOwner {
             kind: ActiveKind::Target {
                 target,
                 predecessor: predecessor.source,
+                anchor,
             },
             page_use: ActivePageUse::Traverse {
                 anchor: predecessor.source.byte_offset,

@@ -3,8 +3,8 @@ use std::{mem::size_of, sync::Arc};
 use gpui::WindowTextSystem;
 
 use crate::{
-    ByteOffset, InlineObjectGap, ObjectPage, ObjectRequestKey, PageDemandEnvelope, PageDirection,
-    PageEdgeFact, PageRequestKey, RangePage, RangeSourceSelection, SourcePosition,
+    ByteOffset, InlineObjectGap, ObjectPage, ObjectRequestKey, PageEdgeFact, PageRequestKey,
+    RangePage, RangeSourceSelection, SourcePosition,
 };
 
 use super::*;
@@ -21,16 +21,7 @@ impl ExactGeometryOwner {
         page: &RangePage,
         text_system: &WindowTextSystem,
     ) -> Result<ExactGeometryAdmission, ExactGeometryFailure> {
-        self.admit_page_inner(key, page, text_system, false)
-    }
-
-    pub(crate) fn admit_resident_page(
-        &mut self,
-        key: GeometryJobKey,
-        page: &RangePage,
-        text_system: &WindowTextSystem,
-    ) -> Result<ExactGeometryAdmission, ExactGeometryFailure> {
-        self.admit_page_inner(key, page, text_system, true)
+        self.admit_page_inner(key, page, text_system)
     }
 
     fn admit_page_inner(
@@ -38,7 +29,6 @@ impl ExactGeometryOwner {
         key: GeometryJobKey,
         page: &RangePage,
         text_system: &WindowTextSystem,
-        resident: bool,
     ) -> Result<ExactGeometryAdmission, ExactGeometryFailure> {
         let Some(mut active) = self.active.take() else {
             return Err(self.nonterminal_failure(ExactGeometryError::ObsoleteJob(key)));
@@ -51,9 +41,7 @@ impl ExactGeometryOwner {
             self.active = Some(active);
             return Err(self.nonterminal_failure(ExactGeometryError::NoActiveJob));
         };
-        if (!resident && page.key() != expected)
-            || (resident && !resident_page_satisfies(page, expected))
-        {
+        if page.key() != expected {
             self.active = Some(active);
             return Err(self.nonterminal_failure(ExactGeometryError::WrongPage(page.key())));
         }
@@ -233,6 +221,22 @@ impl ExactGeometryOwner {
             return context::defer(self, active, expected, required_end, replay, budget);
         }
         let release = consumed_object_release(expected);
+        let target_ready = match active.kind {
+            ActiveKind::Target { target, anchor, .. } => {
+                anchor.is_some_and(|anchor| {
+                    matches!(
+                        anchor.gap,
+                        crate::InlineObjectGap::Before(_) | crate::InlineObjectGap::Between { .. }
+                    )
+                }) && checkpoint::target_scan_ready(&active.scanner, target, anchor)
+            }
+            ActiveKind::Index => false,
+        };
+        if target_ready {
+            active.scanner.deferred_object = None;
+            active.text_page = None;
+            return self.publish_candidate(active, release, budget);
+        }
         if !object_page.complete() {
             self.high_water_bytes = self.high_water_bytes.max(budget.peak_bytes);
             self.high_water_items = self.high_water_items.max(budget.peak_items);
@@ -261,8 +265,8 @@ impl ExactGeometryOwner {
         let source_end = inputs.binding.extent().byte_len();
         let reached_source_end = page_end.get() == source_end;
         let target_ready = match active.kind {
-            ActiveKind::Target { target, .. } => {
-                checkpoint::target_scan_ready(&active.scanner, target)
+            ActiveKind::Target { target, anchor, .. } => {
+                checkpoint::target_scan_ready(&active.scanner, target, anchor)
             }
             ActiveKind::Index => false,
         };
@@ -560,31 +564,6 @@ fn resident_object_page_satisfies(page: &ObjectPage, expected: ObjectRequestKey)
         && actual.presentation_generation() == expected.presentation_generation()
         && actual.purpose() == expected.purpose()
         && actual.demand() == expected.demand()
-}
-
-fn resident_page_satisfies(page: &RangePage, expected: PageRequestKey) -> bool {
-    if page.key().binding() != expected.binding()
-        || page.key().revision() != expected.revision()
-        || page.range().len() > expected.max_payload_bytes()
-    {
-        return false;
-    }
-    let PageDemandEnvelope::Adjacent {
-        anchor, direction, ..
-    } = expected.demand()
-    else {
-        return false;
-    };
-    let anchored = match direction {
-        PageDirection::Forward => page.range().start() == anchor,
-        PageDirection::Backward => page.range().end() == anchor,
-    };
-    let progresses_or_matches_edge = !page.range().is_empty()
-        || match direction {
-            PageDirection::Forward => page.following() == PageEdgeFact::DocumentBoundary,
-            PageDirection::Backward => page.preceding() == PageEdgeFact::DocumentBoundary,
-        };
-    anchored && progresses_or_matches_edge
 }
 
 fn completion_release_counts(active: &ActiveJob) -> ExactGeometryCounts {
