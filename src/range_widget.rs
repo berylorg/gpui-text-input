@@ -555,11 +555,15 @@ impl RangeTextInput {
     pub fn is_semantically_quiescent(&self) -> bool {
         self.replacement.is_none()
             && self.segmentation.is_none()
+            && self.segmentation_action.is_none()
             && self.platform.is_none()
+            && self.pending_local_mutation.is_none()
+            && self.prepared_local_operation.is_none()
             && matches!(
                 self.edits.state(),
                 crate::MutationState::Idle | crate::MutationState::Settled
             )
+            && self.dispatched_mutations.len() == 0
             && self.pending_history.is_none()
             && matches!(self.clipboard.state(), crate::ClipboardState::Idle)
             && self.dispatched_clipboard_write.is_none()
