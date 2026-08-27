@@ -468,13 +468,19 @@ impl RangeTextInput {
 
     pub(super) fn interactive_surface(&self) -> Option<&CoherentRangeSurface> {
         self.surface.as_ref().filter(|surface| {
+            let surface_geometry = surface.geometry_key();
             surface.binding() == self.config.binding
-                && surface.geometry_key() == self.geometry.key()
+                && surface_geometry.binding() == self.config.binding.binding()
+                && surface_geometry.revision() == self.config.binding.revision()
+                && surface_geometry.presentation_generation() == self.config.presentation_generation
+                && surface_geometry.epoch() == self.geometry.key().epoch()
                 && self.mounted
                 && self.pending_history.is_none()
+                && self.pending_target_intent.is_none()
                 && self.pending_layout_intent.is_none()
                 && self.pending_presentation_intent.is_none()
                 && self.pending_rebind_intent.is_none()
+                && self.surface_candidate.is_none()
         })
     }
 

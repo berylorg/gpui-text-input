@@ -1297,11 +1297,30 @@ fn target_first_surface_is_local_estimated_delayed_and_epoch_ready(cx: &mut gpui
         panic!("background index must begin with a text page")
     };
     assert_eq!(delayed.key().purpose(), PagePurpose::GeometryIndex);
+    input.read_with(cx, |input, _| {
+        assert!(input.is_surface_current_and_interactive());
+        assert!(input.geometry_estimate().is_some());
+        assert_eq!(
+            input.surface().unwrap().quality(),
+            gpui_text_input::GeometryQuality::Estimated
+        );
+    });
     let page = page_for(&large, 122_000, delayed);
     cx.update(|window, app| {
         input.update(app, |input, cx| {
             input.deliver_page(page, window, cx).unwrap()
         })
+    });
+    input.read_with(cx, |input, _| {
+        assert!(input.is_surface_current_and_interactive());
+        assert!(input.geometry_estimate().is_some());
+        let diagnostics = input.realization_diagnostics();
+        assert_eq!(diagnostics.current.active_geometry_jobs, 1);
+        assert_eq!(
+            diagnostics.current.pending_geometry_pages
+                + diagnostics.current.pending_geometry_objects,
+            1
+        );
     });
     for _ in 0..4 {
         assert!(drive_pages(&input, cx, &large).is_empty());
@@ -1329,6 +1348,10 @@ fn target_first_surface_is_local_estimated_delayed_and_epoch_ready(cx: &mut gpui
     });
     let layout_first = drive_first_local_surface(&input, cx, &large, 123_000);
     assert!(layout_first.requests > 0);
+    input.update(cx, |input, cx| {
+        input.request_absolute_scroll(px(16.), cx).unwrap();
+        assert!(!input.is_surface_current_and_interactive());
+    });
 
     let released =
         cx.update(|window, app| input.update(app, |input, cx| input.dispose(window, cx)));
