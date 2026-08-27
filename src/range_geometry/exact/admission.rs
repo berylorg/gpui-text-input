@@ -420,7 +420,11 @@ impl ExactGeometryOwner {
                 self.observe_current();
                 Ok(self.page_admission(ExactGeometryProgress::IndexComplete, release, &budget))
             }
-            ActiveKind::Target { predecessor, .. } => {
+            ActiveKind::Target {
+                predecessor,
+                predecessor_checkpoint,
+                ..
+            } => {
                 let target_source = scanner
                     .target_source
                     .unwrap_or(scanner.target_line_position);
@@ -433,6 +437,10 @@ impl ExactGeometryOwner {
                         .next_position
                         .try_into()
                         .expect("accepted GPUI position is source-compatible"),
+                    predecessor_checkpoint,
+                    visual_lines_lower_bound: scanner.continuation.visual_lines,
+                    content_height_lower_bound: scanner.continuation.block_offset
+                        + scanner.continuation.line_block_extent,
                     fragments: Arc::from(scanner.fragments),
                     charge: scanner.output_charge,
                     item_charge: scanner.output_item_charge,

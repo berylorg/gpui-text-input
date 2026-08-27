@@ -75,9 +75,18 @@ impl ExactGeometryOwner {
             );
         }
         match candidate.kind.clone() {
-            ActiveKind::Target { predecessor, .. } => {
-                self.finish_target_publication(candidate, predecessor, release, shared, budget)
-            }
+            ActiveKind::Target {
+                predecessor,
+                predecessor_checkpoint,
+                ..
+            } => self.finish_target_publication(
+                candidate,
+                predecessor,
+                predecessor_checkpoint,
+                release,
+                shared,
+                budget,
+            ),
             ActiveKind::Index => {
                 self.finish_index_publication(candidate, release, shared, budget, successor)
             }
@@ -88,6 +97,7 @@ impl ExactGeometryOwner {
         &self,
         mut delta: Box<ActiveJob>,
         predecessor: crate::SourcePosition,
+        predecessor_checkpoint: ExactGeometryCheckpoint,
         mut release: ExactGeometryRelease,
         shared: SharedOutput,
         mut budget: AdmissionBudget,
@@ -154,6 +164,10 @@ impl ExactGeometryOwner {
             predecessor,
             target_source,
             source_end,
+            predecessor_checkpoint,
+            visual_lines_lower_bound: delta.scanner.continuation.visual_lines,
+            content_height_lower_bound: delta.scanner.continuation.block_offset
+                + delta.scanner.continuation.line_block_extent,
             fragments,
             charge: output_charge,
             item_charge: output_item_charge,

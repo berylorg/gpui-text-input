@@ -193,6 +193,7 @@ enum ActiveKind {
     Target {
         target: BlockTarget,
         predecessor: SourcePosition,
+        predecessor_checkpoint: ExactGeometryCheckpoint,
         anchor: Option<SourcePosition>,
     },
 }

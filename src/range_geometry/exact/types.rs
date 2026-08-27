@@ -276,6 +276,9 @@ pub struct BlockTargetPublication {
     pub(super) predecessor: SourcePosition,
     pub(super) target_source: SourcePosition,
     pub(super) source_end: SourcePosition,
+    pub(super) predecessor_checkpoint: ExactGeometryCheckpoint,
+    pub(super) visual_lines_lower_bound: u64,
+    pub(super) content_height_lower_bound: Pixels,
     pub(super) fragments: Arc<[StreamingLayoutFragment]>,
     pub(super) charge: StreamingLayoutCharge,
     pub(super) item_charge: StreamingLayoutItemCharge,
@@ -296,6 +299,18 @@ impl BlockTargetPublication {
 
     pub const fn source_end(&self) -> SourcePosition {
         self.source_end
+    }
+
+    pub(crate) const fn predecessor_checkpoint(&self) -> &ExactGeometryCheckpoint {
+        &self.predecessor_checkpoint
+    }
+
+    pub(crate) const fn visual_lines_lower_bound(&self) -> u64 {
+        self.visual_lines_lower_bound
+    }
+
+    pub(crate) const fn content_height_lower_bound(&self) -> Pixels {
+        self.content_height_lower_bound
     }
 
     pub fn fragments(&self) -> &[StreamingLayoutFragment] {

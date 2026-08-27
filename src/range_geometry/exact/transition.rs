@@ -10,9 +10,9 @@ use crate::{
 
 use super::{
     ActiveJob, ActiveKind, ActivePageUse, BlockTarget, BlockTargetPublication, DesiredTarget,
-    ExactGeometryError, ExactGeometryIndex, ExactGeometryOwner, ExactGeometryProgress,
-    ExactGeometryRelease, ExactGeometryStart, OwnerInputs, PendingInput, Scanner,
-    StreamingGeometryStyle, accounting, validation,
+    ExactGeometryCheckpoint, ExactGeometryError, ExactGeometryIndex, ExactGeometryOwner,
+    ExactGeometryProgress, ExactGeometryRelease, ExactGeometryStart, OwnerInputs, PendingInput,
+    Scanner, StreamingGeometryStyle, accounting, validation,
 };
 
 #[derive(Debug)]
@@ -229,6 +229,123 @@ impl ExactGeometryOwner {
         self.prepare_replacement_index(inputs, key, job_id, request_id, true)
     }
 
+    pub(crate) fn prepare_layout_and_origin_target(
+        &self,
+        layout: StreamingLayoutBinding,
+        style: StreamingGeometryStyle,
+        job_id: GeometryJobId,
+        request_id: PageRequestId,
+        target: BlockTarget,
+    ) -> Result<PreparedGeometryTransition, ExactGeometryError> {
+        validation::validate_inputs(&layout, &style)?;
+        let binding = self.inputs()?.binding;
+        let epoch = self.next_transition_epoch()?;
+        let inputs = Box::new(OwnerInputs {
+            binding,
+            presentation_generation: self.key.presentation_generation(),
+            layout,
+            style,
+        });
+        let key = GeometryKey::new(
+            binding.binding(),
+            binding.revision(),
+            self.key.presentation_generation(),
+            epoch,
+        );
+        self.prepare_replacement_origin_target(inputs, key, job_id, request_id, target, false)
+    }
+
+    pub(crate) fn prepare_presentation_and_origin_target(
+        &self,
+        presentation_generation: PresentationGeneration,
+        job_id: GeometryJobId,
+        request_id: PageRequestId,
+        target: BlockTarget,
+    ) -> Result<PreparedGeometryTransition, ExactGeometryError> {
+        let current = self.inputs()?;
+        let inputs = Box::new(OwnerInputs {
+            binding: current.binding,
+            presentation_generation,
+            layout: current.layout.clone(),
+            style: current.style.clone(),
+        });
+        let key = GeometryKey::new(
+            current.binding.binding(),
+            current.binding.revision(),
+            presentation_generation,
+            self.key.epoch(),
+        );
+        self.prepare_replacement_origin_target(inputs, key, job_id, request_id, target, true)
+    }
+
+    pub(crate) fn prepare_rebind_and_origin_target(
+        &self,
+        binding: RangeBinding,
+        presentation_generation: PresentationGeneration,
+        job_id: GeometryJobId,
+        request_id: PageRequestId,
+        target: BlockTarget,
+    ) -> Result<PreparedGeometryTransition, ExactGeometryError> {
+        let current = self.inputs()?;
+        let epoch = self.next_transition_epoch()?;
+        let inputs = Box::new(OwnerInputs {
+            binding,
+            presentation_generation,
+            layout: current.layout.clone(),
+            style: current.style.clone(),
+        });
+        let key = GeometryKey::new(
+            binding.binding(),
+            binding.revision(),
+            presentation_generation,
+            epoch,
+        );
+        self.prepare_replacement_origin_target(inputs, key, job_id, request_id, target, true)
+    }
+
+    fn prepare_replacement_origin_target(
+        &self,
+        inputs: Box<OwnerInputs>,
+        key: GeometryKey,
+        job_id: GeometryJobId,
+        request_id: PageRequestId,
+        target: BlockTarget,
+        reset_object_request: bool,
+    ) -> Result<PreparedGeometryTransition, ExactGeometryError> {
+        super::target::validate_target(target)?;
+        self.admit_transition_job_id(job_id)?;
+        self.admit_transition_request_id(request_id)?;
+        let scanner = Scanner::origin(
+            &inputs.layout,
+            usize::try_from(inputs.binding.extent().byte_len())
+                .map_err(|_| ExactGeometryError::SourceContract)?,
+        );
+        let predecessor = super::checkpoint::make_checkpoint(&scanner, &inputs.layout, false)?;
+        let fixed = accounting::counts(None, None, None, None, None)
+            .total_bytes()
+            .saturating_add(accounting::input_counts(&inputs).total_bytes());
+        let active = self.prepare_target_active_for_inputs(
+            &inputs,
+            GeometryJobKey::new(key, job_id),
+            target,
+            predecessor.source,
+            predecessor.clone(),
+            None,
+            Scanner::from_checkpoint(&predecessor),
+            request_id,
+            fixed,
+        )?;
+        self.finish_prepared(
+            key,
+            Some(inputs),
+            PreparedGeometryState::Target(active),
+            self.preview_release_all(),
+            job_id,
+            Some(request_id),
+            reset_object_request,
+        )
+    }
+
     fn prepare_replacement_index(
         &self,
         inputs: Box<OwnerInputs>,
@@ -300,6 +417,47 @@ impl ExactGeometryOwner {
             .ok_or(ExactGeometryError::IndexIncomplete)?;
         self.prepare_target_replacement_from_index_inner(
             index, key, job_id, request_id, target, anchor, release,
+        )
+    }
+
+    pub(crate) fn prepare_local_target_replacement(
+        &self,
+        job_id: GeometryJobId,
+        request_id: PageRequestId,
+        target: BlockTarget,
+        anchor: Option<SourcePosition>,
+        checkpoint: Option<&ExactGeometryCheckpoint>,
+    ) -> Result<PreparedGeometryTransition, ExactGeometryError> {
+        super::target::validate_target(target)?;
+        let inputs = self.inputs()?;
+        if anchor
+            .is_some_and(|anchor| anchor.byte_offset.get() > inputs.binding.extent().byte_len())
+        {
+            return Err(ExactGeometryError::SourceContract);
+        }
+        self.admit_transition_job_id(job_id)?;
+        let key = GeometryJobKey::new(self.key, job_id);
+        let predecessor = if let Some(checkpoint) = checkpoint {
+            checkpoint.clone()
+        } else {
+            super::checkpoint::make_checkpoint(
+                &Scanner::origin(
+                    &inputs.layout,
+                    usize::try_from(inputs.binding.extent().byte_len())
+                        .map_err(|_| ExactGeometryError::SourceContract)?,
+                ),
+                &inputs.layout,
+                false,
+            )?
+        };
+        self.prepare_target_replacement_from_checkpoint_inner(
+            key,
+            job_id,
+            request_id,
+            target,
+            anchor,
+            predecessor,
+            self.preview_target_replacement_release(),
         )
     }
 
@@ -378,7 +536,35 @@ impl ExactGeometryOwner {
                 .expect("index has origin")
                 .clone()
         };
-        let mut target = target;
+        self.prepare_target_replacement_from_checkpoint_inner(
+            key,
+            job_id,
+            request_id,
+            target,
+            anchor,
+            predecessor,
+            release,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_target_replacement_from_checkpoint_inner(
+        &self,
+        key: GeometryJobKey,
+        job_id: GeometryJobId,
+        request_id: PageRequestId,
+        mut target: BlockTarget,
+        anchor: Option<SourcePosition>,
+        predecessor: ExactGeometryCheckpoint,
+        release: ExactGeometryRelease,
+    ) -> Result<PreparedGeometryTransition, ExactGeometryError> {
+        let inputs = self.inputs()?;
+        if predecessor.input_id != inputs.layout.input_id
+            || predecessor.segment_policy_id != inputs.layout.segment_policy_id
+            || predecessor.source.byte_offset.get() > inputs.binding.extent().byte_len()
+        {
+            return Err(ExactGeometryError::SourceContract);
+        }
         if anchor.is_some() {
             target.block_offset = predecessor.block_offset;
         }
@@ -391,6 +577,9 @@ impl ExactGeometryOwner {
                     predecessor: predecessor.source,
                     target_source: predecessor.source,
                     source_end: predecessor.source,
+                    predecessor_checkpoint: predecessor.clone(),
+                    visual_lines_lower_bound: predecessor.visual_lines,
+                    content_height_lower_bound: predecessor.resume_block_offset(),
                     fragments: Arc::from([]),
                     charge: Default::default(),
                     item_charge: Default::default(),
@@ -403,12 +592,20 @@ impl ExactGeometryOwner {
         }
 
         self.admit_transition_request_id(request_id)?;
-        let fixed =
-            accounting::counts(self.inputs.as_deref(), None, None, Some(index), None).total_bytes();
-        let active = self.prepare_target_active(
+        let fixed = accounting::counts(
+            self.inputs.as_deref(),
+            None,
+            None,
+            self.index.as_deref(),
+            None,
+        )
+        .total_bytes();
+        let active = self.prepare_target_active_for_inputs(
+            inputs,
             key,
             target,
             predecessor.source,
+            predecessor.clone(),
             anchor,
             Scanner::from_checkpoint(&predecessor),
             request_id,
@@ -466,11 +663,13 @@ impl ExactGeometryOwner {
         Ok(active)
     }
 
-    fn prepare_target_active(
+    fn prepare_target_active_for_inputs(
         &self,
+        inputs: &OwnerInputs,
         key: GeometryJobKey,
         target: BlockTarget,
         predecessor: SourcePosition,
+        predecessor_checkpoint: ExactGeometryCheckpoint,
         anchor: Option<SourcePosition>,
         scanner: Scanner,
         request_id: PageRequestId,
@@ -483,8 +682,8 @@ impl ExactGeometryOwner {
             .ok_or(ExactGeometryError::CapacityExceeded)?;
         let page_key = PageRequestKey::adjacent(
             request_id,
-            self.key.binding(),
-            self.key.revision(),
+            inputs.binding.binding(),
+            inputs.binding.revision(),
             PagePurpose::GeometryTarget,
             predecessor.byte_offset,
             PageDirection::Forward,
@@ -496,6 +695,7 @@ impl ExactGeometryOwner {
             kind: ActiveKind::Target {
                 target,
                 predecessor,
+                predecessor_checkpoint,
                 anchor,
             },
             page_use: ActivePageUse::Traverse {

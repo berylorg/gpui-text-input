@@ -77,6 +77,7 @@ pub(super) struct PendingTargetIntent {
     pub(super) restoration: Option<crate::RangeRestorationSeed>,
     pub(super) interaction: ActiveObjectTransition,
     pub(super) pointer_anchor: Option<Option<crate::SourcePosition>>,
+    pub(super) allow_incomplete_index: bool,
 }
 
 pub(super) struct PendingLayoutIntent {
@@ -99,6 +100,17 @@ impl PendingTargetIntent {
             restoration: None,
             interaction: ActiveObjectTransition::Preserve,
             pointer_anchor: None,
+            allow_incomplete_index: true,
+        }
+    }
+
+    pub(super) const fn absolute(desired: DesiredSurface) -> Self {
+        Self {
+            desired,
+            restoration: None,
+            interaction: ActiveObjectTransition::Preserve,
+            pointer_anchor: None,
+            allow_incomplete_index: false,
         }
     }
 }
@@ -307,6 +319,7 @@ impl RangeTextInput {
             intent.desired,
             intent.restoration,
             intent.interaction,
+            intent.allow_incomplete_index,
         );
         let mut candidate = match candidate {
             Ok(candidate) => candidate,
@@ -441,6 +454,7 @@ impl RangeTextInput {
             restoration: None,
             interaction,
             pointer_anchor: Some(None),
+            allow_incomplete_index: true,
         }
     }
 
@@ -472,7 +486,7 @@ impl RangeTextInput {
         if self.restoration.is_some() || self.restoration_seed.is_some() {
             return Err(RangeTextInputError::Busy);
         }
-        let _ = self.request_target_intent(PendingTargetIntent::ordinary(desired), cx)?;
+        let _ = self.request_target_intent(PendingTargetIntent::absolute(desired), cx)?;
         Ok(())
     }
 

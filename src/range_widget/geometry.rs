@@ -360,6 +360,36 @@ impl RangeTextInput {
         }
     }
 
+    fn service_pending_index_intent(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Result<bool, RangeTextInputError> {
+        if !self.pending_index_intent || self.active_geometry.is_some() {
+            return Ok(false);
+        }
+        if self.geometry.index().is_some() {
+            self.pending_index_intent = false;
+            return Ok(false);
+        }
+        if !self.try_spend_realization_credit(cx) {
+            return Ok(false);
+        }
+        let candidate = match self.prepare_index_transition() {
+            Ok(candidate) => candidate,
+            Err(error) => {
+                self.refund_realization_credit();
+                return Err(error);
+            }
+        };
+        let progress = self.commit_widget_transition(candidate, Some(cx));
+        if progress != ExactGeometryProgress::Scanning {
+            self.refund_realization_credit();
+            return Err(RangeTextInputError::Stale);
+        }
+        self.pending_index_intent = false;
+        Ok(true)
+    }
+
     fn abort_geometry_demand(
         &mut self,
         job: crate::GeometryJobKey,
@@ -394,6 +424,10 @@ impl RangeTextInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), RangeTextInputError> {
+        if self.requests.is_empty() && self.service_pending_index_intent(cx)? {
+            self.last_realization_step.reached_external_boundary = true;
+            return Ok(());
+        }
         loop {
             if !self.try_spend_realization_credit(cx) {
                 return Ok(());
@@ -421,6 +455,10 @@ impl RangeTextInput {
         let _ = self.service_pending_restoration_completion(cx)?;
         if self.deferred_geometry_response.is_some() {
             let _ = self.service_deferred_geometry_response(window, cx)?;
+        }
+        if self.requests.is_empty() && self.service_pending_index_intent(cx)? {
+            self.last_realization_step.reached_external_boundary = true;
+            return Ok(());
         }
         if !self.requests.is_empty() {
             self.last_realization_step.reached_external_boundary = true;

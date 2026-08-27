@@ -422,6 +422,7 @@ impl RangeTextInput {
             desired,
             restoration,
             ActiveObjectTransition::Preserve,
+            true,
         )
     }
 
@@ -434,6 +435,7 @@ impl RangeTextInput {
             intent.desired,
             intent.restoration,
             intent.interaction,
+            intent.allow_incomplete_index,
         )?;
         candidate.pointer_anchor = intent.pointer_anchor;
         Ok(candidate)
@@ -444,6 +446,7 @@ impl RangeTextInput {
         desired: DesiredSurface,
         restoration: Option<crate::RangeRestorationSeed>,
         interaction: ActiveObjectTransition,
+        allow_incomplete_index: bool,
     ) -> Result<WidgetTransitionCandidate, RangeTextInputError> {
         let mut desired = desired;
         if let Some(index) = self.geometry.index()
@@ -503,12 +506,32 @@ impl RangeTextInput {
                     .is_none_or(|surface| surface.position_for_source_position(*anchor).is_none())
             })
         });
-        let geometry = self.geometry.prepare_target_replacement(
-            job_id,
-            request_id,
-            desired.target(),
-            target_anchor,
-        )?;
+        let geometry = if allow_incomplete_index && self.geometry.index().is_none() {
+            let checkpoint = self
+                .surface
+                .as_ref()
+                .filter(|surface| {
+                    surface.binding() == self.config.binding
+                        && surface.geometry_key() == self.geometry.key()
+                })
+                .and_then(|surface| {
+                    surface.local_checkpoint_for(desired.realization_anchor_block, target_anchor)
+                });
+            self.geometry.prepare_local_target_replacement(
+                job_id,
+                request_id,
+                desired.target(),
+                target_anchor,
+                checkpoint,
+            )?
+        } else {
+            self.geometry.prepare_target_replacement(
+                job_id,
+                request_id,
+                desired.target(),
+                target_anchor,
+            )?
+        };
         let state = SurfaceCandidate {
             job: geometry.key(),
             binding: self.config.binding,
@@ -526,6 +549,7 @@ impl RangeTextInput {
                         fallback,
                         restoration,
                         interaction,
+                        allow_incomplete_index,
                     );
                 }
                 Err(error) => return Err(error),
@@ -536,6 +560,7 @@ impl RangeTextInput {
                         desired,
                         restoration,
                         interaction,
+                        allow_incomplete_index,
                     );
                 }
                 TerminalTargetPreparation::Publication(publication) => (None, Some(publication)),
@@ -558,7 +583,12 @@ impl RangeTextInput {
                 let fallback = desired
                     .next_capacity_fallback(self.config.layout.line_height)
                     .ok_or(RangeTextInputError::SurfaceCapacity)?;
-                self.prepare_interaction_target_transition(fallback, restoration, interaction)
+                self.prepare_interaction_target_transition(
+                    fallback,
+                    restoration,
+                    interaction,
+                    allow_incomplete_index,
+                )
             }
             result => result,
         }
@@ -571,20 +601,40 @@ impl RangeTextInput {
         target: Option<super::realization::PendingTargetIntent>,
     ) -> Result<WidgetTransitionCandidate, RangeTextInputError> {
         let (job_id, request_id, committed_next_id) = self.transition_ids()?;
-        let geometry = self.geometry.prepare_layout_and_index(
-            layout.clone(),
-            style.clone(),
-            job_id,
-            request_id,
-        )?;
         let mut desired = target.map_or(self.desired, |intent| intent.desired);
         if target.is_none() {
             desired.preserve_scroll_anchor = true;
         }
+        let origin_eligible = desired.scroll.source.get() == 0
+            && desired
+                .source_selection
+                .is_none_or(|selection| selection.head.byte_offset.get() == 0);
+        let geometry = if origin_eligible {
+            self.geometry.prepare_layout_and_origin_target(
+                layout.clone(),
+                style.clone(),
+                job_id,
+                request_id,
+                desired.target(),
+            )?
+        } else {
+            self.geometry.prepare_layout_and_index(
+                layout.clone(),
+                style.clone(),
+                job_id,
+                request_id,
+            )?
+        };
+        let surface_candidate = origin_eligible.then_some(SurfaceCandidate {
+            job: geometry.key(),
+            binding: self.config.binding,
+            desired,
+            restoration: target.and_then(|intent| intent.restoration),
+        });
         let mut candidate = self.prepare_widget_transition(
             geometry,
             Some(desired),
-            None,
+            surface_candidate,
             None,
             Some(TransitionConfigUpdate::Layout(layout, style)),
             committed_next_id,
@@ -605,19 +655,38 @@ impl RangeTextInput {
         target: Option<super::realization::PendingTargetIntent>,
     ) -> Result<WidgetTransitionCandidate, RangeTextInputError> {
         let (job_id, request_id, committed_next_id) = self.transition_ids()?;
-        let geometry = self.geometry.prepare_presentation_and_index(
-            presentation_generation,
-            job_id,
-            request_id,
-        )?;
         let mut desired = target.map_or(self.desired, |intent| intent.desired);
         if target.is_none() {
             desired.preserve_scroll_anchor = true;
         }
+        let origin_eligible = desired.scroll.source.get() == 0
+            && desired
+                .source_selection
+                .is_none_or(|selection| selection.head.byte_offset.get() == 0);
+        let geometry = if origin_eligible {
+            self.geometry.prepare_presentation_and_origin_target(
+                presentation_generation,
+                job_id,
+                request_id,
+                desired.target(),
+            )?
+        } else {
+            self.geometry.prepare_presentation_and_index(
+                presentation_generation,
+                job_id,
+                request_id,
+            )?
+        };
+        let surface_candidate = origin_eligible.then_some(SurfaceCandidate {
+            job: geometry.key(),
+            binding: self.config.binding,
+            desired,
+            restoration: target.and_then(|intent| intent.restoration),
+        });
         let mut candidate = self.prepare_widget_transition(
             geometry,
             Some(desired),
-            None,
+            surface_candidate,
             None,
             Some(TransitionConfigUpdate::Presentation(
                 presentation_generation,
@@ -649,12 +718,6 @@ impl RangeTextInput {
         )>,
     ) -> Result<WidgetTransitionCandidate, RangeTextInputError> {
         let (job_id, request_id, committed_next_id) = self.transition_ids()?;
-        let geometry = self.geometry.prepare_rebind_and_index(
-            binding,
-            self.config.presentation_generation,
-            job_id,
-            request_id,
-        )?;
         let mut desired = DesiredSurface::origin(
             self.config.viewport_extent,
             super::bounded_realization_extent(
@@ -669,10 +732,34 @@ impl RangeTextInput {
         });
         desired.reveal_caret = true;
         desired.composition = composition;
+        let origin_eligible =
+            selection.is_none_or(|selection| selection.head.byte_offset.get() == 0);
+        let geometry = if origin_eligible {
+            self.geometry.prepare_rebind_and_origin_target(
+                binding,
+                self.config.presentation_generation,
+                job_id,
+                request_id,
+                desired.target(),
+            )?
+        } else {
+            self.geometry.prepare_rebind_and_index(
+                binding,
+                self.config.presentation_generation,
+                job_id,
+                request_id,
+            )?
+        };
+        let surface_candidate = origin_eligible.then_some(SurfaceCandidate {
+            job: geometry.key(),
+            binding,
+            desired,
+            restoration: None,
+        });
         let mut candidate = self.prepare_widget_transition(
             geometry,
             Some(desired),
-            None,
+            surface_candidate,
             None,
             Some(TransitionConfigUpdate::Rebind {
                 binding,
@@ -1356,6 +1443,16 @@ impl RangeTextInput {
                 self.config.overscan,
             );
         }
+        let starts_target = successor_page
+            .is_some_and(|request| request.key().purpose() == crate::PagePurpose::GeometryTarget)
+            || target_publication.is_some();
+        let starts_index = successor_page
+            .is_some_and(|request| request.key().purpose() == crate::PagePurpose::GeometryIndex);
+        if starts_index {
+            self.pending_index_intent = false;
+        } else if starts_target && self.geometry.index().is_none() {
+            self.pending_index_intent = true;
+        }
         match start.progress() {
             ExactGeometryProgress::Scanning => {
                 self.active_geometry = Some(start.key());
@@ -1410,6 +1507,12 @@ impl RangeTextInput {
     }
 
     fn commit_geometry_retirement(&mut self, release: &crate::ExactGeometryRelease) {
+        if self
+            .active_geometry
+            .is_some_and(|job| release.jobs.contains(&job))
+        {
+            self.active_geometry = None;
+        }
         let retires_deferred = self
             .deferred_geometry_response
             .as_ref()

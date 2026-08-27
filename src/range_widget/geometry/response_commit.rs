@@ -338,6 +338,9 @@ impl RangeTextInput {
         let activation = publication.activation();
         let admission = self.geometry.commit_prepared_target_response(geometry);
         debug_assert_eq!(admission.progress(), ExactGeometryProgress::TargetComplete);
+        if self.geometry.index().is_none() {
+            self.pending_index_intent = true;
+        }
         if let Some(admission) = text_admission {
             self.residency.commit_prepared_admit(admission);
         }

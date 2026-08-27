@@ -1112,6 +1112,240 @@ fn drive_pages(
     other
 }
 
+#[derive(Clone, Debug, PartialEq)]
+struct FirstSurfaceFacts {
+    requests: usize,
+    viewport: ByteRange,
+    caret: Option<gpui::Point<gpui::Pixels>>,
+    hit: Option<ByteOffset>,
+    surface_charge: gpui_text_input::RangeSurfaceCharge,
+    owned_high_water: (usize, usize),
+    visual_lines: u64,
+    content_height: gpui::Pixels,
+}
+
+fn drive_first_local_surface(
+    input: &gpui::Entity<RangeTextInput>,
+    cx: &mut gpui::VisualTestContext,
+    source: &str,
+    first_page_id: u64,
+) -> FirstSurfaceFacts {
+    let mut requests = 0;
+    let mut page_id = first_page_id;
+    for _ in 0..128 {
+        if input.read_with(cx, |input, _| input.is_surface_current_and_interactive()) {
+            break;
+        }
+        let mut batch = Vec::new();
+        while let Some(request) = input.update(cx, |input, _| input.take_request()) {
+            batch.push(request);
+        }
+        assert!(
+            !batch.is_empty(),
+            "local target must retain one bounded successor"
+        );
+        let cancelled_pages = batch
+            .iter()
+            .filter_map(|request| match request {
+                RangeTextInputRequest::CancelPage(key) => Some(*key),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let cancelled_objects = batch
+            .iter()
+            .filter_map(|request| match request {
+                RangeTextInputRequest::CancelObjectPage(key) => Some(*key),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        for request in batch {
+            match request {
+                RangeTextInputRequest::Page(request) => {
+                    if cancelled_pages.contains(&request.key()) {
+                        continue;
+                    }
+                    assert_eq!(request.key().purpose(), PagePurpose::GeometryTarget);
+                    let request_key = request.key();
+                    requests += 1;
+                    let page = page_for(source, page_id, request);
+                    page_id += 1;
+                    cx.update(|window, app| {
+                    input.update(app, |input, cx| {
+                        input.deliver_page(page, window, cx).unwrap_or_else(|error| {
+                            panic!(
+                                "first-surface text request {requests} {request_key:?} failed: {error:?}; diagnostics: {:?}",
+                                input.realization_diagnostics()
+                            )
+                        })
+                    })
+                });
+                }
+                RangeTextInputRequest::ObjectPage(request) => {
+                    if cancelled_objects.contains(&request.key()) {
+                        continue;
+                    }
+                    assert_eq!(request.key().purpose(), ObjectPurpose::GeometryTarget);
+                    requests += 1;
+                    let page = restoration_object_page(request, &[], page_id);
+                    page_id += 1;
+                    cx.update(|window, app| {
+                        input.update(app, |input, cx| {
+                            input
+                                .deliver_object_page_in_window(page, window, cx)
+                                .unwrap()
+                        })
+                    });
+                }
+                RangeTextInputRequest::ReleasePage(_)
+                | RangeTextInputRequest::ReleaseObjectPage(_)
+                | RangeTextInputRequest::CancelPage(_)
+                | RangeTextInputRequest::CancelObjectPage(_) => {}
+                other => panic!("unexpected first-surface request: {other:?}"),
+            }
+        }
+    }
+    input.read_with(cx, |input, _| {
+        assert!(input.is_surface_current_and_interactive());
+        let surface = input.surface().unwrap();
+        assert_eq!(
+            surface.quality(),
+            gpui_text_input::GeometryQuality::Estimated
+        );
+        let caret = surface.position_for_offset(ByteOffset::new(0));
+        let hit = caret.and_then(|caret| surface.hit_test(point(caret.x, caret.y + px(1.))));
+        let diagnostics = input.realization_diagnostics();
+        assert_eq!(diagnostics.current.pending_index_intents, 1);
+        FirstSurfaceFacts {
+            requests,
+            viewport: surface.viewport(),
+            caret,
+            hit,
+            surface_charge: surface.charge(),
+            owned_high_water: (
+                diagnostics.high_water.owned_bytes,
+                diagnostics.high_water.owned_items,
+            ),
+            visual_lines: surface.visual_lines(),
+            content_height: surface.content_height(),
+        }
+    })
+}
+
+#[gpui::test]
+fn target_first_surface_is_local_estimated_delayed_and_epoch_ready(cx: &mut gpui::TestAppContext) {
+    let prefix = "visible prefix line\n".repeat(24);
+    let small = format!("{prefix}{}", "small tail\n".repeat(48));
+    let medium = format!("{prefix}{}", "medium tail\n".repeat(80));
+    let large = format!("{prefix}{}", "large tail\n".repeat(160));
+    let (input, cx) = cx
+        .add_window_view(|window, cx| RangeTextInput::new(config(&small, 1), window, cx).unwrap());
+
+    let small_first = drive_first_local_surface(&input, cx, &small, 120_000);
+    assert_eq!(small_first.hit, Some(ByteOffset::new(0)));
+    assert!(small_first.requests > 0);
+    while let Some(request) = input.update(cx, |input, _| input.take_request()) {
+        assert!(matches!(
+            request,
+            RangeTextInputRequest::ReleasePage(_) | RangeTextInputRequest::ReleaseObjectPage(_)
+        ));
+    }
+
+    cx.update(|window, app| {
+        input.update(app, |input, cx| {
+            input.rebind(binding(&medium, 2), None, window, cx).unwrap();
+            assert!(!input.is_surface_current_and_interactive());
+        })
+    });
+    let medium_first = drive_first_local_surface(&input, cx, &medium, 121_000);
+    assert_eq!(medium_first.requests, small_first.requests);
+    assert_eq!(medium_first.viewport, small_first.viewport);
+    assert_eq!(medium_first.caret, small_first.caret);
+    assert_eq!(medium_first.hit, small_first.hit);
+    assert_eq!(medium_first.surface_charge, small_first.surface_charge);
+
+    while let Some(request) = input.update(cx, |input, _| input.take_request()) {
+        assert!(matches!(
+            request,
+            RangeTextInputRequest::ReleasePage(_) | RangeTextInputRequest::ReleaseObjectPage(_)
+        ));
+    }
+    cx.update(|window, app| {
+        input.update(app, |input, cx| {
+            input.rebind(binding(&large, 3), None, window, cx).unwrap();
+            assert!(!input.is_surface_current_and_interactive());
+        })
+    });
+    let large_first = drive_first_local_surface(&input, cx, &large, 121_500);
+    assert_eq!(large_first.requests, medium_first.requests);
+    assert_eq!(large_first.viewport, medium_first.viewport);
+    assert_eq!(large_first.caret, medium_first.caret);
+    assert_eq!(large_first.hit, medium_first.hit);
+    assert_eq!(large_first.surface_charge, medium_first.surface_charge);
+    assert_eq!(large_first.owned_high_water, medium_first.owned_high_water);
+    while let Some(request) = input.update(cx, |input, _| input.take_request()) {
+        assert!(matches!(
+            request,
+            RangeTextInputRequest::ReleasePage(_) | RangeTextInputRequest::ReleaseObjectPage(_)
+        ));
+    }
+    cx.update(|window, app| window.draw(app).clear());
+    cx.run_until_parked();
+    let delayed = input
+        .update(cx, |input, _| input.take_request())
+        .expect("later prepaint quantum starts the background index");
+    let RangeTextInputRequest::Page(delayed) = delayed else {
+        panic!("background index must begin with a text page")
+    };
+    assert_eq!(delayed.key().purpose(), PagePurpose::GeometryIndex);
+    let page = page_for(&large, 122_000, delayed);
+    cx.update(|window, app| {
+        input.update(app, |input, cx| {
+            input.deliver_page(page, window, cx).unwrap()
+        })
+    });
+    for _ in 0..4 {
+        assert!(drive_pages(&input, cx, &large).is_empty());
+        if input.read_with(cx, |input, _| {
+            input.surface().unwrap().quality() == gpui_text_input::GeometryQuality::Exact
+        }) {
+            break;
+        }
+    }
+    input.read_with(cx, |input, _| {
+        let surface = input.surface().unwrap();
+        assert_eq!(surface.quality(), gpui_text_input::GeometryQuality::Exact);
+        assert!(surface.visual_lines() > large_first.visual_lines);
+        assert!(surface.content_height() > large_first.content_height);
+        assert!(input.is_surface_current_and_interactive());
+    });
+
+    let mut replacement = config(&large, 3);
+    replacement.layout.wrap_width = px(72.);
+    input.update(cx, |input, cx| {
+        input
+            .set_layout(replacement.layout, replacement.style, cx)
+            .unwrap();
+        assert!(!input.is_surface_current_and_interactive());
+    });
+    let layout_first = drive_first_local_surface(&input, cx, &large, 123_000);
+    assert!(layout_first.requests > 0);
+
+    let released =
+        cx.update(|window, app| input.update(app, |input, cx| input.dispose(window, cx)));
+    assert!(!released.is_empty());
+    input.read_with(cx, |input, _| {
+        let diagnostics = input.realization_diagnostics();
+        assert_eq!(diagnostics.current.pending_index_intents, 0);
+        assert_eq!(diagnostics.current.active_geometry_jobs, 0);
+        assert_eq!(diagnostics.current.candidates, 0);
+        assert_eq!(diagnostics.current.pending_geometry_pages, 0);
+        assert_eq!(diagnostics.current.pending_geometry_objects, 0);
+        assert_eq!(diagnostics.current.response_custody_count, 0);
+        assert!(input.surface().is_none());
+        assert!(!input.is_surface_current_and_interactive());
+    });
+}
+
 fn drive_pages_with_objects(
     input: &gpui::Entity<RangeTextInput>,
     cx: &mut gpui::VisualTestContext,
@@ -2419,7 +2653,13 @@ fn estimated_absolute_scroll_records_intent_until_exact_index_completes(
     let mut saw_estimate = false;
     for page_id in 900..2400 {
         let Some(request) = input.update(cx, |input, _| input.take_request()) else {
-            break;
+            if input.read_with(cx, |input, _| input.is_quiescent()) {
+                break;
+            }
+            cx.update(|window, app| window.draw(app).clear());
+            cx.run_until_parked();
+            saw_estimate |= input.read_with(cx, |input, _| input.geometry_estimate().is_some());
+            continue;
         };
         match request {
             RangeTextInputRequest::Page(request) => {

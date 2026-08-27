@@ -544,6 +544,7 @@ impl RangeTextInput {
         self.response_custody = std::collections::VecDeque::new();
         self.active_response_processing = crate::RangeSurfaceCharge::default();
         self.pending_target_intent = None;
+        self.pending_index_intent = false;
         self.pending_layout_intent = None;
         self.pending_presentation_intent = None;
         self.pending_rebind_intent = None;

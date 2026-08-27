@@ -559,12 +559,24 @@ impl ExactGeometryOwner {
             ActiveKind::Index => false,
         };
         if target_ready {
-            let ActiveKind::Target { predecessor, .. } = candidate.kind.clone() else {
+            let ActiveKind::Target {
+                predecessor,
+                predecessor_checkpoint,
+                ..
+            } = candidate.kind.clone()
+            else {
                 unreachable!("target readiness is false for index scans")
             };
             candidate.scanner.deferred_object = None;
             candidate.text_page = None;
-            return self.finish_target_publication(candidate, predecessor, release, shared, budget);
+            return self.finish_target_publication(
+                candidate,
+                predecessor,
+                predecessor_checkpoint,
+                release,
+                shared,
+                budget,
+            );
         }
         if !object_page.complete() {
             observe_prepared(&mut budget, &candidate, 0, 0)?;

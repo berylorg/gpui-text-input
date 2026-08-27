@@ -67,6 +67,7 @@ pub struct RangeTextInput {
     response_custody: VecDeque<response_custody::RangeResponseCustody>,
     active_response_processing: RangeSurfaceCharge,
     pending_target_intent: Option<realization::PendingTargetIntent>,
+    pending_index_intent: bool,
     pending_layout_intent: Option<realization::PendingLayoutIntent>,
     pending_presentation_intent: Option<crate::PresentationGeneration>,
     pending_rebind_intent: Option<realization::PendingRebindIntent>,
@@ -377,6 +378,7 @@ impl RangeTextInput {
             response_custody: VecDeque::with_capacity(response_custody_capacity),
             active_response_processing: RangeSurfaceCharge::default(),
             pending_target_intent: None,
+            pending_index_intent: false,
             pending_layout_intent: None,
             pending_presentation_intent: None,
             pending_rebind_intent: None,
@@ -436,7 +438,19 @@ impl RangeTextInput {
             focus_subscription: None,
             config,
         };
-        this.start_index()?;
+        let initial = this.prepare_interaction_target_transition(
+            this.desired,
+            None,
+            transition::ActiveObjectTransition::Preserve,
+            true,
+        )?;
+        let progress = this.commit_widget_transition(initial, None);
+        if !matches!(
+            progress,
+            crate::ExactGeometryProgress::Scanning | crate::ExactGeometryProgress::TargetComplete
+        ) {
+            return Err(RangeTextInputError::Stale);
+        }
         this.observe_realization_ownership();
         let focus = this.focus_handle.clone();
         this.focus_subscription = Some(cx.on_focus_out(&focus, window, |input, _, _, cx| {
@@ -458,7 +472,14 @@ impl RangeTextInput {
                 && surface.geometry_key() == self.geometry.key()
                 && self.mounted
                 && self.pending_history.is_none()
+                && self.pending_layout_intent.is_none()
+                && self.pending_presentation_intent.is_none()
+                && self.pending_rebind_intent.is_none()
         })
+    }
+
+    pub fn is_surface_current_and_interactive(&self) -> bool {
+        self.interactive_surface().is_some()
     }
 
     pub fn geometry_estimate(&self) -> Option<crate::StreamingGeometryEstimate> {
@@ -507,6 +528,7 @@ impl RangeTextInput {
             && self.deferred_geometry_response.is_none()
             && self.response_custody.is_empty()
             && self.pending_target_intent.is_none()
+            && !self.pending_index_intent
             && self.pending_layout_intent.is_none()
             && self.pending_presentation_intent.is_none()
             && self.pending_rebind_intent.is_none()

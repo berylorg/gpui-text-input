@@ -168,6 +168,9 @@ impl ExactGeometryOwner {
                 predecessor: predecessor.source,
                 target_source: predecessor.source,
                 source_end: predecessor.source,
+                predecessor_checkpoint: predecessor.clone(),
+                visual_lines_lower_bound: predecessor.visual_lines,
+                content_height_lower_bound: predecessor.resume_block_offset(),
                 fragments: Arc::from([]),
                 charge: Default::default(),
                 item_charge: Default::default(),
@@ -206,6 +209,7 @@ impl ExactGeometryOwner {
             kind: ActiveKind::Target {
                 target,
                 predecessor: predecessor.source,
+                predecessor_checkpoint: predecessor.clone(),
                 anchor,
             },
             page_use: ActivePageUse::Traverse {

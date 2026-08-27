@@ -303,6 +303,7 @@ impl RangeTextInput {
             ),
             deferred_geometry_responses: usize::from(self.deferred_geometry_response.is_some()),
             pending_target_intents: usize::from(self.pending_target_intent.is_some()),
+            pending_index_intents: usize::from(self.pending_index_intent),
             pending_layout_intents: usize::from(self.pending_layout_intent.is_some()),
             pending_presentation_intents: usize::from(self.pending_presentation_intent.is_some()),
             pending_rebind_intents: usize::from(self.pending_rebind_intent.is_some()),
@@ -498,6 +499,10 @@ impl RangeTextInput {
             .realization_high_water
             .pending_target_intents
             .max(current.pending_target_intents);
+        self.realization_high_water.pending_index_intents = self
+            .realization_high_water
+            .pending_index_intents
+            .max(current.pending_index_intents);
         self.realization_high_water.pending_layout_intents = self
             .realization_high_water
             .pending_layout_intents

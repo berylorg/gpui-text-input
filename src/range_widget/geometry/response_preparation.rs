@@ -360,10 +360,26 @@ impl RangeTextInput {
         pages: impl ExactSizeIterator<Item = &'a crate::RangePage> + Clone,
         object_pages: impl ExactSizeIterator<Item = &'a crate::ObjectPage> + Clone,
     ) -> Result<TerminalTargetPreparation, RangeTextInputError> {
-        let index = projected_index
-            .or_else(|| self.geometry.index())
-            .ok_or(RangeTextInputError::Stale)?;
-        let aggregate = index.aggregate();
+        let index = projected_index.or_else(|| self.geometry.index());
+        let (quality, visual_lines, content_height) = index.map_or_else(
+            || {
+                (
+                    crate::GeometryQuality::Estimated,
+                    target.visual_lines_lower_bound().max(1),
+                    target
+                        .content_height_lower_bound()
+                        .max(self.config.layout.line_height),
+                )
+            },
+            |index| {
+                let aggregate = index.aggregate();
+                (
+                    crate::GeometryQuality::Exact,
+                    aggregate.visual_lines(),
+                    aggregate.content_height(),
+                )
+            },
+        );
         if state.binding != self.config.binding
             || state.job != target.key()
             || state.job.geometry() != self.geometry.key()
@@ -371,6 +387,7 @@ impl RangeTextInput {
             return Err(RangeTextInputError::Stale);
         }
         if self.pending_select_all {
+            let index = index.ok_or(RangeTextInputError::IncompleteSurface)?;
             state.desired.source_selection = Some(index.document_selection());
             state.desired.composition = None;
             state.desired.reveal_caret = true;
@@ -400,6 +417,7 @@ impl RangeTextInput {
             let mut retarget = desired;
             retarget.realization_anchor_block = if anchor < target.predecessor().byte_offset {
                 index
+                    .ok_or(RangeTextInputError::IncompleteSurface)?
                     .checkpoints()
                     .iter()
                     .rev()
@@ -436,8 +454,9 @@ impl RangeTextInput {
             state.restoration.map(|seed| (seed.caret, seed.selection)),
             preserved_scroll_position,
             target,
-            aggregate.visual_lines(),
-            aggregate.content_height(),
+            quality,
+            visual_lines,
+            content_height,
             self.config.layout.line_height,
             self.config.layout.wrap_width,
             self.config.placeholder.clone(),

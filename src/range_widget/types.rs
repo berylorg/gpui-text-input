@@ -141,6 +141,7 @@ pub struct RangeRealizationOwnership {
     pub target_geometry_page_waits: usize,
     pub deferred_geometry_responses: usize,
     pub pending_target_intents: usize,
+    pub pending_index_intents: usize,
     pub pending_layout_intents: usize,
     pub pending_presentation_intents: usize,
     pub pending_rebind_intents: usize,

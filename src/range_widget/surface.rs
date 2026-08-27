@@ -260,6 +260,7 @@ impl CoherentRangeSurface {
         restored_positions: Option<(SourcePosition, RangeSourceSelection)>,
         preserved_scroll_position: Option<SourcePosition>,
         target: &BlockTargetPublication,
+        quality: GeometryQuality,
         visual_lines: u64,
         content_height: Pixels,
         line_height: Pixels,
@@ -581,7 +582,7 @@ impl CoherentRangeSurface {
             scroll_intra_anchor,
             viewport,
             overscan,
-            quality: GeometryQuality::Exact,
+            quality,
             visual_lines,
             content_height,
             line_height,
@@ -693,6 +694,17 @@ impl CoherentRangeSurface {
     }
     pub const fn content_height(&self) -> Pixels {
         self.content_height
+    }
+
+    pub(super) fn local_checkpoint_for(
+        &self,
+        _block: Pixels,
+        _anchor: Option<SourcePosition>,
+    ) -> Option<&crate::ExactGeometryCheckpoint> {
+        if self.geometry != self.target.key().geometry() {
+            return None;
+        }
+        Some(self.target.predecessor_checkpoint())
     }
     pub const fn charge(&self) -> RangeSurfaceCharge {
         self.charge
