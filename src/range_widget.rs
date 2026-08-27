@@ -543,23 +543,39 @@ impl RangeTextInput {
             && !self.realization_continuation_scheduled
             && self.residency.counts().pending_requests == 0
             && self.object_residency.counts().pending_requests == 0
-            && self.segmentation.is_none()
-            && self.platform.is_none()
             && self.platform_ready.is_none()
             && self.restoration.is_none()
             && self.restoration_seed.is_none()
             && self.surface_candidate.is_none()
-            && self.replacement.is_none()
-            && self.pending_history.is_none()
-            && matches!(self.clipboard.state(), crate::ClipboardState::Idle)
-            && self.dispatched_clipboard_write.is_none()
+            && self.is_semantically_quiescent()
+            && self.requests.is_empty()
+            && self.attached_inline_object_surface.is_none()
+    }
+
+    pub fn is_semantically_quiescent(&self) -> bool {
+        self.replacement.is_none()
+            && self.segmentation.is_none()
+            && self.platform.is_none()
             && matches!(
                 self.edits.state(),
                 crate::MutationState::Idle | crate::MutationState::Settled
             )
+            && self.pending_history.is_none()
+            && matches!(self.clipboard.state(), crate::ClipboardState::Idle)
+            && self.dispatched_clipboard_write.is_none()
             && self.config.settlement_coordinator.retained_count() == 0
-            && self.requests.is_empty()
-            && self.attached_inline_object_surface.is_none()
+            && self.requests.iter().all(|request| {
+                matches!(
+                    request,
+                    RangeTextInputRequest::Page(_)
+                        | RangeTextInputRequest::CancelPage(_)
+                        | RangeTextInputRequest::ReleasePage(_)
+                        | RangeTextInputRequest::ObjectPage(_)
+                        | RangeTextInputRequest::CancelObjectPage(_)
+                        | RangeTextInputRequest::ReleaseObjectPage(_)
+                        | RangeTextInputRequest::CancelClipboardWrite(_)
+                )
+            })
     }
 
     pub fn focus(&self, window: &mut Window) {

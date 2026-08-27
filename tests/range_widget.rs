@@ -1369,6 +1369,83 @@ fn target_first_surface_is_local_estimated_delayed_and_epoch_ready(cx: &mut gpui
     });
 }
 
+#[gpui::test]
+fn target_first_background_index_is_semantically_quiescent_and_disposes_exact_custody(
+    cx: &mut gpui::TestAppContext,
+) {
+    let source = "visible target line\n".repeat(192);
+    let (input, cx) = cx
+        .add_window_view(|window, cx| RangeTextInput::new(config(&source, 1), window, cx).unwrap());
+
+    let first = drive_first_local_surface(&input, cx, &source, 123_500);
+    assert!(first.requests > 0);
+    while let Some(request) = input.update(cx, |input, _| input.take_request()) {
+        assert!(matches!(
+            request,
+            RangeTextInputRequest::ReleasePage(_) | RangeTextInputRequest::ReleaseObjectPage(_)
+        ));
+    }
+
+    cx.update(|window, app| window.draw(app).clear());
+    cx.run_until_parked();
+    let index = input
+        .update(cx, |input, _| input.take_request())
+        .and_then(|request| match request {
+            RangeTextInputRequest::Page(request)
+                if request.key().purpose() == PagePurpose::GeometryIndex =>
+            {
+                Some(request)
+            }
+            _ => None,
+        })
+        .expect("locally current surface starts one delayed background index page");
+    let key = index.key();
+    let late = page_for(&source, 123_900, index);
+
+    input.read_with(cx, |input, _| {
+        assert!(input.is_surface_current_and_interactive());
+        assert!(input.is_semantically_quiescent());
+        assert!(!input.is_quiescent());
+    });
+
+    let released =
+        cx.update(|window, app| input.update(app, |input, cx| input.dispose(window, cx)));
+    assert_eq!(
+        released
+            .iter()
+            .filter(|request| matches!(request, RangeTextInputRequest::CancelPage(cancelled) if *cancelled == key))
+            .count(),
+        1
+    );
+    assert!(released.iter().all(|request| matches!(
+        request,
+        RangeTextInputRequest::CancelPage(_)
+            | RangeTextInputRequest::ReleasePage(_)
+            | RangeTextInputRequest::CancelObjectPage(_)
+            | RangeTextInputRequest::ReleaseObjectPage(_)
+            | RangeTextInputRequest::CancelClipboardWrite(_)
+    )));
+    input.read_with(cx, |input, _| {
+        let diagnostics = input.realization_diagnostics();
+        assert_eq!(diagnostics.current.pending_index_intents, 0);
+        assert_eq!(diagnostics.current.active_geometry_jobs, 0);
+        assert_eq!(diagnostics.current.pending_geometry_pages, 0);
+        assert_eq!(diagnostics.current.pending_geometry_objects, 0);
+        assert_eq!(diagnostics.current.response_custody_count, 0);
+        assert!(input.is_semantically_quiescent());
+        assert!(input.is_quiescent());
+    });
+
+    let rejected = cx
+        .update(|window, app| input.update(app, |input, cx| input.deliver_page(late, window, cx)));
+    assert!(matches!(
+        rejected,
+        Err(gpui_text_input::RangeTextInputError::PageResponseRejected(
+            _
+        ))
+    ));
+}
+
 fn drive_pages_with_objects(
     input: &gpui::Entity<RangeTextInput>,
     cx: &mut gpui::VisualTestContext,
@@ -2854,6 +2931,53 @@ fn disposal_distinguishes_undispatched_and_dispatched_work(cx: &mut gpui::TestAp
     assert!(!drained.iter().any(
         |request| matches!(request, RangeTextInputRequest::ReleasePage(key) if *key == page.key())
     ));
+}
+
+#[gpui::test]
+fn queued_semantic_cleanup_prevents_clean_release_until_host_dispatch(
+    cx: &mut gpui::TestAppContext,
+) {
+    let source = "semantic cleanup";
+    let (input, cx) = cx
+        .add_window_view(|window, cx| RangeTextInput::new(config(source, 1), window, cx).unwrap());
+    assert!(drive_pages(&input, cx, source).is_empty());
+    let current = input.read_with(cx, |input, _| input.surface().unwrap().selection().head);
+    let (text, objects) = admitted_sources(source, 1, &[current]);
+    let base = binding(source, 1);
+    let begin = MutationBeginRequest::new(
+        MutationProposal::new(
+            MutationKey::new(base.binding(), base.revision(), OperationId::new(1)),
+            MutationKind::Edit,
+            MutationPositions::collapsed(current),
+            SourceRange::new(current, current).unwrap(),
+            0,
+        ),
+        MutationCursor::new(0),
+        MutationCursor::new(0),
+    );
+    let key = begin.proposal().key();
+
+    input.update(cx, |input, cx| {
+        assert!(input.is_semantically_quiescent());
+        input
+            .begin_host_mutation(begin, &[current], &text, &objects, cx)
+            .unwrap();
+        assert!(!input.is_semantically_quiescent());
+        assert!(matches!(
+            input.take_request(),
+            Some(RangeTextInputRequest::MutationBegin(request)) if request.proposal().key() == key
+        ));
+        assert!(matches!(
+            input.cancel_mutation(key, cx),
+            Ok(gpui_text_input::MutationCancellation::Cancelled)
+        ));
+        assert!(!input.is_semantically_quiescent());
+        assert!(matches!(
+            input.take_request(),
+            Some(RangeTextInputRequest::CancelMutation(request)) if request.key() == key
+        ));
+        assert!(input.is_semantically_quiescent());
+    });
 }
 
 #[gpui::test]
