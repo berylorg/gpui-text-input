@@ -14,7 +14,7 @@ use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 use gpui::{
     Modifiers, MouseButton, MouseDownEvent, Pixels, SharedString, StreamingLayoutPosition, TextRun,
-    black, font, px,
+    VisualContext, black, font, px,
 };
 
 use super::geometry::{GeometryObjectWait, GeometryPageWait};
@@ -3867,6 +3867,105 @@ fn history_and_ordinary_edits_share_one_live_operation_slot(cx: &mut gpui::TestA
         assert_eq!(input.config.settlement_coordinator.retained_count(), 0);
         assert!(input.is_quiescent());
     });
+}
+
+#[gpui::test]
+fn local_quiescence_ignores_other_generation_settlement_custody(cx: &mut gpui::TestAppContext) {
+    let coordinator = crate::RangeSettlementCoordinator::new(1).unwrap();
+    let mut first_config = config(2 * 1024 * 1024, 32_768);
+    first_config.settlement_coordinator = coordinator.clone();
+    let (first, cx) =
+        cx.add_window_view(|window, cx| RangeTextInput::new(first_config, window, cx).unwrap());
+    drive_initial_surface(&first, cx);
+
+    let mut second_config = config(2 * 1024 * 1024, 32_768);
+    second_config.settlement_coordinator = coordinator.clone();
+    let second =
+        cx.new_window_entity(|window, cx| RangeTextInput::new(second_config, window, cx).unwrap());
+    drive_initial_surface(&second, cx);
+
+    let history = admit_history(
+        &second,
+        cx,
+        crate::RangeHistoryFrontier {
+            binding: binding(),
+            id: 501,
+            undo_available: true,
+            redo_available: false,
+        },
+        crate::MutationKind::Undo,
+    );
+    assert_eq!(coordinator.retained_count(), 1);
+    first.read_with(cx, |input, _| {
+        assert!(input.is_semantically_quiescent());
+        assert!(input.is_quiescent());
+        assert!(input.export_restoration(None).is_ok());
+    });
+
+    let (blocked_mutation, _) = drive_local_insert_to_finish_pending(&first, cx);
+    first.update(cx, |input, cx| {
+        assert!(matches!(
+            input.accept_mutation_finish(blocked_mutation, cx),
+            Err(RangeTextInputError::DetachedCapacity)
+        ));
+        assert!(!input.is_semantically_quiescent());
+    });
+    assert_eq!(coordinator.retained_count(), 1);
+    rebind_revision(&first, cx, 2);
+    assert!(matches!(
+        first.update(cx, |input, _| input.take_request()),
+        Some(RangeTextInputRequest::CancelMutation(cancel)) if cancel.key() == blocked_mutation
+    ));
+    drive_initial_surface(&first, cx);
+    first.read_with(cx, |input, _| {
+        assert!(input.is_semantically_quiescent());
+        assert!(input.is_quiescent());
+        assert!(input.export_restoration(None).is_ok());
+    });
+
+    cx.update(|window, app| {
+        second.update(app, |input, cx| {
+            assert_eq!(
+                input
+                    .settle_history(history, crate::RangeHistoryOutcome::Rejected, window, cx)
+                    .unwrap(),
+                crate::RangeHistorySettlement::Current(crate::RangeHistoryOutcome::Rejected)
+            );
+        })
+    });
+    assert_eq!(coordinator.retained_count(), 0);
+
+    let (mutation, _) = drive_local_insert_to_commit_pending(&second, cx);
+    assert_eq!(coordinator.retained_count(), 1);
+    second.read_with(cx, |input, _| {
+        assert!(matches!(
+            input.export_restoration(None),
+            Err(RangeTextInputError::NotQuiescent)
+        ));
+    });
+    first.read_with(cx, |input, _| {
+        assert!(input.is_semantically_quiescent());
+        assert!(input.is_quiescent());
+        assert!(input.export_restoration(None).is_ok());
+    });
+    cx.update(|window, app| {
+        first.update(app, |input, cx| {
+            let _ = input.dispose(window, cx);
+        })
+    });
+    assert_eq!(coordinator.retained_count(), 1);
+
+    cx.update(|window, app| {
+        second.update(app, |input, cx| {
+            assert_eq!(
+                input
+                    .settle_mutation(mutation, crate::MutationOutcome::Rejected, window, cx)
+                    .unwrap(),
+                crate::MutationSettlement::Current(crate::MutationOutcome::Rejected)
+            );
+        })
+    });
+    assert_eq!(coordinator.retained_count(), 0);
 }
 
 #[gpui::test]

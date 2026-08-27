@@ -567,7 +567,6 @@ impl RangeTextInput {
             && self.pending_history.is_none()
             && matches!(self.clipboard.state(), crate::ClipboardState::Idle)
             && self.dispatched_clipboard_write.is_none()
-            && self.config.settlement_coordinator.retained_count() == 0
             && self.requests.iter().all(|request| {
                 matches!(
                     request,
