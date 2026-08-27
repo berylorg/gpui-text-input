@@ -11,7 +11,7 @@ use crate::{
 };
 
 use super::geometry::{PreparedTargetPublication, TerminalTargetPreparation};
-use super::{DesiredSurface, RangeTextInput, SurfaceCandidate};
+use super::{DesiredSurface, RangeTextInput, SurfaceCandidate, SurfaceCandidateKind};
 
 pub(super) struct WidgetTransitionCandidate {
     expected_next_id: u64,
@@ -246,6 +246,16 @@ impl RangeTextInput {
         {
             desired.preserve_scroll_anchor = false;
         }
+        let candidate_kind = self.surface_candidate.map_or_else(
+            || {
+                if desired == self.desired {
+                    SurfaceCandidateKind::IndexRefinement
+                } else {
+                    SurfaceCandidateKind::Replacement
+                }
+            },
+            |candidate| candidate.kind,
+        );
         let committed_next_id = self
             .next_id
             .checked_add(2)
@@ -262,6 +272,7 @@ impl RangeTextInput {
                 binding: self.config.binding,
                 desired,
                 restoration,
+                kind: candidate_kind,
             },
             committed_next_id,
         })
@@ -537,6 +548,7 @@ impl RangeTextInput {
             binding: self.config.binding,
             desired,
             restoration,
+            kind: SurfaceCandidateKind::Replacement,
         };
         let (surface_candidate, target_publication) = if geometry.terminal_target().is_some() {
             let preparation = match self.prepare_terminal_target_publication(&geometry, state) {
@@ -630,6 +642,7 @@ impl RangeTextInput {
             binding: self.config.binding,
             desired,
             restoration: target.and_then(|intent| intent.restoration),
+            kind: SurfaceCandidateKind::Replacement,
         });
         let mut candidate = self.prepare_widget_transition(
             geometry,
@@ -682,6 +695,7 @@ impl RangeTextInput {
             binding: self.config.binding,
             desired,
             restoration: target.and_then(|intent| intent.restoration),
+            kind: SurfaceCandidateKind::Replacement,
         });
         let mut candidate = self.prepare_widget_transition(
             geometry,
@@ -755,6 +769,7 @@ impl RangeTextInput {
             binding,
             desired,
             restoration: None,
+            kind: SurfaceCandidateKind::Replacement,
         });
         let mut candidate = self.prepare_widget_transition(
             geometry,

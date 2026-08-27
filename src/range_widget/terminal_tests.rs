@@ -603,6 +603,7 @@ struct SurfaceCandidateFingerprint {
     binding: RangeBinding,
     desired: DesiredFingerprint,
     restoration: Option<RangeRestorationSeed>,
+    kind: SurfaceCandidateKind,
 }
 
 #[derive(Debug, PartialEq)]
@@ -789,6 +790,7 @@ fn transition_fingerprint(input: &RangeTextInput) -> TransitionFingerprint {
             binding: candidate.binding,
             desired: desired_fingerprint(candidate.desired),
             restoration: candidate.restoration,
+            kind: candidate.kind,
         });
     TransitionFingerprint {
         geometry: GeometryFingerprint {
@@ -1033,6 +1035,121 @@ fn drive_local_insert_to_finish_pending(
     }
     let intended = intended.expect("local mutation finish");
     (key, intended)
+}
+
+#[gpui::test]
+fn index_refinement_candidate_preserves_interactivity_but_replacement_does_not(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (input, cx) = cx.add_window_view(|window, cx| {
+        RangeTextInput::new(config(2 * 1024 * 1024, 32_768), window, cx).unwrap()
+    });
+    drive_surface_for_source(&input, cx, SOURCE);
+
+    input.update(cx, |input, _| {
+        assert!(input.is_surface_current_and_interactive());
+        let surface = input.surface.as_ref().unwrap();
+        input.surface_candidate = Some(SurfaceCandidate {
+            job: crate::GeometryJobKey::new(
+                surface.geometry_key(),
+                crate::GeometryJobId::new(input.next_id),
+            ),
+            binding: input.config.binding,
+            desired: input.desired,
+            restoration: None,
+            kind: SurfaceCandidateKind::IndexRefinement,
+        });
+        assert!(input.is_surface_current_and_interactive());
+
+        input.surface_candidate.as_mut().unwrap().kind = SurfaceCandidateKind::Replacement;
+        assert!(!input.is_surface_current_and_interactive());
+    });
+}
+
+#[gpui::test]
+fn index_completion_with_changed_desired_is_a_noninteractive_replacement(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (input, cx) = cx.add_window_view(|window, cx| {
+        RangeTextInput::new(config(2 * 1024 * 1024, 32_768), window, cx).unwrap()
+    });
+    drive_surface_for_source(&input, cx, SOURCE);
+
+    cx.update(|window, app| {
+        input.update(app, |input, _| {
+            assert!(input.surface_candidate.is_none());
+            assert!(input.is_surface_current_and_interactive());
+            input.pending_select_all = true;
+
+            let mut owner = ExactGeometryOwner::new(
+                input.config.binding,
+                input.config.presentation_generation,
+                input.config.layout.clone(),
+                input.config.style.clone(),
+                input.config.geometry_limits,
+            )
+            .unwrap();
+            let start = owner
+                .start_index(crate::GeometryJobId::new(90_000))
+                .unwrap();
+            let request = owner
+                .request_page(start.key(), PageRequestId::new(90_000))
+                .unwrap();
+            let page = page_for(request, 90_000);
+            let successor = crate::range_geometry::TargetResponseSuccessor {
+                target_job_id: crate::GeometryJobId::new(90_001),
+                page_id: PageRequestId::new(90_001),
+                object_id: ObjectRequestId::new(90_001),
+                max_objects: input.config.object_residency_limits.max_resident_objects(),
+                max_object_bytes: input.config.object_residency_limits.max_resident_bytes(),
+                target: input.desired.target(),
+                anchor: None,
+                select_all: true,
+            };
+            let prepared = owner
+                .prepare_index_page(start.key(), &page, window.text_system(), successor)
+                .unwrap();
+            let prepared = if prepared.progress() == crate::ExactGeometryProgress::NeedObjects {
+                let Some(crate::range_geometry::PreparedTargetSuccessor::Object {
+                    request, ..
+                }) = prepared.successor()
+                else {
+                    panic!("index page must prepare its object successor")
+                };
+                owner.commit_prepared_target_response(prepared);
+                let object_page = ObjectPage::new(
+                    ObjectPageId::new(90_000),
+                    request.key(),
+                    vec![],
+                    ObjectPageEdgeFact::EnvelopeBoundary,
+                    ObjectPageEdgeFact::EnvelopeBoundary,
+                    true,
+                    None,
+                )
+                .unwrap();
+                owner
+                    .prepare_index_object_page(
+                        start.key(),
+                        &page,
+                        &object_page,
+                        window.text_system(),
+                        successor,
+                    )
+                    .unwrap()
+            } else {
+                prepared
+            };
+            assert!(prepared.terminal_index().is_some());
+            let target = input.prepare_index_response_target(&prepared).unwrap();
+            assert_ne!(target.desired, input.desired);
+            assert_eq!(
+                target.surface_candidate.kind,
+                SurfaceCandidateKind::Replacement
+            );
+            input.surface_candidate = Some(target.surface_candidate);
+            assert!(!input.is_surface_current_and_interactive());
+        });
+    });
 }
 
 #[gpui::test]

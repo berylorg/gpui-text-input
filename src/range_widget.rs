@@ -480,7 +480,9 @@ impl RangeTextInput {
                 && self.pending_layout_intent.is_none()
                 && self.pending_presentation_intent.is_none()
                 && self.pending_rebind_intent.is_none()
-                && self.surface_candidate.is_none()
+                && self
+                    .surface_candidate
+                    .is_none_or(|candidate| candidate.kind == SurfaceCandidateKind::IndexRefinement)
         })
     }
 

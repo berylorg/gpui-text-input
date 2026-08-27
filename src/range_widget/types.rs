@@ -760,6 +760,13 @@ pub(super) struct SurfaceCandidate {
     pub binding: RangeBinding,
     pub desired: DesiredSurface,
     pub restoration: Option<RangeRestorationSeed>,
+    pub kind: SurfaceCandidateKind,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum SurfaceCandidateKind {
+    Replacement,
+    IndexRefinement,
 }
 
 impl DesiredSurface {
