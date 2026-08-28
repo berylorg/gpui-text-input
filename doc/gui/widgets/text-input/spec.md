@@ -118,6 +118,10 @@ Malformed text-page, object-page, or residency-backed geometry delivery terminal
 named request or job step and releases its payload and reservation; that key cannot be retried.
 A well-formed exact-key delivery rejected only by candidate or terminal-publication capacity leaves
 the complete pending and resident fingerprint unchanged and may be retried with that exact key.
+Public desired-state transitions align or replace in-flight target geometry. A terminal response
+that does not align with its surface candidate is therefore a deterministic invariant failure: it
+closes the named response and geometry work with a content-free error while preserving the prior
+coherent publication, and it creates neither a capacity fallback nor a pending successor intent.
 Pending Select All is resolved from the completed index's bounded exact document endpoints and is
 published inside that terminal surface, never by a second fallible transition.
 

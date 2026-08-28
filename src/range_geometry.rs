@@ -5,7 +5,7 @@ mod types;
 
 pub(crate) use exact::{
     PreparedGeometryTransition, PreparedTargetResponse, PreparedTargetSuccessor,
-    TargetResponseSuccessor,
+    PreparedTerminalGeometryFailure, TargetResponseSuccessor,
 };
 
 pub use exact::{

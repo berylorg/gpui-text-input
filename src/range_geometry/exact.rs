@@ -28,6 +28,7 @@ mod transition;
 mod types;
 mod validation;
 
+pub(crate) use lifecycle::PreparedTerminalGeometryFailure;
 pub(crate) use prepared_admission::{
     PreparedTargetResponse, PreparedTargetSuccessor, TargetResponseSuccessor,
 };

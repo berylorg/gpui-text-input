@@ -1,7 +1,7 @@
 use super::*;
 
 impl RangeTextInput {
-    pub(in crate::range_widget) fn prepare_terminal_response_publication(
+    pub(super) fn try_prepare_terminal_response_publication(
         &self,
         geometry: crate::range_geometry::PreparedTargetResponse,
         text_admission: Option<crate::residency::PreparedRangePageAdmission>,

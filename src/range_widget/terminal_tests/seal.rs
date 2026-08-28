@@ -1,6 +1,6 @@
 use super::*;
 
-fn presentation_config(source: &str) -> RangeTextInputConfig {
+pub(super) fn presentation_config(source: &str) -> RangeTextInputConfig {
     let mut configuration = config(2 * 1024 * 1024, 32_768);
     configuration.binding = RangeBinding::new(
         BindingId::new(210),
@@ -14,7 +14,7 @@ fn presentation_config(source: &str) -> RangeTextInputConfig {
     configuration
 }
 
-fn stage_terminal_target_text_response(
+pub(super) fn stage_terminal_target_text_response(
     input: &gpui::Entity<RangeTextInput>,
     cx: &mut gpui::VisualTestContext,
     source: &str,

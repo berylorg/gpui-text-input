@@ -4,7 +4,81 @@ use crate::{PageRequestKey, RangeBinding};
 
 use super::*;
 
+pub(crate) struct PreparedTerminalGeometryFailure {
+    key: GeometryJobKey,
+    pending: PendingInput,
+    release: ExactGeometryRelease,
+}
+
 impl ExactGeometryOwner {
+    pub(crate) fn prepare_terminal_page_failure(
+        &self,
+        key: GeometryJobKey,
+        page: PageRequestKey,
+    ) -> Result<PreparedTerminalGeometryFailure, ExactGeometryError> {
+        self.prepare_terminal_failure(key, PendingInput::Text(page))
+    }
+
+    pub(crate) fn prepare_terminal_object_failure(
+        &self,
+        key: GeometryJobKey,
+        page: crate::ObjectRequestKey,
+    ) -> Result<PreparedTerminalGeometryFailure, ExactGeometryError> {
+        self.prepare_terminal_failure(key, PendingInput::Object(page))
+    }
+
+    fn prepare_terminal_failure(
+        &self,
+        key: GeometryJobKey,
+        pending: PendingInput,
+    ) -> Result<PreparedTerminalGeometryFailure, ExactGeometryError> {
+        let active = self
+            .active
+            .as_deref()
+            .ok_or(ExactGeometryError::ObsoleteJob(key))?;
+        if active.key != key {
+            return Err(ExactGeometryError::ObsoleteJob(key));
+        }
+        if active.pending.as_deref().copied() != Some(pending) {
+            return Err(match pending {
+                PendingInput::Text(page) => ExactGeometryError::WrongPage(page),
+                PendingInput::Object(page) => ExactGeometryError::WrongObjectPage(page),
+            });
+        }
+        let mut jobs = Vec::with_capacity(1);
+        jobs.push(key);
+        let mut pages = Vec::with_capacity(usize::from(matches!(pending, PendingInput::Text(_))));
+        let mut object_pages =
+            Vec::with_capacity(usize::from(matches!(pending, PendingInput::Object(_))));
+        match pending {
+            PendingInput::Text(page) => pages.push(page),
+            PendingInput::Object(page) => object_pages.push(page),
+        }
+        Ok(PreparedTerminalGeometryFailure {
+            key,
+            pending,
+            release: ExactGeometryRelease {
+                jobs,
+                pages,
+                object_pages,
+                counts: accounting::active_counts(active),
+            },
+        })
+    }
+
+    pub(crate) fn commit_prepared_terminal_failure(
+        &mut self,
+        prepared: PreparedTerminalGeometryFailure,
+    ) -> ExactGeometryRelease {
+        let active = self
+            .active
+            .take()
+            .expect("prepared terminal failure retains an active geometry job");
+        debug_assert_eq!(active.key, prepared.key);
+        debug_assert_eq!(active.pending.as_deref().copied(), Some(prepared.pending));
+        prepared.release
+    }
+
     pub fn set_layout_required_bytes(
         &self,
         layout: &StreamingLayoutBinding,

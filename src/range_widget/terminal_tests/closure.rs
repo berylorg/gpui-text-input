@@ -15,9 +15,7 @@ fn adjacent_key(id: u64, purpose: PagePurpose, max_payload_bytes: u64) -> PageRe
 }
 
 #[gpui::test]
-fn deferred_terminal_capacity_fallback_retains_custody_until_replacement_commits(
-    cx: &mut gpui::TestAppContext,
-) {
+fn terminal_surface_capacity_retries_exact_custody_without_fallback(cx: &mut gpui::TestAppContext) {
     let source = "line\n".repeat(24);
     let mut configuration = config(2 * 1024 * 1024, 32_768);
     configuration.binding = RangeBinding::new(
@@ -36,44 +34,33 @@ fn deferred_terminal_capacity_fallback_retains_custody_until_replacement_commits
     let key = stage_terminal_target_object_response(&input, cx, &source);
     cx.update(|window, app| {
         input.update(app, |input, cx| {
-            input.config.limits.max_realization_work_per_frame = 1;
-            input.begin_realization_frame();
-            input.spend_realization_credit();
             input
-                .defer_geometry_response(
-                    super::super::geometry::DeferredGeometryResponse::TargetObject(
+                .admit_response_custody(
+                    super::super::response_custody::RangeResponseCustody::Object(
                         empty_terminal_object_response(key),
                     ),
-                    cx,
                 )
                 .unwrap();
-            assert!(input.deferred_geometry_response.is_some());
+            let before = format!("{:?}", fingerprint(input));
             input.config.limits.max_surface_bytes = 1;
             input.config.limits.max_surface_items = 1;
-
             input.begin_realization_frame();
             assert!(matches!(
-                input.service_deferred_geometry_response(window, cx),
-                Err(RangeTextInputError::Pending)
-            ));
-            assert!(input.deferred_geometry_response.is_some());
-            assert!(input.dispatched_object_pages.contains(&key));
-            assert!(input.pending_target_intent.is_some());
-
-            input.begin_realization_frame();
-            assert!(matches!(
-                input.service_pending_target_intent(cx),
+                input.service_response_custody(window, cx),
                 Err(RangeTextInputError::SurfaceCapacity)
             ));
-            assert!(input.deferred_geometry_response.is_some());
+            assert_eq!(format!("{:?}", fingerprint(input)), before);
+            assert_eq!(input.response_custody.len(), 1);
             assert!(input.dispatched_object_pages.contains(&key));
+            assert!(input.pending_target_intent.is_none());
 
             input.config.limits.max_surface_bytes = 2 * 1024 * 1024;
             input.config.limits.max_surface_items = 32_768;
             input.begin_realization_frame();
-            assert!(input.service_pending_target_intent(cx).unwrap().is_some());
-            assert!(input.deferred_geometry_response.is_none());
+            assert!(input.service_response_custody(window, cx).unwrap());
+            assert!(input.response_custody.is_empty());
             assert!(!input.dispatched_object_pages.contains(&key));
+            assert!(input.surface.is_some());
         })
     });
 }

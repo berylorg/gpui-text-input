@@ -425,6 +425,14 @@ retryable under the same key. A well-formed exact-key delivery rejected only bec
 capacity or terminal publication capacity is unavailable consumes neither the dispatched key nor
 its reservation, changes no resident owner, and remains retryable with that exact key.
 
+Public selection, restoration, scroll, layout, presentation, and index transitions align or
+replace in-flight target geometry. A completed response that no longer aligns with its terminal
+surface candidate therefore violates that invariant rather than naming a retarget transition.
+Terminal preparation classifies such deterministic invariant or surface failures before custody
+handling, closes the named response and geometry work with a content-free failure, and creates no
+capacity fallback or pending successor intent. The prior coherent publication and unrelated
+residency remain unchanged.
+
 Pending Select All is part of terminal preparation rather than a successor transition. The exact
 completed index retains constant-size first and last object cursors, from which the candidate derives
 document endpoints before coherent-surface admission. Rejection therefore preserves the prior

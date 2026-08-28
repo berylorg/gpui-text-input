@@ -1,6 +1,7 @@
 mod deferred;
 mod response_commit;
 mod response_preparation;
+mod terminal_failure;
 
 pub(super) use deferred::DeferredGeometryResponse;
 
@@ -413,7 +414,10 @@ impl RangeTextInput {
         } else {
             self.service_geometry_page_inner(window, cx)
         };
-        if result.is_err() {
+        let closed_terminal_failure =
+            matches!(&result, Err(RangeTextInputError::IncompleteSurface))
+                && self.active_geometry.is_none();
+        if result.is_err() && !closed_terminal_failure {
             self.reject_restoration_geometry(cx)?;
         }
         result
@@ -574,7 +578,7 @@ impl RangeTextInput {
             return Some(Ok(()));
         }
         if geometry.progress() == ExactGeometryProgress::TargetComplete {
-            let candidate = match self.prepare_terminal_response_publication(
+            let preparation = match self.prepare_terminal_response_publication(
                 geometry,
                 None,
                 None,
@@ -582,16 +586,11 @@ impl RangeTextInput {
                 Some(object_page_id),
                 None,
                 Some(key),
-                None,
             ) {
-                Ok(candidate) => candidate,
-                Err(RangeTextInputError::SurfaceCapacity) => {
-                    return Some(self.require_capacity_fallback_commit(cx));
-                }
+                Ok(preparation) => preparation,
                 Err(error) => return Some(Err(error)),
             };
-            self.commit_terminal_response_publication(candidate, cx);
-            return Some(Ok(()));
+            return Some(self.commit_terminal_response_preparation(preparation, cx));
         }
         let candidate = match self.prepare_nonterminal_response_publication(
             geometry,
@@ -662,6 +661,21 @@ impl RangeTextInput {
         {
             return Some(Ok(()));
         }
+        if geometry.progress() == ExactGeometryProgress::TargetComplete {
+            let preparation = match self.prepare_terminal_response_publication(
+                geometry,
+                None,
+                None,
+                Some(text_page_id),
+                Some(object_page_id),
+                None,
+                Some(key),
+            ) {
+                Ok(preparation) => preparation,
+                Err(error) => return Some(Err(error)),
+            };
+            return Some(self.commit_terminal_response_preparation(preparation, cx));
+        }
         let index_target = match geometry
             .terminal_index()
             .map(|_| self.prepare_index_response_target(&geometry))
@@ -670,26 +684,6 @@ impl RangeTextInput {
             Ok(index_target) => index_target,
             Err(error) => return Some(Err(error)),
         };
-        if geometry.progress() == ExactGeometryProgress::TargetComplete {
-            let candidate = match self.prepare_terminal_response_publication(
-                geometry,
-                None,
-                None,
-                Some(text_page_id),
-                Some(object_page_id),
-                None,
-                Some(key),
-                index_target,
-            ) {
-                Ok(candidate) => candidate,
-                Err(RangeTextInputError::SurfaceCapacity) => {
-                    return Some(self.require_capacity_fallback_commit(cx));
-                }
-                Err(error) => return Some(Err(error)),
-            };
-            self.commit_terminal_response_publication(candidate, cx);
-            return Some(Ok(()));
-        }
         let candidate = match self.prepare_nonterminal_response_publication(
             geometry,
             None,
@@ -1086,12 +1080,8 @@ impl RangeTextInput {
                 return Err(error);
             }
         };
-        let index_target = geometry
-            .terminal_index()
-            .map(|_| self.prepare_index_response_target(&geometry))
-            .transpose()?;
         if geometry.progress() == ExactGeometryProgress::TargetComplete {
-            let candidate = match self.prepare_terminal_response_publication(
+            let preparation = self.prepare_terminal_response_publication(
                 geometry,
                 None,
                 Some(object_admission),
@@ -1099,17 +1089,13 @@ impl RangeTextInput {
                 None,
                 None,
                 Some(key),
-                index_target,
-            ) {
-                Ok(candidate) => candidate,
-                Err(RangeTextInputError::SurfaceCapacity) => {
-                    return self.require_capacity_fallback_commit(cx);
-                }
-                Err(error) => return Err(error),
-            };
-            self.commit_terminal_response_publication(candidate, cx);
-            return Ok(());
+            )?;
+            return self.commit_terminal_response_preparation(preparation, cx);
         }
+        let index_target = geometry
+            .terminal_index()
+            .map(|_| self.prepare_index_response_target(&geometry))
+            .transpose()?;
         let candidate = self.prepare_nonterminal_response_publication(
             geometry,
             None,
@@ -1227,7 +1213,7 @@ impl RangeTextInput {
             }
         };
         if geometry.progress() == ExactGeometryProgress::TargetComplete {
-            let candidate = match self.prepare_terminal_response_publication(
+            let preparation = self.prepare_terminal_response_publication(
                 geometry,
                 Some(text_admission),
                 None,
@@ -1235,16 +1221,8 @@ impl RangeTextInput {
                 None,
                 Some(key),
                 None,
-                None,
-            ) {
-                Ok(candidate) => candidate,
-                Err(RangeTextInputError::SurfaceCapacity) => {
-                    return self.require_capacity_fallback_commit(cx);
-                }
-                Err(error) => return Err(error),
-            };
-            self.commit_terminal_response_publication(candidate, cx);
-            return Ok(());
+            )?;
+            return self.commit_terminal_response_preparation(preparation, cx);
         }
         let candidate = match self.prepare_nonterminal_response_publication(
             geometry,
@@ -1348,7 +1326,7 @@ impl RangeTextInput {
             }
         };
         if geometry.progress() == ExactGeometryProgress::TargetComplete {
-            let candidate = match self.prepare_terminal_response_publication(
+            let preparation = self.prepare_terminal_response_publication(
                 geometry,
                 None,
                 Some(object_admission),
@@ -1356,16 +1334,8 @@ impl RangeTextInput {
                 None,
                 None,
                 Some(key),
-                None,
-            ) {
-                Ok(candidate) => candidate,
-                Err(RangeTextInputError::SurfaceCapacity) => {
-                    return self.require_capacity_fallback_commit(cx);
-                }
-                Err(error) => return Err(error),
-            };
-            self.commit_terminal_response_publication(candidate, cx);
-            return Ok(());
+            )?;
+            return self.commit_terminal_response_preparation(preparation, cx);
         }
         let candidate = match self.prepare_nonterminal_response_publication(
             geometry,
@@ -1442,12 +1412,8 @@ impl RangeTextInput {
                 return Err(error);
             }
         };
-        let index_target = geometry
-            .terminal_index()
-            .map(|_| self.prepare_index_response_target(&geometry))
-            .transpose()?;
         if geometry.progress() == ExactGeometryProgress::TargetComplete {
-            let candidate = match self.prepare_terminal_response_publication(
+            let preparation = self.prepare_terminal_response_publication(
                 geometry,
                 Some(text_admission),
                 None,
@@ -1455,17 +1421,13 @@ impl RangeTextInput {
                 None,
                 Some(key),
                 None,
-                index_target,
-            ) {
-                Ok(candidate) => candidate,
-                Err(RangeTextInputError::SurfaceCapacity) => {
-                    return self.require_capacity_fallback_commit(cx);
-                }
-                Err(error) => return Err(error),
-            };
-            self.commit_terminal_response_publication(candidate, cx);
-            return Ok(());
+            )?;
+            return self.commit_terminal_response_preparation(preparation, cx);
         }
+        let index_target = geometry
+            .terminal_index()
+            .map(|_| self.prepare_index_response_target(&geometry))
+            .transpose()?;
         let candidate = self.prepare_nonterminal_response_publication(
             geometry,
             Some(text_admission),

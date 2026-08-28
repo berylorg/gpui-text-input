@@ -9,6 +9,7 @@ mod lifecycle;
 mod priority;
 mod release;
 mod seal;
+mod terminal_failure;
 
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
@@ -1530,7 +1531,7 @@ fn stage_terminal_resident_target_object(
 }
 
 #[gpui::test]
-fn synchronous_terminal_object_exact_fit_and_one_under_fallback_atomically(
+fn synchronous_terminal_object_exact_fit_and_one_under_retain_resident_response_for_retry(
     cx: &mut gpui::TestAppContext,
 ) {
     let source = "line\n".repeat(24);
@@ -1592,35 +1593,25 @@ fn synchronous_terminal_object_exact_fit_and_one_under_fallback_atomically(
                 fingerprint(input)
             })
         });
-        let result = cx.update(|window, app| {
+        let prepaint = cx.update(|window, app| {
             input.update(app, |input, cx| {
                 input.service_admitted_geometry_for_prepaint(window, cx)
             })
         });
-        result.unwrap_or_else(|error| panic!("exact={exact:?}: {error:?}"));
-        if !exact_fit {
-            for _ in 0..64 {
-                let complete = input.read_with(cx, |input, _| input.active_geometry.is_none());
-                if complete {
-                    break;
-                }
-                cx.update(|window, app| {
-                    input.update(app, |input, cx| {
-                        input.begin_realization_frame();
-                        input
-                            .service_admitted_geometry_for_prepaint(window, cx)
-                            .unwrap();
-                    })
-                });
-            }
-        }
+        prepaint.unwrap_or_else(|error| panic!("exact={exact:?}: {error:?}"));
         input.read_with(cx, |input, _| {
-            assert_ne!(fingerprint(input), before);
-            assert!(input.pending_geometry_object.is_none());
-            assert!(input.active_geometry.is_none());
-            let surface = input.surface.as_ref().unwrap();
-            assert_eq!(surface.filler_count(), 1);
-            if exact_fit {
+            assert!(input.pending_target_intent.is_none());
+            assert!(input.response_custody.is_empty());
+        });
+        if exact_fit {
+            input.read_with(cx, |input, _| {
+                assert_ne!(fingerprint(input), before);
+                assert!(input.pending_geometry_object.is_none());
+                assert!(input.active_geometry.is_none());
+                assert!(input.pending_target_intent.is_none());
+                assert!(input.response_custody.is_empty());
+                let surface = input.surface.as_ref().unwrap();
+                assert_eq!(surface.filler_count(), 1);
                 let admission = input.last_surface_admission.unwrap();
                 assert!(admission.bytes <= exact.bytes);
                 assert!(admission.items <= exact.items);
@@ -1628,13 +1619,47 @@ fn synchronous_terminal_object_exact_fit_and_one_under_fallback_atomically(
                     surface.capacity_state(),
                     RangeRealizationCapacityState::ViewportExceedsRenderingCapacity
                 );
-            } else {
-                assert_eq!(
-                    surface.capacity_state(),
-                    RangeRealizationCapacityState::CapacitySaturatedViewportExceedsRenderingCapacity
-                );
-                assert_ne!(input.last_surface_admission, Some(exact));
-            }
+            });
+            continue;
+        }
+
+        input.read_with(cx, |input, _| {
+            assert_eq!(fingerprint(input), before);
+            assert!(matches!(
+                input
+                    .pending_geometry_object
+                    .as_ref()
+                    .map(|pending| pending.wait),
+                Some(GeometryObjectWait::Resident(_))
+            ));
+            assert!(input.pending_target_intent.is_none());
+            assert!(input.response_custody.is_empty());
+        });
+
+        input.update(cx, |input, _| {
+            input.config.limits.max_surface_bytes = exact.bytes;
+            input.config.limits.max_surface_items = exact.items;
+            input.begin_realization_frame();
+        });
+        cx.update(|window, app| {
+            input.update(app, |input, cx| {
+                input
+                    .service_admitted_geometry_for_prepaint(window, cx)
+                    .unwrap();
+            })
+        });
+        input.read_with(cx, |input, _| {
+            assert_ne!(fingerprint(input), before);
+            assert!(input.pending_geometry_object.is_none());
+            assert!(input.active_geometry.is_none());
+            assert!(input.pending_target_intent.is_none());
+            assert!(input.response_custody.is_empty());
+            let surface = input.surface.as_ref().unwrap();
+            assert_eq!(surface.filler_count(), 1);
+            assert_eq!(
+                surface.capacity_state(),
+                RangeRealizationCapacityState::ViewportExceedsRenderingCapacity
+            );
         });
     }
 }
@@ -1830,7 +1855,7 @@ fn stage_terminal_target_object_response(
 }
 
 #[gpui::test]
-fn asynchronous_terminal_object_exact_fit_and_one_under_fallback_atomically(
+fn asynchronous_terminal_object_exact_fit_and_one_under_retain_custody_for_retry(
     cx: &mut gpui::TestAppContext,
 ) {
     let source = "line\n".repeat(24);
@@ -1913,21 +1938,48 @@ fn asynchronous_terminal_object_exact_fit_and_one_under_fallback_atomically(
         } else {
             result.unwrap_or_else(|error| {
                 panic!(
-                    "one-under fallback failed: exact={exact:?} limits={bytes}/{items}: {error:?}"
+                    "one-under custody admission failed: exact={exact:?} limits={bytes}/{items}: {error:?}"
                 )
             });
-            drive_surface_for_source(&input, cx, &source);
             input.read_with(cx, |input, _| {
-                assert_ne!(fingerprint(input), before);
-                assert_ne!(input.last_surface_admission, Some(exact));
+                assert_eq!(fingerprint(input), before);
+                assert!(matches!(
+                    input.response_custody.front(),
+                    Some(super::response_custody::RangeResponseCustody::Object(page))
+                        if page.key() == key
+                ));
                 assert_eq!(
                     input.surface.as_ref().unwrap().capacity_state(),
-                    RangeRealizationCapacityState::CapacitySaturatedViewportExceedsRenderingCapacity,
+                    RangeRealizationCapacityState::ViewportExceedsRenderingCapacity,
                     "exact={exact:?} limits={bytes}/{items}"
                 );
+                assert!(input.pending_target_intent.is_none());
+                assert!(input.dispatched_object_pages.contains(&key));
+            });
+
+            input.update(cx, |input, _| {
+                input.config.limits.max_surface_bytes = exact.bytes;
+                input.config.limits.max_surface_items = exact.items;
+                input.begin_realization_frame();
+            });
+            cx.update(|window, app| {
+                input.update(app, |input, cx| {
+                    assert!(input.service_response_custody(window, cx).unwrap());
+                })
+            });
+            input.read_with(cx, |input, _| {
+                assert_ne!(fingerprint(input), before);
+                assert!(input.response_custody.is_empty());
                 assert!(input.pending_geometry_object.is_none());
                 assert!(input.active_geometry.is_none());
+                assert!(input.pending_target_intent.is_none());
                 assert!(!input.dispatched_object_pages.contains(&key));
+                let surface = input.surface.as_ref().unwrap();
+                assert_eq!(surface.filler_count(), 1);
+                assert_eq!(
+                    surface.capacity_state(),
+                    RangeRealizationCapacityState::ViewportExceedsRenderingCapacity
+                );
             });
         }
     }
