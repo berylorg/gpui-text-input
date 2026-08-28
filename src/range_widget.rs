@@ -474,6 +474,19 @@ impl RangeTextInput {
         self.surface.as_ref()
     }
 
+    pub(super) fn current_surface_position_for_source_position(
+        &self,
+        position: crate::SourcePosition,
+    ) -> Option<gpui::Point<Pixels>> {
+        self.surface
+            .as_ref()
+            .filter(|surface| {
+                surface.binding() == self.config.binding
+                    && surface.geometry_key() == self.geometry.key()
+            })
+            .and_then(|surface| surface.position_for_source_position(position))
+    }
+
     pub(super) fn interactive_surface(&self) -> Option<&CoherentRangeSurface> {
         self.surface.as_ref().filter(|surface| {
             let surface_geometry = surface.geometry_key();
@@ -491,6 +504,17 @@ impl RangeTextInput {
                 && self
                     .surface_candidate
                     .is_none_or(|candidate| candidate.kind == SurfaceCandidateKind::IndexRefinement)
+        })
+    }
+
+    pub(super) fn scroll_reference_surface(&self) -> Option<&CoherentRangeSurface> {
+        self.surface.as_ref().filter(|surface| {
+            self.mounted
+                && surface.binding() == self.config.binding
+                && self.pending_history.is_none()
+                && self.pending_rebind_intent.is_none()
+                && self.restoration.is_none()
+                && self.restoration_seed.is_none()
         })
     }
 

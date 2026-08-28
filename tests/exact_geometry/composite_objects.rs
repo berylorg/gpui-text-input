@@ -124,6 +124,64 @@ fn same_anchor_objects_continue_across_pages_and_checkpoint_each_composite_gap(
 }
 
 #[gpui::test]
+fn end_anchor_after_object_scans_boundary_proof_before_target_publication(cx: &mut TestAppContext) {
+    with_text_system(cx, |text_system| {
+        let first = object(1, 0, 10, 10.);
+        let mut owner = composite_owner(&first, 24.);
+        let index = start_index(&mut owner, 1);
+        let index_text = page(&mut owner, index, "", 0, 0, 1);
+        assert_eq!(
+            owner
+                .admit_page(index, &index_text, text_system)
+                .unwrap()
+                .progress(),
+            ExactGeometryProgress::NeedObjects
+        );
+        let index_objects = object_response(&mut owner, index, 1, vec![first.clone()], true);
+        assert_eq!(
+            owner
+                .admit_object_page(index, &index_text, &index_objects, text_system)
+                .unwrap()
+                .progress(),
+            ExactGeometryProgress::IndexComplete
+        );
+
+        let after = SourcePosition::new(
+            ByteOffset::new(0),
+            InlineObjectGap::after(first.cursor().neighbor()),
+        );
+        let target = owner
+            .request_block_target_anchored(
+                GeometryJobId::new(2),
+                BlockTarget::new(px(0.), px(28.), px(14.)),
+                after,
+            )
+            .unwrap();
+        assert_eq!(target.progress(), ExactGeometryProgress::Scanning);
+        let target_text = page(&mut owner, target.key(), "", 0, 0, 2);
+        assert_eq!(
+            owner
+                .admit_page(target.key(), &target_text, text_system)
+                .unwrap()
+                .progress(),
+            ExactGeometryProgress::NeedObjects
+        );
+        let target_objects =
+            object_response(&mut owner, target.key(), 2, vec![first.clone()], true);
+        assert_eq!(
+            owner
+                .admit_object_page(target.key(), &target_text, &target_objects, text_system)
+                .unwrap()
+                .progress(),
+            ExactGeometryProgress::TargetComplete
+        );
+        assert!(owner.target().unwrap().fragments().iter().any(|fragment| {
+            matches!(fragment, gpui::StreamingLayoutFragment::InlineObject(_))
+        }));
+    });
+}
+
+#[gpui::test]
 fn object_at_resident_page_edge_follows_buffered_cross_page_grapheme(cx: &mut TestAppContext) {
     with_text_system(cx, |text_system| {
         let source = "e\u{301}x";

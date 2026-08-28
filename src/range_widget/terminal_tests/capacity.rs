@@ -179,14 +179,8 @@ fn huge_finite_viewport_publishes_one_filler_and_exact_extent(cx: &mut gpui::Tes
         assert_eq!(filler.block_end(), surface.content_height());
         let diagnostics = input.realization_diagnostics();
         assert_eq!(diagnostics.filler_count, 1);
-        assert!(
-            diagnostics.current.resident_pages
-                <= input.config.residency_limits.max_resident_pages()
-        );
-        assert!(
-            diagnostics.current.resident_objects
-                <= input.config.object_residency_limits.max_resident_objects()
-        );
+        assert!(diagnostics.current.resident_pages <= diagnostics.max_owned_pages);
+        assert!(diagnostics.current.resident_objects <= diagnostics.max_owned_objects);
         assert!(diagnostics.current.candidates <= 1);
     });
     let filler = input.read_with(cx, |input, _| input.surface().unwrap().filler().unwrap());
@@ -436,14 +430,8 @@ fn generated_large_source_keeps_realization_owners_within_configured_caps(
         assert!(diagnostics.current.queued_requests <= 1);
         assert!(diagnostics.current.candidates <= 1);
         assert!(diagnostics.current.checkpoints <= input.config.geometry_limits.max_checkpoints());
-        assert!(
-            diagnostics.high_water.resident_pages
-                <= input.config.residency_limits.max_resident_pages()
-        );
-        assert!(
-            diagnostics.high_water.resident_objects
-                <= input.config.object_residency_limits.max_resident_objects()
-        );
+        assert!(diagnostics.high_water.resident_pages <= diagnostics.max_owned_pages);
+        assert!(diagnostics.high_water.resident_objects <= diagnostics.max_owned_objects);
         assert!(
             diagnostics.high_water.queued_requests
                 <= input

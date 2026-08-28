@@ -171,15 +171,26 @@ fn drive_surface_for_source(
     cx: &mut gpui::VisualTestContext,
     source: &str,
 ) {
+    drive_surface_for_source_from(input, cx, source, 1);
+}
+
+fn drive_surface_for_source_from(
+    input: &gpui::Entity<RangeTextInput>,
+    cx: &mut gpui::VisualTestContext,
+    source: &str,
+    first_id: u64,
+) {
     let max_steps = u64::try_from(source.len())
         .unwrap()
-        .saturating_div(8)
-        .saturating_add(256);
-    for id in 1..max_steps {
+        .saturating_div(4)
+        .saturating_add(512);
+    let mut observed_quiescent = false;
+    for id in first_id..first_id.saturating_add(max_steps) {
         cx.update(|window, app| window.draw(app).clear());
         cx.run_until_parked();
         match input.update(cx, |input, _| input.take_request()) {
             Some(RangeTextInputRequest::Page(request)) => {
+                observed_quiescent = false;
                 let page = page_for_source(request, id, source);
                 cx.update(|window, app| {
                     input.update(app, |input, cx| {
@@ -188,6 +199,7 @@ fn drive_surface_for_source(
                 });
             }
             Some(RangeTextInputRequest::ObjectPage(request)) => {
+                observed_quiescent = false;
                 let page = ObjectPage::new(
                     ObjectPageId::new(id),
                     request.key(),
@@ -202,17 +214,38 @@ fn drive_surface_for_source(
                     input.update(app, |input, cx| {
                         input
                             .deliver_object_page_in_window(page, window, cx)
-                            .unwrap()
+                            .unwrap_or_else(|error| {
+                                panic!(
+                                    "empty object delivery failed for {request:?}; desired={:?}; index={}, active={:?}, candidate={:?}, surface={:?}; error={error:?}",
+                                    input.target_intent_desired().source_selection,
+                                    input.geometry.index().is_some(),
+                                    input.active_geometry,
+                                    input.surface_candidate,
+                                    input.surface().map(|surface| (
+                                        surface.quality(),
+                                        surface.realization_priority(),
+                                        surface.selection(),
+                                        input.target_intent_desired().source_selection.and_then(|selection| surface.position_for_source_position(selection.head)),
+                                    )),
+                                )
+                            })
                     })
                 });
             }
             Some(RangeTextInputRequest::ReleasePage(_))
             | Some(RangeTextInputRequest::ReleaseObjectPage(_))
             | Some(RangeTextInputRequest::CancelPage(_))
-            | Some(RangeTextInputRequest::CancelObjectPage(_)) => {}
+            | Some(RangeTextInputRequest::CancelObjectPage(_)) => {
+                observed_quiescent = false;
+            }
             Some(request) => panic!("unexpected geometry request: {request:?}"),
-            None if input.read_with(cx, |input, _| input.is_quiescent()) => break,
-            None => {}
+            None => {
+                let quiescent = input.read_with(cx, |input, _| input.is_quiescent());
+                if quiescent && observed_quiescent {
+                    break;
+                }
+                observed_quiescent = quiescent;
+            }
         }
     }
     input.read_with(cx, |input, _| {
@@ -226,6 +259,7 @@ fn drive_surface_for_source(
             input.realization_diagnostics().current,
         );
         assert!(input.requests.is_empty());
+        assert!(input.is_quiescent());
     });
 }
 
@@ -1157,7 +1191,7 @@ fn index_completion_with_changed_desired_is_a_noninteractive_replacement(
 fn terminal_target_replacement_accepts_fixed_exact_caps_and_rejects_one_under(
     cx: &mut gpui::TestAppContext,
 ) {
-    const EXACT_BYTES: usize = 123_850;
+    const EXACT_BYTES: usize = 126_602;
     const EXACT_ITEMS: usize = 309;
     for (bytes, items, succeeds) in [
         (EXACT_BYTES, 32_768, true),
@@ -2118,11 +2152,8 @@ fn rejected_page_with_valid_prefix_is_atomic_and_exact_retry_succeeds(
     let (_, current_text, current_objects) =
         admitted_successor_sources(SOURCE, 1, &[current_position]);
     let binding = input.read_with(cx, |input, _| input.edits.binding());
-    let key = crate::MutationKey::new(
-        binding.binding(),
-        binding.revision(),
-        crate::OperationId::new(1),
-    );
+    let operation = input.read_with(cx, |input, _| input.lease_host_operation().unwrap());
+    let key = crate::MutationKey::new(binding.binding(), binding.revision(), operation.operation());
     let proposal = crate::MutationProposal::new(
         key,
         crate::MutationKind::Edit,
@@ -2138,6 +2169,7 @@ fn rejected_page_with_valid_prefix_is_atomic_and_exact_retry_succeeds(
     input.update(cx, |input, cx| {
         input
             .begin_host_mutation(
+                operation,
                 begin,
                 &[current_position],
                 &current_text,
@@ -2245,7 +2277,8 @@ fn host_stream_pages_finish_and_commit_through_widget_protocol(cx: &mut gpui::Te
     });
     let (_, text, objects) = admitted_successor_sources(SOURCE, 1, &[current]);
     let base = input.read_with(cx, |input, _| input.config.binding);
-    let key = crate::MutationKey::new(base.binding(), base.revision(), crate::OperationId::new(1));
+    let operation = input.read_with(cx, |input, _| input.lease_host_operation().unwrap());
+    let key = crate::MutationKey::new(base.binding(), base.revision(), operation.operation());
     let proposal = crate::MutationProposal::new(
         key,
         crate::MutationKind::Edit,
@@ -2260,7 +2293,7 @@ fn host_stream_pages_finish_and_commit_through_widget_protocol(cx: &mut gpui::Te
     );
     input.update(cx, |input, cx| {
         input
-            .begin_host_mutation(begin, &[current], &text, &objects, cx)
+            .begin_host_mutation(operation, begin, &[current], &text, &objects, cx)
             .unwrap()
     });
     assert!(matches!(
@@ -2354,7 +2387,8 @@ fn unchanged_binding_cancellation_is_keyed_exact_once_and_commit_pending_waits(
     });
     let (_, text, objects) = admitted_successor_sources(SOURCE, 1, &[current]);
     let base = input.read_with(window_cx, |input, _| input.config.binding);
-    let key = crate::MutationKey::new(base.binding(), base.revision(), crate::OperationId::new(1));
+    let operation = input.read_with(window_cx, |input, _| input.lease_host_operation().unwrap());
+    let key = crate::MutationKey::new(base.binding(), base.revision(), operation.operation());
     let proposal = crate::MutationProposal::new(
         key,
         crate::MutationKind::Edit,
@@ -2369,7 +2403,7 @@ fn unchanged_binding_cancellation_is_keyed_exact_once_and_commit_pending_waits(
     );
     input.update(window_cx, |input, cx| {
         input
-            .begin_host_mutation(begin, &[current], &text, &objects, cx)
+            .begin_host_mutation(operation, begin, &[current], &text, &objects, cx)
             .unwrap();
     });
     assert!(matches!(
@@ -2751,7 +2785,7 @@ fn committed_settlement_accepts_exact_fit_and_one_under_is_retryable(
         WidgetAdmissionComponents {
             realization_owner: RangeTextInput::realization_owner_charge(),
             prior_surface: RangeSurfaceCharge {
-                bytes: 5_502,
+                bytes: 7_198,
                 items: 90,
             },
             current_realization_state,
@@ -2765,7 +2799,7 @@ fn committed_settlement_accepts_exact_fit_and_one_under_is_retryable(
                 items: 1,
             },
             geometry: RangeSurfaceCharge {
-                bytes: 4_362,
+                bytes: 4_874,
                 items: 33,
             },
             resident_payload: RangeSurfaceCharge { bytes: 0, items: 0 },
@@ -2793,12 +2827,12 @@ fn committed_settlement_accepts_exact_fit_and_one_under_is_retryable(
         }
     );
     let transition_exact = RangeSurfaceCharge {
-        bytes: 126_944,
+        bytes: 129_696,
         items: 327,
     };
     assert_eq!(components.checked_total(), Some(transition_exact));
     let exact = RangeSurfaceCharge {
-        bytes: 127_424,
+        bytes: 130_176,
         items: 330,
     };
     let events = captured_events(&input, cx);
@@ -3071,6 +3105,99 @@ fn direct_history_commit_adopts_exact_successor_without_mutation_stream(
         assert_eq!(seed.caret, head);
         assert_eq!(seed.selection, selection);
         assert_eq!(seed.history, Some(successor_frontier));
+    });
+}
+
+#[gpui::test]
+fn direct_history_commit_retargets_selection_from_stale_predecessor_surface(
+    cx: &mut gpui::TestAppContext,
+) {
+    let source = "line\n".repeat(128);
+    let mut configuration = config(2 * 1024 * 1024, 32_768);
+    configuration.binding = RangeBinding::new(
+        BindingId::new(73),
+        SourceRevision::new(1),
+        LogicalExtent::new(source.len() as u64, 129),
+    );
+    configuration.viewport_extent = px(32.);
+    configuration.limits.max_realized_block_extent = px(16.);
+    let (input, cx) = cx
+        .add_window_view(move |window, cx| RangeTextInput::new(configuration, window, cx).unwrap());
+    drive_surface_for_source_from(&input, cx, &source, 1);
+
+    let predecessor_binding = input.read_with(cx, |input, _| input.config.binding);
+    let anchor = SourcePosition::new(
+        ByteOffset::new(source.len() as u64),
+        crate::InlineObjectGap::NoObjects,
+    );
+    let head = SourcePosition::new(
+        ByteOffset::new(source.len() as u64 - 1),
+        crate::InlineObjectGap::NoObjects,
+    );
+    let selection = crate::RangeSourceSelection { anchor, head };
+    input.update(cx, |input, cx| {
+        input
+            .publish_source_selection(selection, None, None, cx)
+            .unwrap();
+    });
+    drive_surface_for_source_from(&input, cx, &source, 100_000);
+    input.read_with(cx, |input, _| {
+        let surface = input.surface().unwrap();
+        assert_eq!(surface.binding(), predecessor_binding);
+        assert_eq!(surface.selection(), selection);
+        assert!(surface.position_for_source_position(head).is_some());
+    });
+
+    let frontier = crate::RangeHistoryFrontier {
+        binding: predecessor_binding,
+        id: 43,
+        undo_available: true,
+        redo_available: false,
+    };
+    let intent = admit_history(&input, cx, frontier, crate::MutationKind::Undo);
+    let successor = RangeBinding::new(
+        predecessor_binding.binding(),
+        SourceRevision::new(2),
+        predecessor_binding.extent(),
+    );
+    let successor_frontier = crate::RangeHistoryFrontier {
+        binding: successor,
+        id: 44,
+        undo_available: false,
+        redo_available: true,
+    };
+    let commit = crate::RangeHistoryCommit::new(successor, head, selection, successor_frontier);
+    cx.update(|window, app| {
+        input.update(app, |input, cx| {
+            input.begin_realization_frame();
+            assert_eq!(
+                input
+                    .settle_history(
+                        intent,
+                        crate::RangeHistoryOutcome::Committed(commit),
+                        window,
+                        cx,
+                    )
+                    .unwrap(),
+                crate::RangeHistorySettlement::Current(crate::RangeHistoryOutcome::Committed(
+                    commit
+                ))
+            );
+        })
+    });
+    input.read_with(cx, |input, _| {
+        assert_eq!(input.config.binding, successor);
+        assert_eq!(input.surface().unwrap().binding(), predecessor_binding);
+        assert!(input.interactive_surface().is_none());
+    });
+
+    input.read_with(cx, |input, _| {
+        assert!(
+            input
+                .current_surface_position_for_source_position(head)
+                .is_none()
+        );
+        assert_eq!(input.index_response_successor().unwrap().anchor, Some(head));
     });
 }
 
@@ -4155,20 +4282,16 @@ fn shared_history_settlement_coordinator_bounds_disposed_widget_generations(
 }
 
 #[gpui::test]
-fn shared_host_operation_claim_prevents_cross_generation_replay(cx: &mut gpui::TestAppContext) {
+fn shared_host_operation_lease_prevents_cross_generation_replay(cx: &mut gpui::TestAppContext) {
     let exhaustion = crate::RangeSettlementCoordinator::new(1).unwrap();
-    assert_eq!(exhaustion.allocate_operation().unwrap().get(), 1);
-    assert!(matches!(
-        exhaustion.claim_host_operation(crate::OperationId::new(u64::MAX)),
-        Err(RangeTextInputError::Stale)
-    ));
-    assert_eq!(exhaustion.allocate_operation().unwrap().get(), 2);
-    for replay in [0, 1, 2] {
-        assert!(matches!(
-            exhaustion.claim_host_operation(crate::OperationId::new(replay)),
-            Err(RangeTextInputError::Stale)
-        ));
-    }
+    assert_eq!(
+        exhaustion.lease_host_operation().unwrap().operation().get(),
+        1
+    );
+    assert_eq!(
+        exhaustion.lease_host_operation().unwrap().operation().get(),
+        2
+    );
 
     let near_exhaustion =
         crate::RangeSettlementCoordinator::new_with_next_operation(1, u64::MAX - 1).unwrap();
@@ -4197,10 +4320,11 @@ fn shared_host_operation_claim_prevents_cross_generation_replay(cx: &mut gpui::T
         )
     });
     let (_, near_text, near_objects) = admitted_successor_sources(SOURCE, 1, &[near_current]);
+    let near_operation = near.read_with(near_cx, |input, _| input.lease_host_operation().unwrap());
     let near_key = crate::MutationKey::new(
         near_base.binding(),
         near_base.revision(),
-        crate::OperationId::new(u64::MAX - 1),
+        near_operation.operation(),
     );
     let near_begin = crate::MutationBeginRequest::new(
         crate::MutationProposal::new(
@@ -4216,7 +4340,14 @@ fn shared_host_operation_claim_prevents_cross_generation_replay(cx: &mut gpui::T
     let before_near_claim = near.read_with(near_cx, |input, _| fingerprint(input));
     near.update(near_cx, |input, cx| {
         assert!(matches!(
-            input.begin_host_mutation(near_begin, &[], &near_text, &near_objects, cx),
+            input.begin_host_mutation(
+                near_operation,
+                near_begin,
+                &[],
+                &near_text,
+                &near_objects,
+                cx
+            ),
             Err(RangeTextInputError::Mutation(
                 crate::MutationError::MissingPositionProof(_)
             ))
@@ -4297,8 +4428,16 @@ fn shared_host_operation_claim_prevents_cross_generation_replay(cx: &mut gpui::T
     ] {
         let before = second.read_with(second_cx, |input, _| fingerprint(input));
         second.update(second_cx, |input, cx| {
+            let operation = input.lease_host_operation().unwrap();
             assert!(matches!(
-                input.begin_host_mutation(host_begin(replay), &[current], &text, &objects, cx),
+                input.begin_host_mutation(
+                    operation,
+                    host_begin(replay),
+                    &[current],
+                    &text,
+                    &objects,
+                    cx
+                ),
                 Err(RangeTextInputError::Stale)
             ));
         });
@@ -4328,12 +4467,21 @@ fn shared_host_operation_claim_prevents_cross_generation_replay(cx: &mut gpui::T
         Some(RangeTextInputRequest::CancelMutation(cancel)) if cancel.key() == generated_key
     ));
 
-    let failed_operation = crate::OperationId::new(generated_key.operation().get() + 1);
+    let failed_operation_lease =
+        second.read_with(second_cx, |input, _| input.lease_host_operation().unwrap());
+    let failed_operation = failed_operation_lease.operation();
     let failed_begin = host_begin(failed_operation);
     let before_failed_begin = second.read_with(second_cx, |input, _| fingerprint(input));
     second.update(second_cx, |input, cx| {
         assert!(matches!(
-            input.begin_host_mutation(failed_begin, &[], &text, &objects, cx),
+            input.begin_host_mutation(
+                failed_operation_lease,
+                failed_begin,
+                &[],
+                &text,
+                &objects,
+                cx
+            ),
             Err(RangeTextInputError::Mutation(
                 crate::MutationError::MissingPositionProof(_)
             ))
@@ -4343,22 +4491,43 @@ fn shared_host_operation_claim_prevents_cross_generation_replay(cx: &mut gpui::T
         assert_eq!(fingerprint(input), before_failed_begin)
     });
     second.update(second_cx, |input, cx| {
+        let replay = input.lease_host_operation().unwrap();
         assert!(matches!(
-            input.begin_host_mutation(failed_begin, &[current], &text, &objects, cx),
+            input.begin_host_mutation(replay, failed_begin, &[current], &text, &objects, cx),
             Err(RangeTextInputError::Stale)
         ));
     });
 
-    let second_operation = crate::OperationId::new(failed_operation.get() + 1);
+    let second_operation_lease =
+        second.read_with(second_cx, |input, _| input.lease_host_operation().unwrap());
+    let second_operation = second_operation_lease.operation();
     let second_begin = host_begin(second_operation);
     let second_key = second_begin.proposal().key();
     second.update(second_cx, |input, cx| {
         assert_eq!(
             input
-                .begin_host_mutation(second_begin, &[current], &text, &objects, cx)
+                .begin_host_mutation(
+                    second_operation_lease,
+                    second_begin,
+                    &[current],
+                    &text,
+                    &objects,
+                    cx,
+                )
                 .unwrap(),
             second_key
         );
+        input
+            .admit_host_operation_dispatch(second_key.operation())
+            .unwrap();
+        assert!(matches!(
+            input.admit_host_operation_dispatch(second_key.operation()),
+            Err(RangeTextInputError::Stale)
+        ));
+        assert!(matches!(
+            input.admit_host_operation_dispatch(first_key.operation()),
+            Err(RangeTextInputError::Stale)
+        ));
     });
     assert!(matches!(
         second.update(second_cx, |input, _| input.take_request()),

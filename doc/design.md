@@ -120,8 +120,11 @@ binding and revision discipline plus the current host-owned presentation generat
 bounded byte interval or one exact byte anchor, an optional same-anchor order cursor, a direction,
 a unique request identity, and positive retained-byte and object-count ceilings. The response
 contains only objects inside that envelope, preserves strict `(anchor, order-key, object-id)` order,
-proves its preceding, following, and completion facts, and supplies a continuation cursor when more
-objects remain. A response may advance only its object cursor while consuming no UTF-8 bytes, so an
+and treats both interval byte edges as eligible zero-width anchors, including exact source end. The
+host must not translate that interval through a terminal-exclusive source without preserving the
+terminal-anchor facts. Each response proves its preceding, following, and completion facts and
+supplies a continuation cursor when more objects remain. A response may advance only its object
+cursor while consuming no UTF-8 bytes, so an
 arbitrarily large set at one anchor remains pageable. Duplicate identities, duplicate same-anchor
 order keys, inconsistent continuation facts, an object anchored at a non-scalar boundary, or a
 presentation-generation mismatch is malformed or obsolete as appropriate.
@@ -187,6 +190,10 @@ identity, predecessor caret and directed selection, composite range, bounded pag
 intended successor positions through the widget boundary; it cannot mutate widget projection
 state directly. The widget rejects an external proposal when the binding is stale, the editor is
 not mutable, another mutation owns the single transaction slot, or its bounded envelope is invalid.
+The shared settlement coordinator is the sole allocator and admission validator for host-visible
+operation identities across live and detached widget generations. It atomically validates each
+allocated operation against its host-dispatch frontier, while its finite slots separately retain
+admitted settlement custody. The host adds no second last-seen sequence beside it.
 
 Within one transaction, unchanged zero-width objects before the replacement keep their relative
 place before inserted content and unchanged objects after it keep their relative place after that
@@ -368,6 +375,21 @@ actual-value capacity admission. Desired interaction state is not current presen
 Pending, failed, cancelled, stale, or over-cap replacement work leaves the complete prior coherent
 publication unchanged.
 
+Every retained target inline-object fragment owns one matching compact authenticated presentation
+record through exact-geometry preparation, accounting, and publication. This target-owned record
+authorizes realized presentation and activation even after the supplying source page leaves generic
+object residency, and its count is bounded by retained target fragments rather than the total object
+run. Resident object pages remain an independent bounded proof/cache owner for composite gaps,
+editing, clipboard, and continuation; target presentation records cannot substitute for those
+proofs.
+
+An active pointer or keyboard interaction retains its exact composite source gap as successor
+target authority, including the same-anchor order witness, even when the prior coherent surface can
+map that gap. Retarget preparation and index-response continuation prefer this interaction anchor
+over a byte-only fallback. The ordinary bounded exact scanner resolves it for the successor surface;
+the widget does not pin its former object page, retain the same-anchor run, or manufacture a direct
+lookup side channel.
+
 The widget owns only its retained projection. The containing shell and renderer own rejection or
 clamping when an OS drawable surface, framebuffer, or renderer allocation is itself
 unrepresentable; the widget does not reinterpret that external surface limit as a document, edit,
@@ -415,7 +437,8 @@ Host page delivery enters this boundary before consuming its dispatched key or c
 object, or geometry residency. Text and object owners prepare an inbound-page disposition and a
 read-only projected resident iterator. Nonterminal geometry preparation owns only the new scanner
 delta and preallocated destination storage. Terminal preparation constructs the final compact
-target from the admitted records plus that delta and charges its coexistence with the unchanged
+target, including fragment-matched inline-object presentation records, from the admitted records
+plus that delta and charges its coexistence with the unchanged
 active job and all current resident pages. Commit then moves the prepared admissions and clears the
 dispatched key without rollback or allocation.
 

@@ -33,6 +33,7 @@ pub(crate) use prepared_admission::{
     PreparedTargetResponse, PreparedTargetSuccessor, TargetResponseSuccessor,
 };
 pub(crate) use transition::PreparedGeometryTransition;
+pub(crate) use types::TargetInlineObjectPresentation;
 
 pub use types::{
     BlockTarget, BlockTargetPublication, ExactGeometryAdmission, ExactGeometryAggregate,
@@ -66,6 +67,7 @@ struct Scanner {
     active_atom: Option<Box<ActiveAtom>>,
     checkpoints: VecDeque<ExactGeometryCheckpoint>,
     fragments: Vec<StreamingLayoutFragment>,
+    object_presentations: Vec<TargetInlineObjectPresentation>,
     output_charge: StreamingLayoutCharge,
     output_item_charge: StreamingLayoutItemCharge,
     target_line_position: SourcePosition,
@@ -148,6 +150,7 @@ impl Scanner {
             active_atom: None,
             checkpoints: VecDeque::from([origin]),
             fragments: Vec::new(),
+            object_presentations: Vec::new(),
             output_charge: StreamingLayoutCharge::default(),
             output_item_charge: StreamingLayoutItemCharge::default(),
             target_line_position: SourcePosition::try_from(binding.start_position)
@@ -176,6 +179,7 @@ impl Scanner {
             active_atom: None,
             checkpoints: VecDeque::new(),
             fragments: Vec::new(),
+            object_presentations: Vec::new(),
             output_charge: StreamingLayoutCharge::default(),
             output_item_charge: StreamingLayoutItemCharge::default(),
             target_line_position: checkpoint.source,

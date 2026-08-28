@@ -24,15 +24,6 @@ struct SurfacePageIndex {
     start: ByteOffset,
 }
 
-#[derive(Clone, Copy, Debug)]
-struct SurfaceObjectIndex {
-    anchor: ByteOffset,
-    order: InlineObjectOrder,
-    id: InlineObjectId,
-    page_index: u32,
-    object_index: u32,
-}
-
 impl RangeSurfaceCharge {
     pub fn replacement_peak(self, candidate: Self) -> Self {
         Self {
@@ -52,8 +43,7 @@ pub struct RealizedInlineObjectGeometry {
     hit_bounds: Bounds<Pixels>,
     leading_caret_bounds: Bounds<Pixels>,
     trailing_caret_bounds: Bounds<Pixels>,
-    page_index: u32,
-    object_index: u32,
+    presentation_index: u32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -321,19 +311,20 @@ impl CoherentRangeSurface {
         let fragment_bytes = target
             .charge()
             .total()
-            .map_err(|_| crate::RangeTextInputError::SurfaceCapacity)?;
+            .map_err(|_| crate::RangeTextInputError::SurfaceCapacity)?
+            .checked_add(
+                target
+                    .output_record_bytes()
+                    .ok_or(crate::RangeTextInputError::SurfaceCapacity)?,
+            )
+            .ok_or(crate::RangeTextInputError::SurfaceCapacity)?;
         let fragment_items = target
             .item_charge()
             .total()
-            .map_err(|_| crate::RangeTextInputError::SurfaceCapacity)?;
-        let object_index_len = object_pages
-            .clone()
-            .try_fold(0usize, |total, page| {
-                total.checked_add(page.objects().len())
-            })
+            .map_err(|_| crate::RangeTextInputError::SurfaceCapacity)?
+            .checked_add(target.object_presentation_items())
             .ok_or(crate::RangeTextInputError::SurfaceCapacity)?;
-        let mut object_index = Vec::with_capacity(object_index_len);
-        for (page_index, page) in object_pages.clone().enumerate() {
+        for page in object_pages.clone() {
             let key = page.key();
             if key.binding() != target.key().geometry().binding()
                 || key.revision() != target.key().geometry().revision()
@@ -342,25 +333,7 @@ impl CoherentRangeSurface {
             {
                 return Err(crate::RangeTextInputError::IncompleteSurface);
             }
-            let page_index = u32::try_from(page_index)
-                .map_err(|_| crate::RangeTextInputError::SurfaceCapacity)?;
-            for (object_position, fact) in page.objects().iter().enumerate() {
-                object_index.push(SurfaceObjectIndex {
-                    anchor: fact.anchor(),
-                    order: fact.order(),
-                    id: fact.id(),
-                    page_index,
-                    object_index: u32::try_from(object_position)
-                        .map_err(|_| crate::RangeTextInputError::SurfaceCapacity)?,
-                });
-            }
         }
-        object_index.sort_by_key(|entry| (entry.anchor, entry.order, entry.id));
-        let temporary_object_index_bytes = object_index
-            .capacity()
-            .checked_mul(std::mem::size_of::<SurfaceObjectIndex>())
-            .ok_or(crate::RangeTextInputError::SurfaceCapacity)?;
-        let temporary_object_index_items = object_index.capacity();
         let owned_maps = collect_owned_fragment_maps(target.fragments())?;
         let temporary_map_bytes = owned_maps
             .capacity()
@@ -368,11 +341,10 @@ impl CoherentRangeSurface {
             .ok_or(crate::RangeTextInputError::SurfaceCapacity)?;
         let temporary_map_items = owned_maps.capacity();
         let (realized_objects, realized_object_gaps) = realize_composite_geometry(
-            object_pages,
+            target.object_presentations(),
             target.fragments(),
             line_height,
             &owned_maps,
-            &object_index,
         )?;
         let realized_candidate_items = realized_objects
             .capacity()
@@ -471,14 +443,12 @@ impl CoherentRangeSurface {
                 .checked_add(realized_candidate_bytes)
                 .and_then(|value| value.checked_add(geometry_candidate_bytes))
                 .and_then(|value| value.checked_add(temporary_map_bytes))
-                .and_then(|value| value.checked_add(temporary_object_index_bytes))
                 .and_then(|value| value.checked_add(placeholder_bytes))
                 .ok_or(crate::RangeTextInputError::SurfaceCapacity)?,
             items: page_order_candidate_items
                 .checked_add(realized_candidate_items)
                 .and_then(|value| value.checked_add(geometry_candidate_items))
                 .and_then(|value| value.checked_add(temporary_map_items))
-                .and_then(|value| value.checked_add(temporary_object_index_items))
                 .and_then(|value| value.checked_add(placeholder_items))
                 .ok_or(crate::RangeTextInputError::SurfaceCapacity)?,
         };
@@ -771,8 +741,7 @@ impl CoherentRangeSurface {
         &self,
         geometry: RealizedInlineObjectGeometry,
     ) -> &crate::InlineObjectPresentation {
-        self.object_pages[geometry.page_index as usize].objects()[geometry.object_index as usize]
-            .presentation()
+        self.target.object_presentations()[geometry.presentation_index as usize].presentation()
     }
     pub fn realized_object_gaps(&self) -> &[RealizedObjectGapGeometry] {
         &self.realized_object_gaps
@@ -1135,11 +1104,10 @@ fn object_selected_by(
 }
 
 fn realize_composite_geometry<'a>(
-    object_pages: impl ExactSizeIterator<Item = &'a ObjectPage> + Clone,
+    object_presentations: &'a [crate::range_geometry::TargetInlineObjectPresentation],
     fragments: &[StreamingLayoutFragment],
     line_height: Pixels,
     owned_maps: &[StreamingLayoutMap],
-    object_index: &[SurfaceObjectIndex],
 ) -> Result<
     (
         Vec<RealizedInlineObjectGeometry>,
@@ -1151,6 +1119,9 @@ fn realize_composite_geometry<'a>(
         .iter()
         .filter(|fragment| matches!(fragment, StreamingLayoutFragment::InlineObject(_)))
         .count();
+    if object_count != object_presentations.len() {
+        return Err(crate::RangeTextInputError::IncompleteSurface);
+    }
     let gap_count = owned_maps
         .iter()
         .filter(|map| map.logical_position.gap != StreamingObjectGap::no_objects())
@@ -1177,6 +1148,7 @@ fn realize_composite_geometry<'a>(
             caret_bounds: Bounds::new(map.position, gpui::size(px(2.), line_height)),
         });
     }
+    let mut presentation_index = 0usize;
     for fragment in fragments {
         let StreamingLayoutFragment::InlineObject(fragment) = fragment else {
             continue;
@@ -1190,24 +1162,18 @@ fn realize_composite_geometry<'a>(
         if leading.byte_offset != trailing.byte_offset {
             return Err(crate::RangeTextInputError::IncompleteSurface);
         }
-        let lookup = (leading.byte_offset, order, id);
-        let index =
-            object_index.partition_point(|entry| (entry.anchor, entry.order, entry.id) < lookup);
-        let Some(entry) = object_index
-            .get(index)
-            .filter(|entry| (entry.anchor, entry.order, entry.id) == lookup)
-        else {
+        let Some(record) = object_presentations.get(presentation_index) else {
             return Err(crate::RangeTextInputError::IncompleteSurface);
         };
-        let fact = object_pages
-            .clone()
-            .nth(entry.page_index as usize)
-            .and_then(|page| page.objects().get(entry.object_index as usize))
-            .ok_or(crate::RangeTextInputError::IncompleteSurface)?;
-        if fact.presentation().display() != &fragment.presentation
-            || fact.presentation().width() != fragment.bounds.size.width
-            || fact.presentation().height() != fragment.bounds.size.height
-            || fact.presentation().baseline() != fragment.baseline()
+        let cursor = record.cursor();
+        if (cursor.anchor(), cursor.order(), cursor.id()) != (leading.byte_offset, order, id) {
+            return Err(crate::RangeTextInputError::IncompleteSurface);
+        }
+        let presentation = record.presentation();
+        if presentation.display() != &fragment.presentation
+            || presentation.width() != fragment.bounds.size.width
+            || presentation.height() != fragment.bounds.size.height
+            || presentation.baseline() != fragment.baseline()
         {
             return Err(crate::RangeTextInputError::IncompleteSurface);
         }
@@ -1224,9 +1190,10 @@ fn realize_composite_geometry<'a>(
             hit_bounds: fragment.bounds,
             leading_caret_bounds,
             trailing_caret_bounds,
-            page_index: entry.page_index,
-            object_index: entry.object_index,
+            presentation_index: u32::try_from(presentation_index)
+                .map_err(|_| crate::RangeTextInputError::SurfaceCapacity)?,
         });
+        presentation_index += 1;
     }
     Ok((objects, gaps))
 }

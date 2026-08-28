@@ -14,7 +14,8 @@ use super::{
     BlockTargetPublication, DeferredObject, ExactGeometryAdmission, ExactGeometryAggregate,
     ExactGeometryCheckpoint, ExactGeometryCounts, ExactGeometryError, ExactGeometryFailure,
     ExactGeometryFailureStage, ExactGeometryIndex, ExactGeometryOwner, ExactGeometryProgress,
-    ExactGeometryRelease, PendingInput, PreparedGeometryTransition, Scanner, accounting,
+    ExactGeometryRelease, PendingInput, PreparedGeometryTransition, Scanner,
+    TargetInlineObjectPresentation, accounting,
 };
 
 mod publication;
@@ -66,6 +67,7 @@ enum PreparedTargetResponseState {
 struct PreparedActiveTarget {
     delta: Box<ActiveJob>,
     fragments: Vec<StreamingLayoutFragment>,
+    object_presentations: Vec<TargetInlineObjectPresentation>,
     checkpoints: VecDeque<ExactGeometryCheckpoint>,
     output_charge: gpui::StreamingLayoutCharge,
     output_item_charge: gpui::StreamingLayoutItemCharge,
@@ -128,7 +130,9 @@ fn copy_response_continuation(
 ) -> Result<(Box<ActiveJob>, SharedOutput), ExactGeometryError> {
     let is_target = matches!(active.kind, ActiveKind::Target { .. });
     if is_target && !active.scanner.checkpoints.is_empty()
-        || !is_target && !active.scanner.fragments.is_empty()
+        || !is_target
+            && (!active.scanner.fragments.is_empty()
+                || !active.scanner.object_presentations.is_empty())
     {
         return Err(ExactGeometryError::SourceContract);
     }
@@ -147,6 +151,7 @@ fn copy_response_continuation(
         active_atom: active.scanner.active_atom.as_deref().copied().map(Box::new),
         checkpoints: Default::default(),
         fragments: Vec::new(),
+        object_presentations: Vec::new(),
         output_charge: Default::default(),
         output_item_charge: Default::default(),
         target_line_position: active.scanner.target_line_position,

@@ -279,7 +279,7 @@ impl RangeTextInput {
         })
     }
 
-    fn index_response_successor(
+    pub(super) fn index_response_successor(
         &self,
     ) -> Result<crate::range_geometry::TargetResponseSuccessor, RangeTextInputError> {
         let page_id = self
@@ -294,31 +294,50 @@ impl RangeTextInput {
             .as_ref()
             .and_then(|candidate| candidate.restoration)
             .or(self.restoration_seed);
-        let anchor = restoration.map(|seed| seed.scroll.position).or_else(|| {
-            matches!(
-                self.desired.priority(),
-                crate::RangeRealizationPriority::Caret
-                    | crate::RangeRealizationPriority::Ime
-                    | crate::RangeRealizationPriority::DirectedSelection
-                    | crate::RangeRealizationPriority::ActiveInteraction
-            )
-            .then_some(self.desired.source_selection)
-            .flatten()
-            .map(|selection| selection.head)
-            .filter(|anchor| {
-                anchor.byte_offset.get() == self.config.binding.extent().byte_len()
-                    || self.surface.as_ref().is_none_or(|surface| {
-                        surface.position_for_source_position(*anchor).is_none()
-                    })
-            })
-        });
+        let mut target = self.desired.target();
+        let anchor = restoration
+            .map(|seed| seed.scroll.position)
+            .or_else(|| self.desired.exact_interaction_anchor())
+            .or_else(|| {
+                matches!(
+                    self.desired.priority(),
+                    crate::RangeRealizationPriority::Caret
+                        | crate::RangeRealizationPriority::Ime
+                        | crate::RangeRealizationPriority::DirectedSelection
+                        | crate::RangeRealizationPriority::ActiveInteraction
+                )
+                .then_some(self.desired.source_selection)
+                .flatten()
+                .map(|selection| selection.head)
+                .and_then(|anchor| {
+                    if anchor.byte_offset.get() == self.config.binding.extent().byte_len() {
+                        return Some(anchor);
+                    }
+                    match self.current_surface_position_for_source_position(anchor) {
+                        Some(position) => {
+                            let end = target.block_offset()
+                                + target.viewport_extent()
+                                + target.overscan();
+                            if position.y < target.block_offset() || position.y >= end {
+                                target = crate::BlockTarget::new(
+                                    position.y,
+                                    target.viewport_extent(),
+                                    target.overscan(),
+                                );
+                            }
+                            None
+                        }
+                        None => Some(anchor),
+                    }
+                })
+            });
         Ok(crate::range_geometry::TargetResponseSuccessor {
             target_job_id: crate::GeometryJobId::new(self.next_id),
             page_id: PageRequestId::new(page_id),
             object_id: ObjectRequestId::new(page_id),
             max_objects: self.config.object_residency_limits.max_resident_objects(),
             max_object_bytes: self.config.object_residency_limits.max_resident_bytes(),
-            target: self.desired.target(),
+            target,
             anchor,
             select_all: self.pending_select_all,
         })

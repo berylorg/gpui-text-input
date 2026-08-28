@@ -471,7 +471,7 @@ impl RangeTextInput {
         }
         let mut desired = self.target_intent_desired();
         let block_offset = self
-            .interactive_surface()
+            .scroll_reference_surface()
             .map(|surface| {
                 let max_scroll =
                     (surface.content_height() - desired.viewport_extent).max(Pixels::ZERO);
@@ -525,7 +525,9 @@ impl RangeTextInput {
         let pending_extent = self
             .pending_target_intent
             .map(|intent| intent.desired.viewport_extent);
-        if self.desired.viewport_extent == extent && pending_extent.is_none() {
+        if pending_extent == Some(extent)
+            || (pending_extent.is_none() && self.desired.viewport_extent == extent)
+        {
             return Ok(());
         }
         let mut intent = self

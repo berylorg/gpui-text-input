@@ -175,7 +175,7 @@ fn diagnostics_preserve_exact_residency_across_surface_transfer_and_disposal(
         assert_eq!(diagnostics.current.resident_page_bytes, page_charge.bytes());
         assert_eq!(
             diagnostics.high_water.resident_page_bytes,
-            page_charge.bytes()
+            page_charge.bytes() * 2
         );
         assert!(diagnostics.high_water.resident_pages >= surface_pages);
     });

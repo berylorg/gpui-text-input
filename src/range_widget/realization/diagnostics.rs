@@ -38,6 +38,9 @@ impl RangeTextInput {
             surface_high_water: self.surface_high_water,
             geometry_high_water_bytes: self.geometry.retained_high_water_bytes(),
             geometry_high_water_items: self.geometry.retained_high_water_items(),
+            last_response_rejection: self.last_response_rejection,
+            response_rejection_count: self.response_rejection_count,
+            last_response_rejection_stage: self.last_response_rejection_stage,
         }
     }
 

@@ -20,8 +20,8 @@ use gpui_text_input::{
     InlineObjectSurfaceDismissal, LogicalExtent, MutationBeginRequest, MutationCursor, MutationKey,
     MutationKind, MutationLimits, MutationPositions, MutationProposal, ObjectDemand,
     ObjectDemandEnvelope, ObjectDirection, ObjectPage, ObjectPageEdgeFact, ObjectPageId,
-    ObjectPurpose, ObjectRequestId, ObjectResidency, ObjectResidencyLimits, OperationId,
-    PageDemand, PageDemandEnvelope, PageDirection, PageEdgeFact, PageFailure, PageId, PagePurpose,
+    ObjectPurpose, ObjectRequestId, ObjectResidency, ObjectResidencyLimits, PageDemand,
+    PageDemandEnvelope, PageDirection, PageEdgeFact, PageFailure, PageId, PagePurpose,
     PageRequestId, PlatformRangeResult, PresentationGeneration, RangeBinding, RangePage,
     RangeResidency, RangeRestorationScrollAnchor, RangeRestorationSeed, RangeSelection,
     RangeSourceSelection, RangeSurfaceHit, RangeTextInput, RangeTextInputConfig,
@@ -285,10 +285,10 @@ fn host_mutation_protocol_rejects_undo_and_redo_before_operation_claim(
     let (text, objects) = admitted_sources(source, 1, &[current]);
     let base = binding(source, 1);
     let before = range_publication_fingerprint(&input, cx);
-    let proposal = |kind| {
+    let proposal = |kind, operation| {
         MutationBeginRequest::new(
             MutationProposal::new(
-                MutationKey::new(base.binding(), base.revision(), OperationId::new(1)),
+                MutationKey::new(base.binding(), base.revision(), operation),
                 kind,
                 MutationPositions::collapsed(current),
                 SourceRange::new(current, current).unwrap(),
@@ -301,8 +301,17 @@ fn host_mutation_protocol_rejects_undo_and_redo_before_operation_claim(
 
     for kind in [MutationKind::Undo, MutationKind::Redo] {
         input.update(cx, |input, cx| {
+            let operation = input.lease_host_operation().unwrap();
+            let operation_id = operation.operation();
             assert!(matches!(
-                input.begin_host_mutation(proposal(kind), &[current], &text, &objects, cx),
+                input.begin_host_mutation(
+                    operation,
+                    proposal(kind, operation_id),
+                    &[current],
+                    &text,
+                    &objects,
+                    cx
+                ),
                 Err(gpui_text_input::RangeTextInputError::UnsupportedMutationKind)
             ));
             assert!(input.take_request().is_none());
@@ -311,11 +320,13 @@ fn host_mutation_protocol_rejects_undo_and_redo_before_operation_claim(
         assert_eq!(coordinator.retained_count(), 0);
     }
 
-    let edit = proposal(MutationKind::Edit);
     input.update(cx, |input, cx| {
+        let operation = input.lease_host_operation().unwrap();
+        let operation_id = operation.operation();
+        let edit = proposal(MutationKind::Edit, operation_id);
         assert_eq!(
             input
-                .begin_host_mutation(edit, &[current], &text, &objects, cx)
+                .begin_host_mutation(operation, edit, &[current], &text, &objects, cx)
                 .unwrap(),
             edit.proposal().key()
         );
@@ -880,24 +891,58 @@ fn restoration_object_page(
     id: u64,
 ) -> ObjectPage {
     let demand = request.key().demand();
-    let objects = facts
+    let eligible = facts
         .iter()
         .filter(|fact| demand.contains_anchor(fact.anchor()))
-        .filter(|fact| demand.cursor().is_none_or(|cursor| fact.cursor() > cursor))
-        .take(demand.max_objects())
-        .cloned()
+        .filter(|fact| match demand.direction() {
+            ObjectDirection::Forward => demand.cursor().is_none_or(|cursor| fact.cursor() > cursor),
+            ObjectDirection::Backward => {
+                demand.cursor().is_none_or(|cursor| fact.cursor() < cursor)
+            }
+        })
         .collect::<Vec<_>>();
+    let count = eligible.len().min(demand.max_objects());
+    let start = match demand.direction() {
+        ObjectDirection::Forward => 0,
+        ObjectDirection::Backward => eligible.len() - count,
+    };
+    let objects = eligible[start..]
+        .iter()
+        .map(|fact| (*fact).clone())
+        .collect::<Vec<_>>();
+    let complete = count == eligible.len();
+    let continuation = (!complete).then(|| match demand.direction() {
+        ObjectDirection::Forward => objects.last().unwrap().cursor(),
+        ObjectDirection::Backward => objects.first().unwrap().cursor(),
+    });
+    let cursor_edge = demand.cursor().map_or(
+        ObjectPageEdgeFact::EnvelopeBoundary,
+        ObjectPageEdgeFact::Continues,
+    );
+    let (preceding, following) = match demand.direction() {
+        ObjectDirection::Forward => (
+            cursor_edge,
+            continuation.map_or(
+                ObjectPageEdgeFact::EnvelopeBoundary,
+                ObjectPageEdgeFact::Continues,
+            ),
+        ),
+        ObjectDirection::Backward => (
+            continuation.map_or(
+                ObjectPageEdgeFact::EnvelopeBoundary,
+                ObjectPageEdgeFact::Continues,
+            ),
+            cursor_edge,
+        ),
+    };
     ObjectPage::new(
         ObjectPageId::new(id),
         request.key(),
         objects,
-        demand.cursor().map_or(
-            ObjectPageEdgeFact::EnvelopeBoundary,
-            ObjectPageEdgeFact::Continues,
-        ),
-        ObjectPageEdgeFact::EnvelopeBoundary,
-        true,
-        None,
+        preceding,
+        following,
+        complete,
+        continuation,
     )
     .unwrap()
 }
@@ -1062,14 +1107,14 @@ fn drive_pages(
     source: &str,
 ) -> Vec<RangeTextInputRequest> {
     let mut other = Vec::new();
-    let mut page_id = 1;
+    let mut observed_quiescent = false;
     for _ in 0..256 {
         let request = input.update(cx, |input, _| input.take_request());
         let had_request = request.is_some();
         match request {
             Some(RangeTextInputRequest::Page(request)) => {
-                let page = page_for(source, page_id, request);
-                page_id += 1;
+                observed_quiescent = false;
+                let page = page_for(source, request.key().id().get(), request);
                 cx.update(|window, app| {
                     input.update(app, |input, cx| {
                         input.deliver_page(page, window, cx).unwrap()
@@ -1077,8 +1122,8 @@ fn drive_pages(
                 });
             }
             Some(RangeTextInputRequest::ObjectPage(request)) => {
-                let page = restoration_object_page(request, &[], page_id);
-                page_id += 1;
+                observed_quiescent = false;
+                let page = restoration_object_page(request, &[], request.key().id().get());
                 cx.update(|window, app| {
                     input.update(app, |input, cx| {
                         input
@@ -1095,10 +1140,20 @@ fn drive_pages(
             Some(RangeTextInputRequest::ReleasePage(_))
             | Some(RangeTextInputRequest::CancelPage(_))
             | Some(RangeTextInputRequest::ReleaseObjectPage(_))
-            | Some(RangeTextInputRequest::CancelObjectPage(_)) => {}
-            Some(request) => other.push(request),
-            None if input.read_with(cx, |input, _| input.is_quiescent()) => break,
-            None => {}
+            | Some(RangeTextInputRequest::CancelObjectPage(_)) => {
+                observed_quiescent = false;
+            }
+            Some(request) => {
+                observed_quiescent = false;
+                other.push(request);
+            }
+            None => {
+                let quiescent = input.read_with(cx, |input, _| input.is_quiescent());
+                if quiescent && observed_quiescent {
+                    break;
+                }
+                observed_quiescent = quiescent;
+            }
         }
         if had_request {
             continue;
@@ -1452,14 +1507,14 @@ fn drive_pages_with_objects(
     source: &str,
     facts: &[InlineObjectFact],
 ) {
-    let mut page_id = 91_000;
+    let mut observed_quiescent = false;
     for _ in 0..512 {
         let request = input.update(cx, |input, _| input.take_request());
         let had_request = request.is_some();
         match request {
             Some(RangeTextInputRequest::Page(request)) => {
-                let page = page_for(source, page_id, request);
-                page_id += 1;
+                observed_quiescent = false;
+                let page = page_for(source, request.key().id().get(), request);
                 cx.update(|window, app| {
                     input.update(app, |input, cx| {
                         input.deliver_page(page, window, cx).unwrap()
@@ -1467,8 +1522,8 @@ fn drive_pages_with_objects(
                 });
             }
             Some(RangeTextInputRequest::ObjectPage(request)) => {
-                let page = restoration_object_page(request, facts, page_id);
-                page_id += 1;
+                observed_quiescent = false;
+                let page = restoration_object_page(request, facts, request.key().id().get());
                 cx.update(|window, app| {
                     input.update(app, |input, cx| {
                         input
@@ -1480,28 +1535,94 @@ fn drive_pages_with_objects(
             Some(RangeTextInputRequest::ReleasePage(_))
             | Some(RangeTextInputRequest::CancelPage(_))
             | Some(RangeTextInputRequest::ReleaseObjectPage(_))
-            | Some(RangeTextInputRequest::CancelObjectPage(_)) => {}
-            None if input.read_with(cx, |input, _| input.is_quiescent()) => break,
-            None => {}
+            | Some(RangeTextInputRequest::CancelObjectPage(_)) => {
+                observed_quiescent = false;
+            }
+            None => {
+                let quiescent = input.read_with(cx, |input, _| input.is_quiescent());
+                if quiescent && observed_quiescent {
+                    break;
+                }
+                observed_quiescent = quiescent;
+            }
             Some(request) => panic!("unexpected object geometry request: {request:?}"),
         }
-        if had_request {
-            continue;
+        if !had_request {
+            cx.update(|window, app| window.draw(app).clear());
+            cx.run_until_parked();
         }
-        let geometry_quiet = input.read_with(cx, |input, _| {
-            let diagnostics = input.realization_diagnostics();
-            diagnostics.current.queued_requests == 0
-                && diagnostics.current.active_geometry_jobs == 0
-                && diagnostics.current.pending_geometry_pages == 0
-                && diagnostics.current.pending_geometry_objects == 0
-                && diagnostics.current.candidates == 0
-        });
-        if geometry_quiet {
-            break;
-        }
-        cx.update(|window, app| window.draw(app).clear());
-        cx.run_until_parked();
     }
+    input.read_with(cx, |input, _| {
+        assert!(
+            input.is_quiescent(),
+            "object geometry drive exhausted without quiescing: {:?}",
+            input.realization_diagnostics()
+        );
+    });
+}
+
+fn drive_pages_with_limited_objects(
+    input: &gpui::Entity<RangeTextInput>,
+    cx: &mut gpui::VisualTestContext,
+    source: &str,
+    facts: &[InlineObjectFact],
+    page_limit: usize,
+) {
+    let mut next_page_id = 98_000;
+    let mut observed_quiescent = false;
+    for _ in 0..512 {
+        let request = input.update(cx, |input, _| input.take_request());
+        let had_request = request.is_some();
+        match request {
+            Some(RangeTextInputRequest::Page(request)) => {
+                observed_quiescent = false;
+                let page = page_for(source, next_page_id, request);
+                next_page_id += 1;
+                cx.update(|window, app| {
+                    input.update(app, |input, cx| {
+                        input.deliver_page(page, window, cx).unwrap()
+                    })
+                });
+            }
+            Some(RangeTextInputRequest::ObjectPage(request)) => {
+                observed_quiescent = false;
+                let page = forward_object_page_with_limit(request, facts, next_page_id, page_limit);
+                next_page_id += 1;
+                cx.update(|window, app| {
+                    input.update(app, |input, cx| {
+                        input
+                            .deliver_object_page_in_window(page, window, cx)
+                            .unwrap()
+                    })
+                });
+            }
+            Some(RangeTextInputRequest::ReleasePage(_))
+            | Some(RangeTextInputRequest::CancelPage(_))
+            | Some(RangeTextInputRequest::ReleaseObjectPage(_))
+            | Some(RangeTextInputRequest::CancelObjectPage(_)) => {
+                observed_quiescent = false;
+            }
+            None => {
+                let quiescent = input.read_with(cx, |input, _| input.is_quiescent());
+                if quiescent && observed_quiescent {
+                    break;
+                }
+                observed_quiescent = quiescent;
+            }
+            Some(request) => panic!("unexpected limited object geometry request: {request:?}"),
+        }
+        if !had_request {
+            cx.update(|window, app| window.draw(app).clear());
+            cx.run_until_parked();
+        }
+    }
+    input.read_with(cx, |input, _| {
+        assert!(
+            input.is_quiescent(),
+            "limited object geometry drive exhausted without quiescing: {:?}",
+            input.realization_diagnostics()
+        );
+    });
 }
 
 fn drive_pages_observing_cancel(
@@ -2991,9 +3112,10 @@ fn queued_semantic_cleanup_prevents_clean_release_until_host_dispatch(
     let current = input.read_with(cx, |input, _| input.surface().unwrap().selection().head);
     let (text, objects) = admitted_sources(source, 1, &[current]);
     let base = binding(source, 1);
+    let operation = input.read_with(cx, |input, _| input.lease_host_operation().unwrap());
     let begin = MutationBeginRequest::new(
         MutationProposal::new(
-            MutationKey::new(base.binding(), base.revision(), OperationId::new(1)),
+            MutationKey::new(base.binding(), base.revision(), operation.operation()),
             MutationKind::Edit,
             MutationPositions::collapsed(current),
             SourceRange::new(current, current).unwrap(),
@@ -3007,7 +3129,7 @@ fn queued_semantic_cleanup_prevents_clean_release_until_host_dispatch(
     input.update(cx, |input, cx| {
         assert!(input.is_semantically_quiescent());
         input
-            .begin_host_mutation(begin, &[current], &text, &objects, cx)
+            .begin_host_mutation(operation, begin, &[current], &text, &objects, cx)
             .unwrap();
         assert!(!input.is_semantically_quiescent());
         assert!(matches!(
@@ -4010,7 +4132,7 @@ fn same_anchor_objects_cross_pages_keep_order_gaps_hits_and_bounded_residency(
     let (input, cx) = cx.add_window_view(|window, cx| {
         let mut configuration = config(source, 1);
         configuration.object_residency_limits =
-            ObjectResidencyLimits::new(12, 96, 512 * 1024, 64 * 1024, 4, 96, 512 * 1024).unwrap();
+            ObjectResidencyLimits::new(4, 48, 512 * 1024, 64 * 1024, 4, 48, 512 * 1024).unwrap();
         let input = RangeTextInput::new(configuration, window, cx).unwrap();
         input.focus(window);
         input
@@ -4052,7 +4174,7 @@ fn same_anchor_objects_cross_pages_keep_order_gaps_hits_and_bounded_residency(
     input.read_with(cx, |input, _| {
         let surface = input.surface().unwrap();
         assert!(delivered_object_pages > 1);
-        assert_eq!(surface.object_pages().len(), 12);
+        assert!(surface.object_pages().len() <= 4);
         assert!(
             surface
                 .object_pages()
@@ -4092,9 +4214,42 @@ fn same_anchor_objects_cross_pages_keep_order_gaps_hits_and_bounded_residency(
             assert!(matches!(hit, Some(RangeSurfaceHit::Object(hit)) if hit.id() == object.id()));
         }
         let diagnostics = input.realization_diagnostics();
-        assert!(diagnostics.current.resident_objects <= 96);
-        assert!(surface.object_pages().len() <= 12);
+        assert!(diagnostics.current.resident_objects <= 48);
+        assert!(surface.object_pages().len() <= 4);
     });
+    let (click, selected) = input.read_with(cx, |input, _| {
+        let surface = input.surface().unwrap();
+        let scroll = surface.scroll_block();
+        (0..20)
+            .find_map(|row| {
+                (0..26).find_map(|column| {
+                    let viewport = point(px(column as f32 * 4.), px(row as f32 * 4.));
+                    let logical = viewport + point(gpui::Pixels::ZERO, scroll);
+                    let RangeSurfaceHit::Object(object) = surface.hit_test_composite(logical)?
+                    else {
+                        return None;
+                    };
+                    let resident = surface.object_pages().iter().any(|page| {
+                        page.objects()
+                            .iter()
+                            .any(|fact| fact.id() == object.id() && fact.order() == object.order())
+                    });
+                    (!resident).then_some((viewport, object))
+                })
+            })
+            .expect("no visible geometry-owned object was outside generic residency")
+    });
+    cx.simulate_event(MouseDownEvent {
+        position: click,
+        modifiers: Modifiers::none(),
+        button: MouseButton::Left,
+        click_count: 1,
+        first_mouse: false,
+    });
+    drive_pages_with_limited_objects(&input, cx, source, &facts, 8);
+    let active = input.read_with(cx, |input, _| input.active_inline_object().unwrap());
+    assert_eq!(active.object_id, selected.id());
+    assert_eq!(active.order, selected.order());
 }
 
 #[gpui::test]
@@ -4652,10 +4807,11 @@ fn committed_inline_object_replacement_invalidates_an_exact_surface_attachment(
         })
         .unwrap();
     let replacement = SourceRange::new(object.leading(), object.trailing()).unwrap();
+    let operation = input.read_with(cx, |input, _| input.lease_host_operation().unwrap());
     let key = MutationKey::new(
         binding(source, 1).binding(),
         binding(source, 1).revision(),
-        OperationId::new(1),
+        operation.operation(),
     );
     let proposal = MutationProposal::new(key, MutationKind::Edit, predecessor, replacement, 0);
     let begin = MutationBeginRequest::new(proposal, MutationCursor::new(0), MutationCursor::new(0));
@@ -4674,7 +4830,14 @@ fn committed_inline_object_replacement_invalidates_an_exact_surface_attachment(
     let (base_text, base_objects) = admitted_sources_with_facts(source, 1, &base_positions, &facts);
     input.update(cx, |input, cx| {
         input
-            .begin_host_mutation(begin, &base_positions, &base_text, &base_objects, cx)
+            .begin_host_mutation(
+                operation,
+                begin,
+                &base_positions,
+                &base_text,
+                &base_objects,
+                cx,
+            )
             .unwrap();
         assert!(matches!(
             input.take_request(),

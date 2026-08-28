@@ -299,7 +299,7 @@ impl RangeTextInput {
         self.desired.target_block = surface.scroll_block();
         self.desired.realization_anchor_block = state.desired.realization_anchor_block;
         self.desired.preserve_scroll_anchor = false;
-        self.desired.reveal_caret = false;
+        self.desired.reveal_caret = state.desired.reveal_caret;
         self.desired.inline_object_interaction = None;
         if let Some(selection) = select_all {
             self.pending_select_all = false;

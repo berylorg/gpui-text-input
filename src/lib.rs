@@ -73,17 +73,18 @@ pub use range_source::{
     SourcePosition, SourceRange, SourceRangeError, SourceRevision,
 };
 pub use range_widget::{
-    CoherentRangeSurface, InlineObjectActivation, InlineObjectActivationKey,
+    CoherentRangeSurface, HostOperationLease, InlineObjectActivation, InlineObjectActivationKey,
     InlineObjectInputOrigin, InlineObjectRealizationLoss, InlineObjectRealizationLossReason,
     InlineObjectSurfaceAttachment, InlineObjectSurfaceDismissal, PlatformRangeResult,
     RangeHistoryCommit, RangeHistoryFrontier, RangeHistoryIntent, RangeHistoryOutcome,
     RangeHistorySession, RangeHistorySettlement, RangeRealizationCapacityState,
     RangeRealizationDiagnostics, RangeRealizationOwnership, RangeRealizationPriority,
-    RangeRealizationStep, RangeRestorationScrollAnchor, RangeRestorationSeed, RangeSelection,
-    RangeSettlementCoordinator, RangeSourceSelection, RangeSurfaceCharge, RangeSurfaceFiller,
-    RangeSurfaceHit, RangeTextInput, RangeTextInputConfig, RangeTextInputError,
-    RangeTextInputEvent, RangeTextInputLimits, RangeTextInputRequest, RealizedInlineObjectAnchor,
-    RealizedInlineObjectGeometry, RealizedInlineObjectPresentation, RealizedObjectGapGeometry,
+    RangeRealizationStep, RangeResponseRejectionClass, RangeRestorationScrollAnchor,
+    RangeRestorationSeed, RangeSelection, RangeSettlementCoordinator, RangeSourceSelection,
+    RangeSurfaceCharge, RangeSurfaceFiller, RangeSurfaceHit, RangeTextInput, RangeTextInputConfig,
+    RangeTextInputError, RangeTextInputEvent, RangeTextInputLimits, RangeTextInputRequest,
+    RealizedInlineObjectAnchor, RealizedInlineObjectGeometry, RealizedInlineObjectPresentation,
+    RealizedObjectGapGeometry,
 };
 pub use residency::{
     ObjectAnchorProofError, ObjectAnchorProofs, PageAdmission, PageAdmissionError, PageDemand,

@@ -1,4 +1,4 @@
-use gpui::{Pixels, StreamingLayoutContinuation, StreamingLayoutFragment};
+use gpui::{Pixels, Point, StreamingLayoutContinuation, StreamingLayoutFragment};
 
 use crate::SourcePosition;
 
@@ -13,31 +13,69 @@ pub(super) fn admission_intersects_target(
 ) -> bool {
     let window_start = target.block_offset;
     let window_end = target.block_offset + target.viewport_extent + target.overscan;
-    fragments.iter().any(|fragment| {
-        let (start, end) = fragment_vertical_bounds(fragment, prior, line_height);
-        (end > window_start && start < window_end)
-            || anchor.is_some_and(|anchor| fragment_contains_anchor(fragment, anchor))
-    })
+    match anchor {
+        Some(anchor) => fragments
+            .iter()
+            .any(|fragment| fragment_anchor_position(fragment, anchor).is_some()),
+        None => fragments.iter().any(|fragment| {
+            let (start, end) = fragment_vertical_bounds(fragment, prior, line_height);
+            end > window_start && start < window_end
+        }),
+    }
 }
 
-fn fragment_contains_anchor(fragment: &StreamingLayoutFragment, anchor: SourcePosition) -> bool {
+fn fragment_anchor_position(
+    fragment: &StreamingLayoutFragment,
+    anchor: SourcePosition,
+) -> Option<Point<Pixels>> {
     let anchor = anchor.into();
-    match fragment {
+    let mapped = match fragment {
         StreamingLayoutFragment::Text(fragment) => fragment
             .position_for_logical_position(anchor)
             .ok()
-            .flatten()
-            .is_some(),
+            .flatten(),
         StreamingLayoutFragment::OversizeAtom(fragment) => {
-            fragment.position_for_logical_position(anchor).is_some()
+            fragment.position_for_logical_position(anchor)
         }
         StreamingLayoutFragment::InlineObject(fragment) => {
-            fragment.position_for_logical_position(anchor).is_some()
+            fragment.position_for_logical_position(anchor)
         }
         StreamingLayoutFragment::Boundary(fragment) => {
-            fragment.position_for_logical_position(anchor).is_some()
+            fragment.position_for_logical_position(anchor)
         }
+    };
+    mapped.or_else(|| {
+        fragment_maps(fragment)
+            .iter()
+            .find(|map| map.logical_position == anchor)
+            .map(|map| map.position)
+    })
+}
+
+fn fragment_maps(fragment: &StreamingLayoutFragment) -> &[gpui::StreamingLayoutMap] {
+    match fragment {
+        StreamingLayoutFragment::Text(fragment) => fragment.maps(),
+        StreamingLayoutFragment::OversizeAtom(fragment) => fragment.maps(),
+        StreamingLayoutFragment::InlineObject(fragment) => fragment.maps(),
+        StreamingLayoutFragment::Boundary(fragment) => fragment.maps(),
     }
+}
+
+pub(super) fn resolve_source_anchor(job: &mut ActiveJob, fragments: &[StreamingLayoutFragment]) {
+    let ActiveKind::Target { target, anchor, .. } = &mut job.kind else {
+        return;
+    };
+    let Some(source_anchor) = *anchor else {
+        return;
+    };
+    let Some(position) = fragments
+        .iter()
+        .find_map(|fragment| fragment_anchor_position(fragment, source_anchor))
+    else {
+        return;
+    };
+    *target = BlockTarget::new(position.y, target.viewport_extent(), target.overscan());
+    *anchor = None;
 }
 
 fn fragment_vertical_bounds(

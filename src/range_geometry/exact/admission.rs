@@ -352,8 +352,13 @@ impl ExactGeometryOwner {
                 1usize.saturating_add(active.scanner.checkpoints.len()),
             ),
             ActiveKind::Target { .. } => (
-                accounting::target_publication_record_bytes(active.scanner.fragments.len()),
-                1usize.saturating_add(active.scanner.fragments.len()),
+                accounting::target_publication_record_bytes(
+                    active.scanner.fragments.len(),
+                    active.scanner.object_presentations.len(),
+                ),
+                1usize
+                    .saturating_add(active.scanner.fragments.len())
+                    .saturating_add(active.scanner.object_presentations.len()),
             ),
         };
         // Vec/VecDeque storage remains live while Arc publication records are initialized, so the
@@ -442,6 +447,7 @@ impl ExactGeometryOwner {
                     content_height_lower_bound: scanner.continuation.block_offset
                         + scanner.continuation.line_block_extent,
                     fragments: Arc::from(scanner.fragments),
+                    object_presentations: Arc::from(scanner.object_presentations),
                     charge: scanner.output_charge,
                     item_charge: scanner.output_item_charge,
                 };

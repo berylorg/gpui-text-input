@@ -99,7 +99,7 @@ impl RangeTextInput {
     }
 
     fn scrollbar_state(&self) -> Option<ScrollbarScrollState> {
-        let surface = self.interactive_surface()?;
+        let surface = self.scroll_reference_surface()?;
         let bounds = self.last_bounds?;
         let max = (surface.content_height() - bounds.size.height).max(Pixels::ZERO);
         (max > Pixels::ZERO).then_some(ScrollbarScrollState {

@@ -7,8 +7,8 @@ use gpui::{
 use unicode_segmentation::GraphemeCursor;
 
 use crate::{
-    ByteOffset, ObjectCursor, ObjectRequestKey, PageRequestKey, RangeSourceSelection,
-    SourcePosition,
+    ByteOffset, InlineObjectPresentation, ObjectCursor, ObjectRequestKey, PageRequestKey,
+    RangeSourceSelection, SourcePosition,
 };
 
 use super::super::{GeometryJobKey, GeometryQuality};
@@ -271,6 +271,29 @@ impl BlockTarget {
 }
 
 #[derive(Clone, Debug)]
+pub(crate) struct TargetInlineObjectPresentation {
+    cursor: ObjectCursor,
+    presentation: InlineObjectPresentation,
+}
+
+impl TargetInlineObjectPresentation {
+    pub(crate) fn new(cursor: ObjectCursor, presentation: InlineObjectPresentation) -> Self {
+        Self {
+            cursor,
+            presentation,
+        }
+    }
+
+    pub(crate) const fn cursor(&self) -> ObjectCursor {
+        self.cursor
+    }
+
+    pub(crate) const fn presentation(&self) -> &InlineObjectPresentation {
+        &self.presentation
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct BlockTargetPublication {
     pub(super) key: GeometryJobKey,
     pub(super) predecessor: SourcePosition,
@@ -280,6 +303,7 @@ pub struct BlockTargetPublication {
     pub(super) visual_lines_lower_bound: u64,
     pub(super) content_height_lower_bound: Pixels,
     pub(super) fragments: Arc<[StreamingLayoutFragment]>,
+    pub(super) object_presentations: Arc<[TargetInlineObjectPresentation]>,
     pub(super) charge: StreamingLayoutCharge,
     pub(super) item_charge: StreamingLayoutItemCharge,
 }
@@ -315,6 +339,25 @@ impl BlockTargetPublication {
 
     pub fn fragments(&self) -> &[StreamingLayoutFragment] {
         &self.fragments
+    }
+
+    pub(crate) fn object_presentations(&self) -> &[TargetInlineObjectPresentation] {
+        &self.object_presentations
+    }
+
+    pub(crate) fn output_record_bytes(&self) -> Option<usize> {
+        self.fragments
+            .len()
+            .checked_mul(std::mem::size_of::<StreamingLayoutFragment>())?
+            .checked_add(
+                self.object_presentations
+                    .len()
+                    .checked_mul(std::mem::size_of::<TargetInlineObjectPresentation>())?,
+            )
+    }
+
+    pub(crate) fn object_presentation_items(&self) -> usize {
+        self.object_presentations.len()
     }
 
     pub const fn charge(&self) -> StreamingLayoutCharge {

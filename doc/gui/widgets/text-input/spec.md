@@ -209,7 +209,9 @@ Source-zero-width inline objects use separate bounded object-page requests under
 revision, and host-owned presentation generation. Each request names one byte interval or exact
 byte anchor, an optional same-anchor order cursor, direction, unique identity, and positive object-
 count and retained-byte ceilings. A response is strictly ordered by anchor, host order key, and
-stable object identity and proves its preceding, following, and completion facts. An object-only
+stable object identity and proves its preceding, following, and completion facts. Both interval
+edges are eligible zero-width anchors, including exact source end; a host with terminal-exclusive
+storage must preserve that terminal edge through an exact bounded adapter. An object-only
 continuation may make progress at one anchor without consuming UTF-8 bytes. The widget rejects
 duplicate identities or order keys, non-scalar anchors, inconsistent continuations, presentation-
 generation mismatches, and responses outside the exact request envelope.
@@ -314,6 +316,11 @@ late results obsolete. A pre-admission ordinary edit or historical-root selectio
 An already admitted operation still settles at the host boundary but cannot apply to the detached
 or replacement widget binding.
 
+The shared settlement coordinator is the sole allocator and admission validator for host-visible
+operation identities across live and detached widget generations. It atomically validates each
+allocated operation against its host-dispatch frontier, while finite slots separately retain
+admitted settlement custody. The host adds no second last-seen sequence beside it.
+
 The host exposes a configured finite settlement-custody capacity shared by live and detached widget
 generations. Each ordinary commit and historical-root selection reserves one compact slot before
 admission. Rebind or unmount transfers only its operation identity, exact base key, and terminal
@@ -386,6 +393,20 @@ same-anchor order. They contribute measured inline geometry without advancing th
 Every realized object has exact bounds and one exact hit region; every adjacent gap has exact caret
 geometry. A same-anchor collection larger than one object page streams through a bounded object
 continuation and may increase total work without increasing resident object or presentation caps.
+
+When an authenticated inline-object fact produces a retained target fragment, exact geometry also
+retains one matching compact presentation record under the same binding, revision, presentation
+generation, epoch, and job. Target publication transfers fragments and records atomically, and the
+coherent surface resolves realized painting, metadata, hit testing, and activation from that bounded
+target-owned projection. Generic object-page eviction cannot invalidate it. Resident object pages
+remain the only source for composite-gap proof, edit, clipboard, and continuation authority; the
+target projection is bounded by retained fragments and never retains an entire same-anchor run.
+
+A pointer or keyboard interaction retains its exact composite source gap, including its
+same-anchor order witness, while a successor target is pending. Target preparation and index
+continuation use that exact interaction anchor even when the prior coherent surface can map it. The
+bounded exact scanner proves the gap for the successor surface through ordinary paged input; the
+widget does not pin the former object page or retain the complete same-anchor collection.
 
 Logical lines are partitioned into canonical bounded shaping segments independently of page edges.
 An ordinary segment ends at the last complete grapheme or opaque-atom boundary within the

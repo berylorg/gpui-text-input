@@ -133,7 +133,7 @@ fn active_interaction_and_scroll_anchor_are_runtime_realization_targets(
         )
         .unwrap(),
     );
-    input.update(cx, |input, cx| {
+    input.update(cx, |input, _| {
         let mut desired = input.desired;
         desired.source_selection = Some(RangeSourceSelection {
             anchor: SourcePosition::new(ByteOffset::new(4), crate::InlineObjectGap::before(object)),
@@ -147,8 +147,8 @@ fn active_interaction_and_scroll_anchor_are_runtime_realization_targets(
             activation_eligible: true,
             origin: None,
         });
-        input.desired = desired;
-        cx.notify();
+        let candidate = input.prepare_target_transition(desired, None).unwrap();
+        input.commit_widget_transition(candidate, None);
     });
     let mut next_page = 100_000;
     drive_bounded_priority_objects(&input, cx, SOURCE, &[fact], &mut next_page);
@@ -577,20 +577,43 @@ fn exact_priority_gap_crosses_more_same_anchor_objects_than_residency_capacity(
                 });
                 desired.composition = (expected == RangeRealizationPriority::Ime)
                     .then(|| ByteRange::from_u64(0, 1).unwrap());
-                input.desired = desired;
+                let candidate = input.prepare_target_transition(desired, None).unwrap();
+                input.commit_widget_transition(candidate, None);
             });
             drive_bounded_priority_objects(&input, cx, source, &facts, &mut next_page);
             input.read_with(cx, |input, _| {
                 let surface = input.surface().unwrap();
                 assert_eq!(surface.realization_priority(), expected);
                 assert_eq!(surface.selection().head, gap);
-                assert!(surface.position_for_source_position(gap).is_some());
+                assert!(
+                    surface.position_for_source_position(gap).is_some(),
+                    "missing gap {gap:?} for case {gap_index} at priority {expected:?}; realized gaps: {:?}",
+                    surface.realized_object_gaps(),
+                );
                 assert!(
                     surface
                         .realized_object_gaps()
                         .iter()
                         .any(|realized| realized.position() == gap)
                 );
+                let realized_presentations = surface
+                    .realized_presentations(surface.publication_key())
+                    .unwrap()
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    realized_presentations.len(),
+                    surface.realized_objects().len()
+                );
+                if gap_index == 2 {
+                    assert!(!realized_presentations.is_empty());
+                }
+                for realized in realized_presentations {
+                    let expected = facts
+                        .iter()
+                        .find(|fact| fact.id() == realized.geometry().id())
+                        .unwrap();
+                    assert_eq!(realized.presentation(), expected.presentation());
+                }
                 let diagnostics = input.realization_diagnostics();
                 assert!(diagnostics.current.resident_objects <= diagnostics.max_owned_objects);
                 assert!(diagnostics.current.resident_pages <= diagnostics.max_owned_pages);
@@ -607,4 +630,70 @@ fn exact_priority_gap_crosses_more_same_anchor_objects_than_residency_capacity(
             });
         }
     }
+}
+
+#[gpui::test]
+fn exact_priority_after_end_object_retains_proof_for_successive_edit(
+    cx: &mut gpui::TestAppContext,
+) {
+    let source = "a";
+    let first = InlineObjectFact::new(
+        InlineObjectId::new(20_000),
+        ByteOffset::new(source.len() as u64),
+        InlineObjectOrder::new(1),
+        "[first]",
+        InlineObjectPresentation::new(
+            20_000,
+            SharedString::new_static("x"),
+            px(16.),
+            px(24.),
+            px(20.),
+            None,
+            0,
+            true,
+        )
+        .unwrap(),
+    );
+    let gap = SourcePosition::new(
+        ByteOffset::new(source.len() as u64),
+        crate::InlineObjectGap::after(crate::InlineObjectNeighbor::new(first.id(), first.order())),
+    );
+    let facts = [first];
+    let mut configuration = config(2 * 1024 * 1024, 32_768);
+    configuration.binding = RangeBinding::new(
+        BindingId::new(190),
+        SourceRevision::new(1),
+        LogicalExtent::new(source.len() as u64, 1),
+    );
+    configuration.geometry_limits = ExactGeometryLimits::new(32, 4, 512 * 1024, 8192).unwrap();
+    configuration.object_residency_limits =
+        ObjectResidencyLimits::new(2, 1, 64 * 1024, 64 * 1024, 2, 1, 64 * 1024).unwrap();
+    let (input, cx) = cx
+        .add_window_view(move |window, cx| RangeTextInput::new(configuration, window, cx).unwrap());
+    let mut next_page = 190_000;
+    drive_bounded_priority_objects(&input, cx, source, &facts, &mut next_page);
+    input.update(cx, |input, cx| {
+        input
+            .publish_source_selection(RangeSourceSelection::caret(gap), None, None, cx)
+            .unwrap();
+    });
+    drive_bounded_priority_objects(&input, cx, source, &facts, &mut next_page);
+    input.read_with(cx, |input, _| {
+        assert_eq!(
+            input.surface().unwrap().selection(),
+            RangeSourceSelection::caret(gap)
+        );
+        assert_eq!(input.realization_diagnostics().current.resident_objects, 1);
+    });
+    input.update(cx, |input, cx| {
+        input
+            .insert_inline_object_at_selection(
+                InlineObjectId::new(20_001),
+                InlineObjectOrder::new(2),
+                1,
+                0,
+                cx,
+            )
+            .unwrap();
+    });
 }

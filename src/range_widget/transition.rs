@@ -234,9 +234,8 @@ impl RangeTextInput {
             && let Some(anchor) = desired.source_selection.map(|selection| selection.head)
             && (anchor.byte_offset.get() == self.config.binding.extent().byte_len()
                 || self
-                    .surface
-                    .as_ref()
-                    .is_none_or(|surface| surface.position_for_source_position(anchor).is_none()))
+                    .current_surface_position_for_source_position(anchor)
+                    .is_none())
         {
             desired.realization_anchor_block = exact_priority_block(index, anchor)
                 .ok_or(RangeTextInputError::IncompleteSurface)?;
@@ -478,20 +477,15 @@ impl RangeTextInput {
                 (desired.source_selection, self.geometry.index())
         {
             let byte_len = self.config.binding.extent().byte_len();
-            if let Some((block, visible_start, visible_end)) =
-                self.interactive_surface().and_then(|surface| {
-                    surface
-                        .position_for_source_position(selection.head)
-                        .map(|position| {
-                            (
-                                position.y,
-                                surface.scroll_block(),
-                                surface.scroll_block() + desired.realization_extent,
-                            )
-                        })
-                })
-            {
-                if block < visible_start || block >= visible_end {
+            if let Some(block) = self.interactive_surface().and_then(|surface| {
+                surface
+                    .position_for_source_position(selection.head)
+                    .map(|position| position.y)
+            }) {
+                let target = desired.target();
+                let target_end =
+                    target.block_offset() + target.viewport_extent() + target.overscan();
+                if block < target.block_offset() || block >= target_end {
                     desired.realization_anchor_block = block;
                 }
             } else if byte_len > 0 {
@@ -500,23 +494,25 @@ impl RangeTextInput {
             }
         }
         let (job_id, request_id, committed_next_id) = self.transition_ids()?;
-        let target_anchor = restoration.map(|seed| seed.scroll.position).or_else(|| {
-            matches!(
-                desired.priority(),
-                crate::RangeRealizationPriority::Caret
-                    | crate::RangeRealizationPriority::Ime
-                    | crate::RangeRealizationPriority::DirectedSelection
-                    | crate::RangeRealizationPriority::ActiveInteraction
-            )
-            .then_some(desired.source_selection)
-            .flatten()
-            .map(|selection| selection.head)
-            .filter(|anchor| {
-                self.surface
-                    .as_ref()
-                    .is_none_or(|surface| surface.position_for_source_position(*anchor).is_none())
-            })
-        });
+        let target_anchor = restoration
+            .map(|seed| seed.scroll.position)
+            .or_else(|| desired.exact_interaction_anchor())
+            .or_else(|| {
+                matches!(
+                    desired.priority(),
+                    crate::RangeRealizationPriority::Caret
+                        | crate::RangeRealizationPriority::Ime
+                        | crate::RangeRealizationPriority::DirectedSelection
+                        | crate::RangeRealizationPriority::ActiveInteraction
+                )
+                .then_some(desired.source_selection)
+                .flatten()
+                .map(|selection| selection.head)
+                .filter(|anchor| {
+                    self.current_surface_position_for_source_position(*anchor)
+                        .is_none()
+                })
+            });
         let geometry = if allow_incomplete_index && self.geometry.index().is_none() {
             let checkpoint = self
                 .surface

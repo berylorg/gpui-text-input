@@ -1,8 +1,8 @@
 use gpui::{Context, Window};
 
 use crate::{
-    ByteOffset, ByteRange, LogicalExtent, MutationBeginRequest, MutationCursor, MutationError,
-    MutationFinishInput, MutationIdentity, MutationKey, MutationKind, MutationLane,
+    ByteOffset, ByteRange, HostOperationLease, LogicalExtent, MutationBeginRequest, MutationCursor,
+    MutationError, MutationFinishInput, MutationIdentity, MutationKey, MutationKind, MutationLane,
     MutationOutcome, MutationPage, MutationPageItem, MutationPageKey, MutationPageRequest,
     MutationPositions, MutationProposal, MutationSettlement, MutationStreamFinish, ObjectResidency,
     RangeResidency, RangeTextInputError, RangeTextInputEvent, RangeTextInputRequest,
@@ -161,6 +161,7 @@ impl RangeTextInput {
 
     pub fn begin_host_mutation(
         &mut self,
+        operation: HostOperationLease,
         request: MutationBeginRequest,
         base_positions: &[SourcePosition],
         text: &RangeResidency,
@@ -174,15 +175,20 @@ impl RangeTextInput {
             return Err(RangeTextInputError::ReadOnly);
         }
         let proposal = request.proposal();
+        if proposal.key().operation() != operation.operation()
+            || !self
+                .config
+                .settlement_coordinator
+                .owns_host_operation(&operation)
+        {
+            return Err(RangeTextInputError::Stale);
+        }
         if proposal.kind() != crate::MutationKind::Edit {
             return Err(RangeTextInputError::UnsupportedMutationKind);
         }
         if !self.mutation_queue_has_capacity(proposal.key()) {
             return Err(RangeTextInputError::Busy);
         }
-        self.config
-            .settlement_coordinator
-            .claim_host_operation(proposal.key().operation())?;
         for required in [
             proposal.predecessor().caret(),
             proposal.predecessor().selection_anchor(),
@@ -198,6 +204,19 @@ impl RangeTextInput {
         self.edits.begin(request)?;
         self.push_request(RangeTextInputRequest::MutationBegin(request), cx)?;
         Ok(proposal.key())
+    }
+
+    pub fn lease_host_operation(&self) -> Result<HostOperationLease, RangeTextInputError> {
+        self.config.settlement_coordinator.lease_host_operation()
+    }
+
+    pub fn admit_host_operation_dispatch(
+        &self,
+        operation: crate::OperationId,
+    ) -> Result<(), RangeTextInputError> {
+        self.config
+            .settlement_coordinator
+            .admit_host_dispatch(operation)
     }
 
     pub fn submit_mutation_page(

@@ -109,15 +109,27 @@ impl ExactGeometryOwner {
             .len()
             .checked_add(delta.scanner.fragments.len())
             .ok_or_else(|| prepared_capacity_failure(&budget))?;
+        let presentation_count = current
+            .scanner
+            .object_presentations
+            .len()
+            .checked_add(delta.scanner.object_presentations.len())
+            .ok_or_else(|| prepared_capacity_failure(&budget))?;
         let conversion_bytes = size_of::<BlockTargetPublication>()
             .checked_add(
                 record_count
                     .checked_mul(size_of::<StreamingLayoutFragment>())
                     .ok_or_else(|| prepared_capacity_failure(&budget))?,
             )
+            .and_then(|bytes| {
+                presentation_count
+                    .checked_mul(size_of::<TargetInlineObjectPresentation>())
+                    .and_then(|presentations| bytes.checked_add(presentations))
+            })
             .ok_or_else(|| prepared_capacity_failure(&budget))?;
         let conversion_items = record_count
-            .checked_add(1)
+            .checked_add(presentation_count)
+            .and_then(|items| items.checked_add(1))
             .ok_or_else(|| prepared_capacity_failure(&budget))?;
         observe_prepared(&mut budget, &delta, conversion_bytes, conversion_items)?;
         let output_charge = accounting::add_fragment_charge(
@@ -159,6 +171,15 @@ impl ExactGeometryOwner {
                 .chain(delta.scanner.fragments.drain(..))
                 .collect::<Vec<_>>(),
         );
+        let object_presentations = Arc::from(
+            current
+                .scanner
+                .object_presentations
+                .iter()
+                .cloned()
+                .chain(delta.scanner.object_presentations.drain(..))
+                .collect::<Vec<_>>(),
+        );
         let target = Box::new(BlockTargetPublication {
             key: delta.key,
             predecessor,
@@ -169,6 +190,7 @@ impl ExactGeometryOwner {
             content_height_lower_bound: delta.scanner.continuation.block_offset
                 + delta.scanner.continuation.line_block_extent,
             fragments,
+            object_presentations,
             charge: output_charge,
             item_charge: output_item_charge,
         });
@@ -383,6 +405,13 @@ impl ExactGeometryOwner {
             .checked_add(delta.scanner.fragments.len())
             .ok_or_else(|| prepared_capacity_failure(&budget))?;
         let fragments = Vec::with_capacity(fragment_capacity);
+        let presentation_capacity = current
+            .scanner
+            .object_presentations
+            .len()
+            .checked_add(delta.scanner.object_presentations.len())
+            .ok_or_else(|| prepared_capacity_failure(&budget))?;
+        let object_presentations = Vec::with_capacity(presentation_capacity);
         let checkpoint_capacity = current
             .scanner
             .checkpoints
@@ -400,10 +429,17 @@ impl ExactGeometryOwner {
                     .checked_mul(size_of::<ExactGeometryCheckpoint>())
                     .and_then(|checkpoints| bytes.checked_add(checkpoints))
             })
+            .and_then(|bytes| {
+                object_presentations
+                    .capacity()
+                    .checked_mul(size_of::<TargetInlineObjectPresentation>())
+                    .and_then(|presentations| bytes.checked_add(presentations))
+            })
             .ok_or_else(|| prepared_capacity_failure(&budget))?;
         let destination_items = fragments
             .capacity()
             .checked_add(checkpoints.capacity())
+            .and_then(|items| items.checked_add(object_presentations.capacity()))
             .ok_or_else(|| prepared_capacity_failure(&budget))?;
         observe_prepared(&mut budget, &delta, destination_bytes, destination_items)?;
         let output_charge = accounting::add_fragment_charge(
@@ -420,6 +456,7 @@ impl ExactGeometryOwner {
             PreparedTargetResponseState::Active(PreparedActiveTarget {
                 delta,
                 fragments,
+                object_presentations,
                 checkpoints,
                 output_charge,
                 output_item_charge,
@@ -561,17 +598,28 @@ impl ExactGeometryOwner {
                     .capacity()
                     .checked_mul(size_of::<StreamingLayoutFragment>())
                     .ok_or_else(|| prepared_capacity_failure(&budget))?;
+                let presentation_bytes = active
+                    .object_presentations
+                    .capacity()
+                    .checked_mul(size_of::<TargetInlineObjectPresentation>())
+                    .ok_or_else(|| prepared_capacity_failure(&budget))?;
                 let destination_bytes = active
                     .checkpoints
                     .capacity()
                     .checked_mul(size_of::<ExactGeometryCheckpoint>())
                     .and_then(|bytes| bytes.checked_add(fragment_bytes))
+                    .and_then(|bytes| bytes.checked_add(presentation_bytes))
                     .ok_or_else(|| prepared_capacity_failure(&budget))?;
                 (
                     checked_total_bytes(counts)
                         .and_then(|bytes| bytes.checked_add(destination_bytes).ok_or(())),
                     checked_total_items(counts)
                         .and_then(|items| items.checked_add(active.fragments.capacity()).ok_or(()))
+                        .and_then(|items| {
+                            items
+                                .checked_add(active.object_presentations.capacity())
+                                .ok_or(())
+                        })
                         .and_then(|items| {
                             items.checked_add(active.checkpoints.capacity()).ok_or(())
                         }),
@@ -666,6 +714,12 @@ impl ExactGeometryOwner {
                 prepared
                     .fragments
                     .extend(prepared.delta.scanner.fragments.drain(..));
+                prepared
+                    .object_presentations
+                    .extend(current.scanner.object_presentations.drain(..));
+                prepared
+                    .object_presentations
+                    .extend(prepared.delta.scanner.object_presentations.drain(..));
                 for checkpoint in current
                     .scanner
                     .checkpoints
@@ -679,6 +733,7 @@ impl ExactGeometryOwner {
                     );
                 }
                 prepared.delta.scanner.fragments = prepared.fragments;
+                prepared.delta.scanner.object_presentations = prepared.object_presentations;
                 prepared.delta.scanner.checkpoints = prepared.checkpoints;
                 prepared.delta.scanner.output_charge = prepared.output_charge;
                 prepared.delta.scanner.output_item_charge = prepared.output_item_charge;

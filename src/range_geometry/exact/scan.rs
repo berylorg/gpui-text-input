@@ -392,9 +392,33 @@ fn admit_inline_object(
     // Checkpoints retained by the admission must pair the post-object composite continuation with
     // the exact object-source cursor that produced it.
     job.scanner.object_cursor = Some(object.cursor());
-    admit_layout(job, text_system, binding, limits, true, budget, |session| {
+    let fragment_start = job.scanner.fragments.len();
+    let retained = admit_layout(job, text_system, binding, limits, true, budget, |session| {
         session.admit_inline_object(input)
     })?;
+    if retained {
+        let matching_fragments = job.scanner.fragments[fragment_start..]
+            .iter()
+            .filter(|fragment| match fragment {
+                gpui::StreamingLayoutFragment::InlineObject(fragment) => {
+                    fragment.id == object.id().into()
+                        && fragment.order == object.order().into()
+                        && fragment.leading == expected_leading.into()
+                }
+                _ => false,
+            })
+            .count();
+        if matching_fragments != 1 {
+            return Err(ExactGeometryError::SourceContract);
+        }
+        job.scanner
+            .object_presentations
+            .push(super::TargetInlineObjectPresentation::new(
+                object.cursor(),
+                object.presentation().clone(),
+            ));
+        budget.observe(job, 0, 0)?;
+    }
     Ok(())
 }
 
@@ -609,7 +633,7 @@ fn admit_layout(
     admit: impl FnOnce(
         &mut gpui::StreamingLayoutSession<'_>,
     ) -> Result<gpui::StreamingLayoutAdmission, gpui::StreamingLayoutError>,
-) -> Result<(), ExactGeometryError> {
+) -> Result<bool, ExactGeometryError> {
     let prior = job.scanner.continuation;
     let (admission, session_item_charge) = {
         let mut session = text_system.resume_streaming_layout_session(binding.clone(), prior)?;
@@ -625,8 +649,12 @@ fn admit_layout(
     let admission_items = admission.fragments.len();
     let full_transient_bytes = admission.charge.total()?;
     let full_transient_items = admission.item_charge.total()?;
-    let (transient_bytes, transient_items) =
-        if let ActiveKind::Target { target, anchor, .. } = job.kind {
+    let (retained, transient_bytes, transient_items) =
+        if matches!(job.kind, ActiveKind::Target { .. }) {
+            super::target_output::resolve_source_anchor(job, &admission.fragments);
+            let ActiveKind::Target { target, anchor, .. } = job.kind else {
+                unreachable!();
+            };
             super::target_output::update_target_source(
                 job,
                 &admission.fragments,
@@ -653,15 +681,16 @@ fn admit_layout(
                 // Fragment clones share GPUI's immutable payload Arcs. Only the second initialized
                 // enum records coexist; the payload charge remains single-counted in scanner output.
                 (
+                    true,
                     super::accounting::fragment_record_bytes(admission_items)
                         .saturating_add(std::mem::size_of::<StreamingLayoutContinuation>()),
                     admission_items.saturating_add(1),
                 )
             } else {
-                (full_transient_bytes, full_transient_items)
+                (false, full_transient_bytes, full_transient_items)
             }
         } else {
-            (full_transient_bytes, full_transient_items)
+            (false, full_transient_bytes, full_transient_items)
         };
     budget.observe(job, transient_bytes, transient_items)?;
     if retain_checkpoint && matches!(job.kind, ActiveKind::Index) {
@@ -693,7 +722,7 @@ fn admit_layout(
             })?;
     }
     budget.observe(job, 0, 0)?;
-    Ok(())
+    Ok(retained)
 }
 
 pub(super) fn finalize_source(

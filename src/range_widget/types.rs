@@ -253,6 +253,18 @@ pub struct RangeSettlementCoordinator {
     state: Arc<Mutex<RangeSettlementState>>,
 }
 
+#[derive(Debug)]
+pub struct HostOperationLease {
+    operation: crate::OperationId,
+    coordinator: RangeSettlementCoordinator,
+}
+
+impl HostOperationLease {
+    pub const fn operation(&self) -> crate::OperationId {
+        self.operation
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RangeSettlementSlot {
     Mutation(MutationKey),
@@ -272,6 +284,7 @@ impl RangeSettlementSlot {
 struct RangeSettlementState {
     capacity: usize,
     next_operation: u64,
+    last_dispatched_operation: Option<u64>,
     slots: Vec<RangeSettlementSlot>,
 }
 
@@ -288,6 +301,7 @@ impl RangeSettlementCoordinator {
             state: Arc::new(Mutex::new(RangeSettlementState {
                 capacity,
                 next_operation: 1,
+                last_dispatched_operation: None,
                 slots,
             })),
         })
@@ -326,20 +340,15 @@ impl RangeSettlementCoordinator {
         Ok(crate::OperationId::new(operation))
     }
 
-    pub(crate) fn claim_host_operation(
-        &self,
-        operation: crate::OperationId,
-    ) -> Result<(), RangeTextInputError> {
-        let mut state = self.lock();
-        if operation.get() != state.next_operation {
-            return Err(RangeTextInputError::Stale);
-        }
-        let next_operation = operation
-            .get()
-            .checked_add(1)
-            .ok_or(RangeTextInputError::Stale)?;
-        state.next_operation = next_operation;
-        Ok(())
+    pub(crate) fn lease_host_operation(&self) -> Result<HostOperationLease, RangeTextInputError> {
+        Ok(HostOperationLease {
+            operation: self.allocate_operation()?,
+            coordinator: self.clone(),
+        })
+    }
+
+    pub(crate) fn owns_host_operation(&self, lease: &HostOperationLease) -> bool {
+        Arc::ptr_eq(&self.state, &lease.coordinator.state)
     }
 
     pub(crate) fn reserve_mutation(&self, key: MutationKey) -> Result<(), RangeTextInputError> {
@@ -357,6 +366,22 @@ impl RangeSettlementCoordinator {
         self.lock()
             .slots
             .contains(&RangeSettlementSlot::History(intent))
+    }
+
+    pub(crate) fn admit_host_dispatch(
+        &self,
+        operation: crate::OperationId,
+    ) -> Result<(), RangeTextInputError> {
+        let mut state = self.lock();
+        if operation.get() >= state.next_operation
+            || state
+                .last_dispatched_operation
+                .is_some_and(|last| operation.get() <= last)
+        {
+            return Err(RangeTextInputError::Stale);
+        }
+        state.last_dispatched_operation = Some(operation.get());
+        Ok(())
     }
 
     fn reserve(&self, slot: RangeSettlementSlot) -> Result<(), RangeTextInputError> {
@@ -861,6 +886,16 @@ impl DesiredSurface {
                 RangeRealizationPriority::NearbyContent => true,
             })
             .expect("nearby content is the terminal realization priority")
+    }
+
+    pub(super) fn exact_interaction_anchor(self) -> Option<crate::SourcePosition> {
+        matches!(
+            self.inline_object_interaction,
+            Some(DesiredInlineObjectInteraction::Set { .. })
+        )
+        .then_some(self.source_selection)
+        .flatten()
+        .map(|selection| selection.head)
     }
 
     pub fn next_capacity_fallback(self, line_height: Pixels) -> Option<Self> {

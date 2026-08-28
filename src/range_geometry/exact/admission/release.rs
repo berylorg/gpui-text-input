@@ -23,8 +23,18 @@ pub(in crate::range_geometry::exact) fn target_release(
     let mut counts = ExactGeometryCounts::default();
     counts.publication_bytes = size_of::<BlockTargetPublication>();
     counts.publication_items = 1;
-    counts.output_items = target.item_charge.total().unwrap_or(usize::MAX);
-    counts.output_record_bytes = accounting::fragment_record_bytes(target.fragments.len());
+    counts.output_items = target
+        .item_charge
+        .total()
+        .unwrap_or(usize::MAX)
+        .saturating_add(target.object_presentations.len());
+    counts.output_record_bytes = accounting::fragment_record_bytes(target.fragments.len())
+        .saturating_add(
+            target
+                .object_presentations
+                .len()
+                .saturating_mul(size_of::<TargetInlineObjectPresentation>()),
+        );
     counts.output_payload_bytes = target.charge.total().unwrap_or(usize::MAX);
     ExactGeometryRelease {
         jobs: vec![target.key],

@@ -108,8 +108,15 @@ pub(super) const fn index_publication_record_bytes(items: usize) -> usize {
     size_of::<ExactGeometryIndex>().saturating_add(checkpoint_record_bytes(items))
 }
 
-pub(super) const fn target_publication_record_bytes(items: usize) -> usize {
-    size_of::<BlockTargetPublication>().saturating_add(fragment_record_bytes(items))
+pub(super) const fn target_publication_record_bytes(
+    fragments: usize,
+    object_presentations: usize,
+) -> usize {
+    size_of::<BlockTargetPublication>()
+        .saturating_add(fragment_record_bytes(fragments))
+        .saturating_add(
+            object_presentations.saturating_mul(size_of::<super::TargetInlineObjectPresentation>()),
+        )
 }
 
 pub(super) fn counts_with_index_candidate(
@@ -283,6 +290,7 @@ fn add_target(counts: &mut ExactGeometryCounts, target: &BlockTargetPublication)
         counts,
         target.item_charge.total().unwrap_or(usize::MAX),
         target.fragments.len(),
+        target.object_presentations.len(),
         target.charge.total().unwrap_or(usize::MAX),
     );
 }
@@ -357,6 +365,7 @@ fn add_active(counts: &mut ExactGeometryCounts, active: &ActiveJob) {
             .total()
             .unwrap_or(usize::MAX),
         active.scanner.fragments.capacity(),
+        active.scanner.object_presentations.capacity(),
         active.scanner.output_charge.total().unwrap_or(usize::MAX),
     );
 }
@@ -364,13 +373,21 @@ fn add_active(counts: &mut ExactGeometryCounts, active: &ActiveJob) {
 fn add_output(
     counts: &mut ExactGeometryCounts,
     semantic_items: usize,
-    records: usize,
+    fragment_records: usize,
+    object_presentation_records: usize,
     payload: usize,
 ) {
-    counts.output_items = counts.output_items.saturating_add(semantic_items);
+    counts.output_items = counts
+        .output_items
+        .saturating_add(semantic_items)
+        .saturating_add(object_presentation_records);
     counts.output_record_bytes = counts
         .output_record_bytes
-        .saturating_add(records.saturating_mul(size_of::<StreamingLayoutFragment>()));
+        .saturating_add(fragment_records.saturating_mul(size_of::<StreamingLayoutFragment>()))
+        .saturating_add(
+            object_presentation_records
+                .saturating_mul(size_of::<super::TargetInlineObjectPresentation>()),
+        );
     counts.output_payload_bytes = counts.output_payload_bytes.saturating_add(payload);
 }
 

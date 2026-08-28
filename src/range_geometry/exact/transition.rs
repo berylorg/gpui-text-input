@@ -568,7 +568,9 @@ impl ExactGeometryOwner {
         if anchor.is_some() {
             target.block_offset = predecessor.block_offset;
         }
-        if predecessor.source.byte_offset.get() == inputs.binding.extent().byte_len() {
+        if predecessor.source.byte_offset.get() == inputs.binding.extent().byte_len()
+            && anchor.is_none_or(|anchor| matches!(anchor.gap, crate::InlineObjectGap::NoObjects))
+        {
             return self.finish_prepared(
                 self.key,
                 None,
@@ -581,6 +583,7 @@ impl ExactGeometryOwner {
                     visual_lines_lower_bound: predecessor.visual_lines,
                     content_height_lower_bound: predecessor.resume_block_offset(),
                     fragments: Arc::from([]),
+                    object_presentations: Arc::from([]),
                     charge: Default::default(),
                     item_charge: Default::default(),
                 })),
