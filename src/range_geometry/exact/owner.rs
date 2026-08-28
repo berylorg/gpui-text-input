@@ -9,6 +9,13 @@ use crate::{
 use super::*;
 
 impl ExactGeometryOwner {
+    pub(crate) fn presentation_overlap_bytes<'a>(
+        &self,
+        pages: impl Iterator<Item = &'a crate::ObjectPage> + Clone,
+    ) -> Option<usize> {
+        accounting::presentation_overlap_bytes(self, pages)
+    }
+
     pub fn initial_required_charge(
         layout: &StreamingLayoutBinding,
         style: &StreamingGeometryStyle,

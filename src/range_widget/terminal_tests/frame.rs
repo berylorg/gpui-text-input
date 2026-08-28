@@ -371,7 +371,11 @@ fn deferred_object_response_exact_fit_and_one_under_are_atomic_and_retryable(
                     + (page.retained_charge().bytes() - std::mem::size_of::<ObjectPage>())
                     + std::mem::size_of::<super::super::geometry::DeferredGeometryResponse>()
                     + page.retained_charge().bytes(),
-                items: current.owned_items + page.objects().len() + 1 + page.objects().len() + 1,
+                items: current.owned_items
+                    + page.retained_charge().allocated_items()
+                    + 1
+                    + page.retained_charge().allocated_items()
+                    + 1,
             }
         });
         cx.update(|_window, app| {
@@ -407,7 +411,7 @@ fn deferred_object_response_exact_fit_and_one_under_are_atomic_and_retryable(
                             .realization_diagnostics()
                             .current
                             .deferred_response_items,
-                        page.objects().len()
+                        page.retained_charge().allocated_items()
                     );
                     assert_eq!(
                         input

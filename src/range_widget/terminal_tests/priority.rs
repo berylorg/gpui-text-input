@@ -337,12 +337,12 @@ fn equal_stable_ids_count_distinct_surface_and_residency_allocations_exactly(
             surface
                 .object_pages()
                 .iter()
-                .map(|page| page.objects().len())
+                .map(|page| page.retained_charge().allocated_items())
                 .sum::<usize>()
                 + input
                     .object_residency
                     .resident_pages()
-                    .map(|page| page.objects().len())
+                    .map(|page| page.retained_charge().allocated_items())
                     .sum::<usize>()
         );
         assert!(diagnostics.high_water.resident_page_bytes >= expected_text_bytes);

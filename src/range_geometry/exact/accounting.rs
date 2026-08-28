@@ -82,6 +82,23 @@ pub(super) fn owner_counts(owner: &ExactGeometryOwner) -> ExactGeometryCounts {
     )
 }
 
+pub(super) fn presentation_overlap_bytes<'a>(
+    owner: &ExactGeometryOwner,
+    pages: impl Iterator<Item = &'a crate::ObjectPage> + Clone,
+) -> Option<usize> {
+    let active = owner.active.as_deref().map_or(Some(0), |active| {
+        super::types::presentation_overlap_bytes(
+            &active.scanner.object_presentations,
+            pages.clone(),
+        )
+    })?;
+    let target = owner
+        .target
+        .as_deref()
+        .map_or(Some(0), |target| target.presentation_overlap_bytes(pages))?;
+    active.checked_add(target)
+}
+
 pub(super) fn fixed_bytes_without_active(owner: &ExactGeometryOwner) -> usize {
     fixed_counts_without_active(owner).total_bytes()
 }

@@ -176,7 +176,7 @@ impl ExactGeometryOwner {
             page_items: text_page
                 .retained_charge()
                 .items()
-                .saturating_add(object_page.objects().len())
+                .saturating_add(object_page.retained_charge().allocated_items())
                 .saturating_add(1),
             max_bytes: self.limits.max_retained_bytes,
             max_items: self.limits.max_retained_items,

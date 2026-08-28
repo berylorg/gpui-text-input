@@ -102,6 +102,8 @@ pub struct RangeRealizationOwnership {
     pub resident_object_bytes: usize,
     pub pending_page_bytes: usize,
     pub pending_object_bytes: usize,
+    pub clipboard_bytes: usize,
+    pub clipboard_items: usize,
     pub geometry_bytes: usize,
     pub geometry_items: usize,
     pub request_storage_bytes: usize,
@@ -713,6 +715,8 @@ pub enum RangeTextInputRequest {
     DetachedMutation(MutationKey),
     HistoryIntent(RangeHistoryIntent),
     CancelHistoryIntent(RangeHistoryIntent),
+    ClipboardProvenancePage(crate::ClipboardProvenancePage),
+    CancelClipboardProvenancePage(crate::ClipboardProvenancePageKey),
     ClipboardWrite(ClipboardWriteRequest),
     CancelClipboardWrite(ClipboardKey),
 }
@@ -763,6 +767,7 @@ pub enum RangeTextInputError {
     Geometry(ExactGeometryError),
     Mutation(MutationError),
     Contract(crate::RangeContractError),
+    Clipboard(crate::ClipboardError),
 }
 
 impl std::fmt::Display for RangeTextInputError {
@@ -788,6 +793,12 @@ impl From<MutationError> for RangeTextInputError {
 impl From<crate::RangeContractError> for RangeTextInputError {
     fn from(value: crate::RangeContractError) -> Self {
         Self::Contract(value)
+    }
+}
+
+impl From<crate::ClipboardError> for RangeTextInputError {
+    fn from(value: crate::ClipboardError) -> Self {
+        Self::Clipboard(value)
     }
 }
 

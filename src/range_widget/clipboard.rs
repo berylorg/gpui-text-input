@@ -16,6 +16,10 @@ enum ClipboardPageWait {
 }
 
 impl RangeTextInput {
+    pub fn clipboard_counts(&self) -> crate::ClipboardCounts {
+        self.clipboard.counts()
+    }
+
     pub(super) fn clipboard_waits_on(&self, key: PageRequestKey) -> bool {
         self.pending_clipboard_page.as_ref().is_some_and(|pending| {
             matches!(pending.wait, ClipboardPageWait::Coalesced(existing) if existing == key)
@@ -71,16 +75,139 @@ impl RangeTextInput {
         cx: &mut Context<Self>,
     ) -> Result<(), RangeTextInputError> {
         let key = page.key();
-        let progress = match self.clipboard.admit_text_page(page) {
-            Ok(progress) => progress,
+        let step = match self.clipboard.prepare_text_page(&page) {
+            Ok(step) => step,
             Err(_) => {
                 let _ = self.residency.settle(key, PageFailure::Cancelled);
                 self.abort_clipboard_text_request(key, cx);
                 return Err(RangeTextInputError::Stale);
             }
         };
-        let _ = self.residency.settle(key, PageFailure::Cancelled);
-        self.advance_clipboard(progress, cx)
+        self.admit_clipboard_prepared_step(&step)?;
+        self.commit_prepared_clipboard_page(page, step, cx)
+    }
+
+    pub(super) fn commit_prepared_clipboard_page(
+        &mut self,
+        page: RangePage,
+        step: crate::ClipboardPreparedStep,
+        cx: &mut Context<Self>,
+    ) -> Result<(), RangeTextInputError> {
+        let commit = self
+            .clipboard
+            .commit_text_page(page, step)
+            .map_err(RangeTextInputError::Clipboard)?;
+        self.active_response_processing = Default::default();
+        self.drive_clipboard_prepared(commit, cx)
+    }
+
+    pub(super) fn admit_clipboard_prepared_step(
+        &mut self,
+        step: &crate::ClipboardPreparedStep,
+    ) -> Result<(), RangeTextInputError> {
+        let current = self.current_realization_ownership();
+        let old = self.clipboard.ownership_charge();
+        let transfer = if step.transfers_response() {
+            self.active_response_processing
+        } else {
+            Default::default()
+        };
+        let projected = crate::RangeSurfaceCharge {
+            bytes: current
+                .owned_bytes
+                .checked_sub(old.bytes())
+                .and_then(|value| value.checked_sub(transfer.bytes))
+                .and_then(|value| value.checked_add(step.peak_ownership().bytes()))
+                .ok_or(RangeTextInputError::SurfaceCapacity)?,
+            items: current
+                .owned_items
+                .checked_sub(old.items())
+                .and_then(|value| value.checked_sub(transfer.items))
+                .and_then(|value| value.checked_add(step.peak_ownership().items()))
+                .ok_or(RangeTextInputError::SurfaceCapacity)?,
+        };
+        let peak = crate::RangeSurfaceCharge {
+            bytes: current.owned_bytes.max(projected.bytes),
+            items: current.owned_items.max(projected.items),
+        };
+        if peak.bytes > self.config.limits.max_surface_bytes
+            || peak.items > self.config.limits.max_surface_items
+        {
+            return Err(RangeTextInputError::SurfaceCapacity);
+        }
+        self.observe_surface_admission_peak(peak);
+        Ok(())
+    }
+
+    fn admit_clipboard_prepared_begin(
+        &mut self,
+        prepared: &crate::ClipboardPreparedBegin,
+    ) -> Result<(), RangeTextInputError> {
+        let current = self.current_realization_ownership();
+        debug_assert_eq!(self.clipboard.ownership_charge(), Default::default());
+        let projected = crate::RangeSurfaceCharge {
+            bytes: current
+                .owned_bytes
+                .checked_add(prepared.peak_ownership().bytes())
+                .ok_or(RangeTextInputError::SurfaceCapacity)?,
+            items: current
+                .owned_items
+                .checked_add(prepared.peak_ownership().items())
+                .ok_or(RangeTextInputError::SurfaceCapacity)?,
+        };
+        if projected.bytes > self.config.limits.max_surface_bytes
+            || projected.items > self.config.limits.max_surface_items
+        {
+            return Err(RangeTextInputError::SurfaceCapacity);
+        }
+        self.observe_surface_admission_peak(projected);
+        Ok(())
+    }
+
+    fn drive_clipboard_prepared(
+        &mut self,
+        mut commit: crate::ClipboardPreparedCommit,
+        cx: &mut Context<Self>,
+    ) -> Result<(), RangeTextInputError> {
+        loop {
+            if let Some(key) = commit.released_text_page() {
+                let _ = self.residency.settle(key, PageFailure::Cancelled);
+                self.dispatched_pages.remove(&key);
+                self.commit_prepared_request(RangeTextInputRequest::ReleasePage(key));
+            }
+            if let Some(key) = commit.released_object_page() {
+                self.dispatched_object_pages.remove(&key);
+                self.commit_prepared_request(RangeTextInputRequest::ReleaseObjectPage(key));
+            }
+            if let Some(progress) = commit.into_progress() {
+                return self.advance_clipboard(progress, cx);
+            }
+            let step = self
+                .clipboard
+                .prepare_next()
+                .map_err(RangeTextInputError::Clipboard)?;
+            self.admit_clipboard_prepared_step(&step)?;
+            commit = self
+                .clipboard
+                .commit_prepared(step)
+                .map_err(RangeTextInputError::Clipboard)?;
+        }
+    }
+
+    pub(super) fn resume_clipboard_prepared(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Result<(), RangeTextInputError> {
+        let step = self
+            .clipboard
+            .prepare_next()
+            .map_err(RangeTextInputError::Clipboard)?;
+        self.admit_clipboard_prepared_step(&step)?;
+        let commit = self
+            .clipboard
+            .commit_prepared(step)
+            .map_err(RangeTextInputError::Clipboard)?;
+        self.drive_clipboard_prepared(commit, cx)
     }
 
     pub(super) fn advance_clipboard(
@@ -112,7 +239,12 @@ impl RangeTextInput {
                     };
                 match demand {
                     PageDemand::Requested(expected) if expected.key() == request.key() => {
-                        self.push_request(RangeTextInputRequest::Page(request), cx)?;
+                        if let Err(error) =
+                            self.push_request(RangeTextInputRequest::Page(request), cx)
+                        {
+                            self.abort_clipboard_text_request(expected.key(), cx);
+                            return Err(error);
+                        }
                     }
                     PageDemand::ResidentAdjacent(page) => {
                         if let Err(error) = self.admit_resident_page_clone(page, request.key(), cx)
@@ -143,10 +275,34 @@ impl RangeTextInput {
                     .clipboard
                     .request_object_page(key, id)
                     .map_err(|_| RangeTextInputError::Busy)?;
-                self.push_request(RangeTextInputRequest::ObjectPage(request), cx)?;
+                if let Err(error) =
+                    self.push_request(RangeTextInputRequest::ObjectPage(request), cx)
+                {
+                    let _ = self.clipboard.cancel(key);
+                    self.clipboard_cut_proofs = None;
+                    self.observe_realization_ownership();
+                    return Err(error);
+                }
+            }
+            crate::ClipboardProgress::ProvenancePage(page) => {
+                let key = page.key().clipboard();
+                if let Err(error) =
+                    self.push_request(RangeTextInputRequest::ClipboardProvenancePage(page), cx)
+                {
+                    let _ = self.clipboard.cancel(key);
+                    self.clipboard_cut_proofs = None;
+                    return Err(error);
+                }
             }
             crate::ClipboardProgress::Write(write) => {
-                self.push_request(RangeTextInputRequest::ClipboardWrite(write), cx)?;
+                let key = write.key();
+                if let Err(error) =
+                    self.push_request(RangeTextInputRequest::ClipboardWrite(write), cx)
+                {
+                    let _ = self.clipboard.cancel(key);
+                    self.clipboard_cut_proofs = None;
+                    return Err(error);
+                }
             }
             crate::ClipboardProgress::Terminal(crate::ClipboardCompletion::Propagate(kind)) => {
                 self.clipboard_cut_proofs = None;
@@ -274,17 +430,16 @@ impl RangeTextInput {
             return Err(RangeTextInputError::ReadOnly);
         }
         let id = crate::ClipboardId::new(self.next_id());
+        let prepared = self
+            .clipboard
+            .prepare_begin(id, kind, selection, predecessor)
+            .map_err(|_| RangeTextInputError::Busy)?;
+        let key = prepared.key();
+        self.admit_clipboard_prepared_begin(&prepared)?;
         let progress = self
             .clipboard
-            .begin(id, kind, selection, predecessor)
-            .map_err(|_| RangeTextInputError::Busy)?;
-        let key = crate::ClipboardKey::new(
-            id,
-            self.config.binding.binding(),
-            self.config.binding.revision(),
-            selection,
-            predecessor,
-        );
+            .commit_begin(prepared)
+            .map_err(RangeTextInputError::Clipboard)?;
         self.clipboard_cut_proofs = (kind == crate::ClipboardKind::Cut).then_some((key, proofs));
         self.advance_clipboard(progress, cx)?;
         Ok(key)
@@ -349,23 +504,42 @@ impl RangeTextInput {
             return Err(RangeTextInputError::Stale);
         }
         let purpose = key.purpose();
-        self.dispatched_object_pages.remove(&key);
         let result = match purpose {
             crate::ObjectPurpose::Clipboard => {
-                let progress = self
+                let step = self
                     .clipboard
-                    .admit_object_page(page)
+                    .prepare_object_page(&page)
                     .map_err(|_| RangeTextInputError::Stale)?;
-                self.advance_clipboard(progress, cx)
+                self.admit_clipboard_prepared_step(&step)?;
+                self.commit_prepared_clipboard_object_page(page, step, cx)
             }
-            crate::ObjectPurpose::Restoration => self.deliver_restoration_object_page(page, cx),
+            crate::ObjectPurpose::Restoration => {
+                self.dispatched_object_pages.remove(&key);
+                self.deliver_restoration_object_page(page, cx)
+            }
             crate::ObjectPurpose::GeometryIndex | crate::ObjectPurpose::GeometryTarget => {
                 unreachable!("geometry object purposes were routed before generic delivery")
             }
             _ => Err(RangeTextInputError::Stale),
         };
-        self.commit_prepared_request(RangeTextInputRequest::ReleaseObjectPage(key));
+        if self.clipboard.pending_object_page() != Some(key) {
+            self.dispatched_object_pages.remove(&key);
+        }
         result
+    }
+
+    pub(super) fn commit_prepared_clipboard_object_page(
+        &mut self,
+        page: ObjectPage,
+        step: crate::ClipboardPreparedStep,
+        cx: &mut Context<Self>,
+    ) -> Result<(), RangeTextInputError> {
+        let commit = self
+            .clipboard
+            .commit_object_page(page, step)
+            .map_err(RangeTextInputError::Clipboard)?;
+        self.active_response_processing = Default::default();
+        self.drive_clipboard_prepared(commit, cx)
     }
 
     pub fn deliver_object_page_in_window(
@@ -429,14 +603,14 @@ impl RangeTextInput {
         outcome: crate::ClipboardWriteOutcome,
         cx: &mut Context<Self>,
     ) -> Result<crate::ClipboardCompletion, RangeTextInputError> {
-        if self.dispatched_clipboard_write != Some(key) {
+        if self.dispatched_clipboard != Some(super::DispatchedClipboard::Write(key)) {
             return Err(RangeTextInputError::Stale);
         }
         let completion = self
             .clipboard
             .acknowledge_write(key, outcome)
             .map_err(|_| RangeTextInputError::Stale)?;
-        self.dispatched_clipboard_write = None;
+        self.dispatched_clipboard = None;
         if let crate::ClipboardCompletion::Delete(deletion) = completion {
             let replacement = deletion.selection();
             let (_, proofs) = self
@@ -471,6 +645,33 @@ impl RangeTextInput {
             self.clipboard_cut_proofs = None;
         }
         Ok(completion)
+    }
+
+    pub fn acknowledge_clipboard_provenance_page(
+        &mut self,
+        page: crate::ClipboardProvenancePage,
+        cx: &mut Context<Self>,
+    ) -> Result<(), RangeTextInputError> {
+        if self.dispatched_clipboard != Some(super::DispatchedClipboard::Provenance(page.key())) {
+            return Err(RangeTextInputError::Stale);
+        }
+        let step = match self.clipboard.acknowledge_provenance_page(page) {
+            Ok(step) => step,
+            Err(crate::ClipboardError::ProvenancePageCollision(_)) => {
+                self.dispatched_clipboard = None;
+                self.clipboard_cut_proofs = None;
+                self.observe_realization_ownership();
+                return Err(RangeTextInputError::Stale);
+            }
+            Err(_) => return Err(RangeTextInputError::Stale),
+        };
+        self.dispatched_clipboard = None;
+        self.admit_clipboard_prepared_step(&step)?;
+        let commit = self
+            .clipboard
+            .commit_prepared(step)
+            .map_err(RangeTextInputError::Clipboard)?;
+        self.drive_clipboard_prepared(commit, cx)
     }
 }
 

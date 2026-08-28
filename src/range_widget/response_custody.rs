@@ -53,7 +53,7 @@ impl RangeResponseCustody {
                         .bytes()
                         .checked_sub(std::mem::size_of::<crate::ObjectPage>())
                         .ok_or(RangeTextInputError::SurfaceCapacity)?,
-                    items: charge.objects(),
+                    items: charge.allocated_items(),
                 })
             }
         }
@@ -80,7 +80,7 @@ impl RangeResponseCustody {
                 Ok(RangeSurfaceCharge {
                     bytes: charge.bytes(),
                     items: charge
-                        .objects()
+                        .allocated_items()
                         .checked_add(1)
                         .ok_or(RangeTextInputError::SurfaceCapacity)?,
                 })
@@ -471,6 +471,21 @@ impl RangeTextInput {
         cx: &mut gpui::Context<Self>,
     ) -> Result<bool, RangeTextInputError> {
         if self.response_custody.is_empty() {
+            if self.clipboard.has_prepared_work() {
+                if !self.try_spend_realization_credit(cx) {
+                    return Ok(false);
+                }
+                let result = self.resume_clipboard_prepared(cx);
+                if let Err(error) = result {
+                    self.refund_realization_credit();
+                    if matches!(error, RangeTextInputError::SurfaceCapacity) {
+                        self.schedule_realization_continuation(cx);
+                    }
+                    return Err(error);
+                }
+                self.observe_realization_ownership();
+                return Ok(true);
+            }
             return Ok(false);
         }
         if !self.try_spend_realization_credit(cx) {
@@ -480,6 +495,86 @@ impl RangeTextInput {
             unreachable!("response custody was checked nonempty")
         };
         self.pending_response_exact_geometry_failure_stage = None;
+        let direct_clipboard = match &response {
+            RangeResponseCustody::Page(page) => {
+                page.key().purpose() == crate::PagePurpose::Clipboard
+                    && self.pending_page_aliases.is_empty()
+            }
+            RangeResponseCustody::PageNoAliases(page)
+            | RangeResponseCustody::ResidentPage(page) => {
+                page.key().purpose() == crate::PagePurpose::Clipboard
+            }
+            RangeResponseCustody::Object(page) => {
+                page.key().purpose() == crate::ObjectPurpose::Clipboard
+            }
+            RangeResponseCustody::AliasFanout(_) => false,
+        };
+        if direct_clipboard {
+            self.active_response_processing = response
+                .processing_charge()
+                .expect("admitted response processing charge remains representable");
+            self.observe_realization_ownership();
+            let prepared = match &response {
+                RangeResponseCustody::Page(page)
+                | RangeResponseCustody::PageNoAliases(page)
+                | RangeResponseCustody::ResidentPage(page) => self
+                    .clipboard
+                    .prepare_text_page(page)
+                    .map_err(|_| RangeTextInputError::Stale),
+                RangeResponseCustody::Object(page) => self
+                    .clipboard
+                    .prepare_object_page(page)
+                    .map_err(|_| RangeTextInputError::Stale),
+                RangeResponseCustody::AliasFanout(_) => unreachable!(),
+            }
+            .and_then(|step| {
+                self.admit_clipboard_prepared_step(&step)?;
+                Ok(step)
+            });
+            let step = match prepared {
+                Ok(step) => step,
+                Err(error) => {
+                    self.active_response_processing = RangeSurfaceCharge::default();
+                    self.record_response_rejection(&response, &error);
+                    self.refund_realization_credit();
+                    if response.remains_dispatched(self) {
+                        let has_tail = !self.response_custody.is_empty();
+                        self.response_custody.push_back(response);
+                        self.observe_realization_ownership();
+                        if has_tail || matches!(error, RangeTextInputError::SurfaceCapacity) {
+                            self.schedule_realization_continuation(cx);
+                        }
+                    }
+                    return Err(error);
+                }
+            };
+            let result = match response {
+                RangeResponseCustody::Page(page)
+                | RangeResponseCustody::PageNoAliases(page)
+                | RangeResponseCustody::ResidentPage(page) => {
+                    self.commit_prepared_clipboard_page(page, step, cx)
+                }
+                RangeResponseCustody::Object(page) => {
+                    self.commit_prepared_clipboard_object_page(page, step, cx)
+                }
+                RangeResponseCustody::AliasFanout(_) => unreachable!(),
+            };
+            self.active_response_processing = RangeSurfaceCharge::default();
+            if let Err(error) = result {
+                self.refund_realization_credit();
+                if self.clipboard.has_prepared_work()
+                    && matches!(error, RangeTextInputError::SurfaceCapacity)
+                {
+                    self.schedule_realization_continuation(cx);
+                }
+                return Err(error);
+            }
+            if !self.response_custody.is_empty() {
+                self.schedule_realization_continuation(cx);
+            }
+            self.observe_realization_ownership();
+            return Ok(true);
+        }
         let retry = response.clone();
         self.active_response_processing = retry
             .transient_charge()
@@ -528,6 +623,21 @@ impl RangeTextInput {
         &mut self,
         cx: &mut gpui::Context<Self>,
     ) -> Result<bool, RangeTextInputError> {
+        if self.response_custody.is_empty() && self.clipboard.has_prepared_work() {
+            if !self.try_spend_realization_credit(cx) {
+                return Ok(false);
+            }
+            let result = self.resume_clipboard_prepared(cx);
+            if let Err(error) = result {
+                self.refund_realization_credit();
+                if matches!(error, RangeTextInputError::SurfaceCapacity) {
+                    self.schedule_realization_continuation(cx);
+                }
+                return Err(error);
+            }
+            self.observe_realization_ownership();
+            return Ok(true);
+        }
         if !matches!(self.response_custody.front(), Some(RangeResponseCustody::Object(page)) if !matches!(page.key().purpose(), crate::ObjectPurpose::GeometryIndex | crate::ObjectPurpose::GeometryTarget))
         {
             if self.response_custody.len() > 1 {
@@ -543,6 +653,58 @@ impl RangeTextInput {
             .pop_front()
             .expect("checked response exists");
         self.pending_response_exact_geometry_failure_stage = None;
+        if matches!(&response, RangeResponseCustody::Object(page) if page.key().purpose() == crate::ObjectPurpose::Clipboard)
+        {
+            self.active_response_processing = response
+                .processing_charge()
+                .expect("admitted response processing charge remains representable");
+            self.observe_realization_ownership();
+            let RangeResponseCustody::Object(page) = response else {
+                unreachable!()
+            };
+            let prepared = self
+                .clipboard
+                .prepare_object_page(&page)
+                .map_err(|_| RangeTextInputError::Stale)
+                .and_then(|step| {
+                    self.admit_clipboard_prepared_step(&step)?;
+                    Ok(step)
+                });
+            let step = match prepared {
+                Ok(step) => step,
+                Err(error) => {
+                    let retry = RangeResponseCustody::Object(page);
+                    self.active_response_processing = RangeSurfaceCharge::default();
+                    self.record_response_rejection(&retry, &error);
+                    self.refund_realization_credit();
+                    if retry.remains_dispatched(self) {
+                        let has_tail = !self.response_custody.is_empty();
+                        self.response_custody.push_back(retry);
+                        self.observe_realization_ownership();
+                        if has_tail || matches!(error, RangeTextInputError::SurfaceCapacity) {
+                            self.schedule_realization_continuation(cx);
+                        }
+                    }
+                    return Err(error);
+                }
+            };
+            let result = self.commit_prepared_clipboard_object_page(page, step, cx);
+            self.active_response_processing = RangeSurfaceCharge::default();
+            if let Err(error) = result {
+                self.refund_realization_credit();
+                if self.clipboard.has_prepared_work()
+                    && matches!(error, RangeTextInputError::SurfaceCapacity)
+                {
+                    self.schedule_realization_continuation(cx);
+                }
+                return Err(error);
+            }
+            if !self.response_custody.is_empty() {
+                self.schedule_realization_continuation(cx);
+            }
+            self.observe_realization_ownership();
+            return Ok(true);
+        }
         let retry = response.clone();
         let RangeResponseCustody::Object(page) = response else {
             unreachable!()

@@ -503,7 +503,7 @@ fn install_resident_payloads(input: &mut RangeTextInput) -> RangeSurfaceCharge {
     .unwrap();
     assert!(object_page.retained_charge().presentation_bytes() > 0);
     let object_charge = object_page.retained_charge();
-    let object_items = object_page.objects().len() + 1;
+    let object_items = object_page.retained_charge().allocated_items() + 1;
     let proofs = input
         .residency
         .prove_object_page_anchors(input.config.binding, &object_page)
@@ -848,7 +848,10 @@ fn transition_fingerprint(input: &RangeTextInput) -> TransitionFingerprint {
         dispatched_pages: sorted_debug(&input.dispatched_pages),
         dispatched_object_pages: sorted_debug(&input.dispatched_object_pages),
         dispatched_mutations: sorted_debug(&input.dispatched_mutations),
-        dispatched_clipboard_write: input.dispatched_clipboard_write,
+        dispatched_clipboard_write: match input.dispatched_clipboard {
+            Some(super::DispatchedClipboard::Write(key)) => Some(key),
+            _ => None,
+        },
         edits: format!("{:?}", input.edits),
         clipboard: format!("{:?}", input.clipboard),
         pending_clipboard_page: input.pending_clipboard_page.is_some(),

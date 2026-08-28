@@ -382,7 +382,7 @@ fn admit_inline_object(
         order: object.order().into(),
         leading: expected_leading.into(),
         trailing: trailing.into(),
-        presentation: presentation.display().clone(),
+        presentation: presentation.shared_display(),
         runs,
         width: presentation.width(),
         height: presentation.height(),
@@ -415,7 +415,7 @@ fn admit_inline_object(
             .object_presentations
             .push(super::TargetInlineObjectPresentation::new(
                 object.cursor(),
-                object.presentation().clone(),
+                object.presentation().shared_clone(),
             ));
         budget.observe(job, 0, 0)?;
     }

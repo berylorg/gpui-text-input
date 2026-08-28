@@ -24,7 +24,7 @@ impl DeferredGeometryResponse {
                 let charge = page.retained_charge();
                 crate::RangeSurfaceCharge {
                     bytes: charge.bytes() - size_of::<crate::ObjectPage>(),
-                    items: charge.objects(),
+                    items: charge.allocated_items(),
                 }
             }
         }
@@ -94,7 +94,7 @@ impl RangeTextInput {
                 crate::RangeSurfaceCharge {
                     bytes: charge.bytes(),
                     items: charge
-                        .objects()
+                        .allocated_items()
                         .checked_add(1)
                         .ok_or(RangeTextInputError::SurfaceCapacity)?,
                 }
@@ -122,8 +122,10 @@ impl RangeTextInput {
             .capacity()
             .checked_mul(size_of::<RangeTextInputRequest>())
             .ok_or(RangeTextInputError::SurfaceCapacity)?;
-        let request_payload =
-            super::super::transition::queued_request_payload_charge(self.requests.iter())?;
+        let request_payload = super::super::transition::queued_request_payload_charge(
+            self.requests.iter(),
+            self.clipboard.current_provenance_page(),
+        )?;
         let response_custody = self.response_custody_storage_charge();
         let owner = Self::realization_owner_charge();
         let aliases = Self::page_alias_storage_charge(&self.pending_page_aliases)?;
@@ -140,6 +142,10 @@ impl RangeTextInput {
         })
         .ok_or(RangeTextInputError::SurfaceCapacity)?;
         let geometry = self.geometry.counts();
+        let geometry_bytes = geometry
+            .total_bytes()
+            .checked_sub(self.geometry_presentation_overlap_bytes()?)
+            .ok_or(RangeTextInputError::SurfaceCapacity)?;
         let residency = self.residency.counts();
         let objects = self.object_residency.counts();
         let pending_page_bytes = usize::try_from(residency.pending_bytes)
@@ -166,7 +172,7 @@ impl RangeTextInput {
                 .checked_add(prior.bytes)
                 .and_then(|total| total.checked_add(request_bytes))
                 .and_then(|total| total.checked_add(request_payload.bytes))
-                .and_then(|total| total.checked_add(geometry.total_bytes()))
+                .and_then(|total| total.checked_add(geometry_bytes))
                 .and_then(|total| total.checked_add(resident_charge.bytes))
                 .and_then(|total| total.checked_add(pending_page_bytes))
                 .and_then(|total| total.checked_add(objects.pending_bytes))

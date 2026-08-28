@@ -934,11 +934,17 @@ impl RangeTextInput {
                 effects.push(RangeTextInputRequest::CancelObjectPage(key));
             }
             if cancellation.awaiting_write()
-                && self.dispatched_clipboard_write == Some(cancellation.key())
+                && self.dispatched_clipboard
+                    == Some(super::DispatchedClipboard::Write(cancellation.key()))
             {
                 effects.push(RangeTextInputRequest::CancelClipboardWrite(
                     cancellation.key(),
                 ));
+            }
+            if let Some(key) = cancellation.pending_provenance_page()
+                && self.dispatched_clipboard == Some(super::DispatchedClipboard::Provenance(key))
+            {
+                effects.push(RangeTextInputRequest::CancelClipboardProvenancePage(key));
             }
         }
         if let Some(disposal) = edit_disposal {
@@ -1148,8 +1154,10 @@ impl RangeTextInput {
             .map_or(crate::RangeSurfaceCharge::default(), |surface| {
                 surface.charge()
             });
-        let mutation_request_payload =
-            queued_request_payload_charge(self.requests.iter().chain(effects.iter()))?;
+        let mutation_request_payload = queued_request_payload_charge(
+            self.requests.iter().chain(effects.iter()),
+            self.clipboard.current_provenance_page(),
+        )?;
         let current_realization_state = self.current_auxiliary_realization_charge()?;
         let current_resident_payload = self.non_surface_resident_charge()?;
         let admission_components = WidgetAdmissionComponents {
@@ -1407,8 +1415,9 @@ impl RangeTextInput {
             self.remove_all_queued_source_requests();
             self.clipboard
                 .commit_prepared_rebind(binding, clipboard_rebind);
-            self.dispatched_clipboard_write = None;
+            self.dispatched_clipboard = None;
             if let Some(cancellation) = clipboard_rebind {
+                self.remove_queued_clipboard_provenance(cancellation.key());
                 self.remove_queued_clipboard_write(cancellation.key());
             }
             if let Some(replacement) = replacement_edits {
@@ -1616,6 +1625,12 @@ impl RangeTextInput {
         }
     }
 
+    fn remove_queued_clipboard_provenance(&mut self, key: crate::ClipboardKey) {
+        self.requests.retain(|request| {
+            !matches!(request, RangeTextInputRequest::ClipboardProvenancePage(page) if page.key().clipboard() == key)
+        });
+    }
+
     fn remove_queued_history(&mut self) {
         self.requests
             .retain(|request| !matches!(request, RangeTextInputRequest::HistoryIntent(_)));
@@ -1653,6 +1668,9 @@ fn request_survives_transition(
         }
         RangeTextInputRequest::ClipboardWrite(write) => {
             clipboard_rebind.is_none_or(|rebind| rebind.key() != write.key())
+        }
+        RangeTextInputRequest::ClipboardProvenancePage(page) => {
+            clipboard_rebind.is_none_or(|rebind| rebind.key() != page.key().clipboard())
         }
         RangeTextInputRequest::MutationBegin(begin) => edit_disposal
             .is_none_or(|disposal| mutation_disposal_key(disposal) != begin.proposal().key()),
@@ -1694,6 +1712,7 @@ fn checked_capacity_product(count: usize, width: usize) -> Result<usize, RangeTe
 
 pub(super) fn queued_request_payload_charge<'a, I>(
     requests: I,
+    coordinator_page: Option<&crate::ClipboardProvenancePage>,
 ) -> Result<crate::RangeSurfaceCharge, RangeTextInputError>
 where
     I: Iterator<Item = &'a RangeTextInputRequest> + Clone,
@@ -1702,6 +1721,30 @@ where
     for (index, request) in requests.clone().enumerate() {
         if let RangeTextInputRequest::ClipboardWrite(write) = request {
             let (bytes, items) = write.payload_allocation_charge();
+            total.bytes = total
+                .bytes
+                .checked_add(bytes)
+                .ok_or(RangeTextInputError::SurfaceCapacity)?;
+            total.items = total
+                .items
+                .checked_add(items)
+                .ok_or(RangeTextInputError::SurfaceCapacity)?;
+            continue;
+        }
+        if let RangeTextInputRequest::ClipboardProvenancePage(page) = request {
+            let already_charged = coordinator_page
+                .is_some_and(|coordinator| page.shares_allocation_with(coordinator))
+                || requests.clone().take(index).any(|prior| {
+                    matches!(
+                        prior,
+                        RangeTextInputRequest::ClipboardProvenancePage(prior)
+                            if page.shares_allocation_with(prior)
+                    )
+                });
+            if already_charged {
+                continue;
+            }
+            let (bytes, items) = page.payload_allocation_charge();
             total.bytes = total
                 .bytes
                 .checked_add(bytes)

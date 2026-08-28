@@ -177,6 +177,7 @@ impl RangeTextInput {
             .map_or(RangeSurfaceCharge::default(), PendingRebindIntent::charge);
         let aliases = Self::page_alias_storage_charge(&self.pending_page_aliases)?;
         let response_custody = self.response_custody_storage_charge();
+        let clipboard = self.clipboard.ownership_charge();
         let residency_owners = [
             self.residency.owner_storage_charge(),
             self.object_residency.owner_storage_charge(),
@@ -211,6 +212,7 @@ impl RangeTextInput {
                 .and_then(|total| total.checked_add(aliases.bytes))
                 .and_then(|total| total.checked_add(response_custody.bytes))
                 .and_then(|total| total.checked_add(self.active_response_processing.bytes))
+                .and_then(|total| total.checked_add(clipboard.bytes()))
                 .and_then(|total| total.checked_add(dispatched.bytes))
                 .and_then(|total| total.checked_add(residency_owners.bytes))
                 .ok_or(RangeTextInputError::SurfaceCapacity)?,
@@ -223,6 +225,7 @@ impl RangeTextInput {
                 .and_then(|total| total.checked_add(aliases.items))
                 .and_then(|total| total.checked_add(response_custody.items))
                 .and_then(|total| total.checked_add(self.active_response_processing.items))
+                .and_then(|total| total.checked_add(clipboard.items()))
                 .and_then(|total| total.checked_add(dispatched.items))
                 .and_then(|total| total.checked_add(residency_owners.items))
                 .ok_or(RangeTextInputError::SurfaceCapacity)?,
@@ -235,6 +238,19 @@ impl RangeTextInput {
         let pages = self.residency.resident_page_iter();
         let objects = self.object_residency.resident_page_iter();
         Self::resident_publication_payload_charge(pages, objects)
+    }
+
+    pub(super) fn geometry_presentation_overlap_bytes(&self) -> Result<usize, RangeTextInputError> {
+        let surface_object_pages = self
+            .surface
+            .as_ref()
+            .into_iter()
+            .flat_map(|surface| surface.object_pages().iter());
+        self.geometry
+            .presentation_overlap_bytes(
+                surface_object_pages.chain(self.object_residency.resident_page_iter()),
+            )
+            .ok_or(RangeTextInputError::SurfaceCapacity)
     }
 
     pub(super) fn spend_realization_credit(&mut self) {

@@ -64,21 +64,8 @@ impl RangePage {
                 .checked_add(atom.retained_bytes())
                 .ok_or(RangeContractError::PayloadByteCountOverflow)?;
         }
-        let retained_charge = RangePageCharge {
-            bytes: size_of::<RangePage>()
-                .checked_add(
-                    atoms
-                        .len()
-                        .checked_mul(size_of::<AtomFact>())
-                        .ok_or(RangeContractError::PayloadByteCountOverflow)?,
-                )
-                .and_then(|bytes| bytes.checked_add(retained_bytes))
-                .ok_or(RangeContractError::PayloadByteCountOverflow)?,
-            items: atoms
-                .len()
-                .checked_add(1)
-                .ok_or(RangeContractError::PayloadByteCountOverflow)?,
-        };
+        let retained_charge = Self::allocation_charge(&text, &atoms)
+            .ok_or(RangeContractError::PayloadByteCountOverflow)?;
 
         Ok(Self {
             id,
@@ -91,6 +78,8 @@ impl RangePage {
             end_of_source,
             retained_bytes,
             retained_charge,
+            response_identity: crate::range_source::next_response_instance()
+                .ok_or(RangeContractError::PayloadByteCountOverflow)?,
         })
     }
 
@@ -142,6 +131,25 @@ impl RangePage {
     /// Returns the complete borrowed page-record charge used for exact admission.
     pub const fn retained_charge(&self) -> RangePageCharge {
         self.retained_charge
+    }
+
+    pub(crate) fn response_allocation_identity(&self) -> u64 {
+        self.response_identity
+    }
+
+    pub(super) fn allocation_charge(
+        text: &String,
+        atoms: &Vec<AtomFact>,
+    ) -> Option<RangePageCharge> {
+        Some(RangePageCharge {
+            bytes: size_of::<RangePage>()
+                .checked_add(atoms.capacity().checked_mul(size_of::<AtomFact>())?)?
+                .checked_add(text.capacity())?
+                .checked_add(atoms.iter().try_fold(0usize, |bytes, atom| {
+                    bytes.checked_add(atom.owned_payload_allocation_bytes())
+                })?)?,
+            items: atoms.capacity().checked_add(1)?,
+        })
     }
 
     /// Clones one bounded resident payload under another exact equivalent demand.

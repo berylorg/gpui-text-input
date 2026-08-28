@@ -300,9 +300,13 @@ impl RangeTextInput {
                 Ok(())
             }
         };
-        self.dispatched_pages.remove(&key);
-        self.requests
-            .push_back(RangeTextInputRequest::ReleasePage(key));
+        let retained_clipboard = key.purpose() == PagePurpose::Clipboard
+            && self.clipboard.pending_text_page() == Some(key);
+        if !retained_clipboard {
+            self.dispatched_pages.remove(&key);
+            self.requests
+                .push_back(RangeTextInputRequest::ReleasePage(key));
+        }
         let clipboard_service =
             coalesced_clipboard.map(|page| self.service_coalesced_clipboard_page(page, cx));
         let service = self.service_geometry_until_external_boundary(window, cx);

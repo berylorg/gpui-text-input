@@ -270,10 +270,19 @@ impl BlockTarget {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct TargetInlineObjectPresentation {
     cursor: ObjectCursor,
     presentation: InlineObjectPresentation,
+}
+
+impl Clone for TargetInlineObjectPresentation {
+    fn clone(&self) -> Self {
+        Self {
+            cursor: self.cursor,
+            presentation: self.presentation.shared_clone(),
+        }
+    }
 }
 
 impl TargetInlineObjectPresentation {
@@ -290,6 +299,10 @@ impl TargetInlineObjectPresentation {
 
     pub(crate) const fn presentation(&self) -> &InlineObjectPresentation {
         &self.presentation
+    }
+
+    pub(crate) fn presentation_allocation(&self) -> (*const u8, usize) {
+        self.presentation.display_allocation()
     }
 }
 
@@ -309,6 +322,12 @@ pub struct BlockTargetPublication {
 }
 
 impl BlockTargetPublication {
+    pub(crate) fn presentation_overlap_bytes<'a>(
+        &self,
+        pages: impl Iterator<Item = &'a crate::ObjectPage> + Clone,
+    ) -> Option<usize> {
+        presentation_overlap_bytes(&self.object_presentations, pages)
+    }
     pub const fn key(&self) -> GeometryJobKey {
         self.key
     }
@@ -367,6 +386,20 @@ impl BlockTargetPublication {
     pub const fn item_charge(&self) -> StreamingLayoutItemCharge {
         self.item_charge
     }
+}
+
+pub(super) fn presentation_overlap_bytes<'a>(
+    presentations: &[TargetInlineObjectPresentation],
+    pages: impl Iterator<Item = &'a crate::ObjectPage> + Clone,
+) -> Option<usize> {
+    presentations.iter().try_fold(0usize, |total, target| {
+        let allocation = target.presentation_allocation();
+        let aliased = pages
+            .clone()
+            .flat_map(crate::ObjectPage::presentation_allocations)
+            .any(|candidate| candidate == allocation);
+        total.checked_add(if aliased { allocation.1 } else { 0 })
+    })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -6,6 +6,11 @@ impl RangeClipboardCoordinator {
             key: active.key,
             pending_text_page: active.pending_text,
             pending_object_page: active.pending_object,
+            pending_provenance_page: active
+                .provenance
+                .as_ref()
+                .and_then(|provenance| provenance.current_page.as_ref())
+                .map(ClipboardProvenancePage::key),
             awaiting_write: active.state == ClipboardState::AwaitingWrite,
         })
     }
@@ -37,6 +42,11 @@ impl RangeClipboardCoordinator {
             key: active.key,
             pending_text_page: active.pending_text,
             pending_object_page: active.pending_object,
+            pending_provenance_page: active
+                .provenance
+                .as_ref()
+                .and_then(|provenance| provenance.current_page.as_ref())
+                .map(ClipboardProvenancePage::key),
             awaiting_write: active.state == ClipboardState::AwaitingWrite,
         });
         if let Some(cancellation) = cancellation {
@@ -57,6 +67,11 @@ impl RangeClipboardCoordinator {
             key: active.key,
             pending_text_page: active.pending_text,
             pending_object_page: active.pending_object,
+            pending_provenance_page: active
+                .provenance
+                .as_ref()
+                .and_then(|provenance| provenance.current_page.as_ref())
+                .map(ClipboardProvenancePage::key),
             awaiting_write: active.state == ClipboardState::AwaitingWrite,
         });
         if let Some(cancellation) = cancellation {
@@ -73,6 +88,11 @@ impl RangeClipboardCoordinator {
             key: active.key,
             pending_text_page: active.pending_text,
             pending_object_page: active.pending_object,
+            pending_provenance_page: active
+                .provenance
+                .as_ref()
+                .and_then(|provenance| provenance.current_page.as_ref())
+                .map(ClipboardProvenancePage::key),
             awaiting_write: active.state == ClipboardState::AwaitingWrite,
         });
         if let Some(cancellation) = cancellation {

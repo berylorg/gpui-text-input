@@ -795,13 +795,18 @@ impl ObjectResidency {
             .try_fold((0usize, 0usize), |(bytes, items), (resident, _)| {
                 Some((
                     bytes.checked_add(resident.retained_charge().bytes())?,
-                    items.checked_add(resident.objects().len().checked_add(1)?)?,
+                    items.checked_add(
+                        resident
+                            .retained_charge()
+                            .allocated_items()
+                            .checked_add(1)?,
+                    )?,
                 ))
             })
             .and_then(|(bytes, items)| {
                 Some((
                     bytes.checked_add(charge.bytes())?,
-                    items.checked_add(charge.objects().checked_add(1)?)?,
+                    items.checked_add(charge.allocated_items().checked_add(1)?)?,
                 ))
             })
             .ok_or(ObjectPageAdmissionError::LimitExceeded(
@@ -835,7 +840,7 @@ impl ObjectResidency {
                 ObjectResidencyLimitKind::ResidentBytes,
             ))?;
         let retained_items = charge
-            .objects()
+            .allocated_items()
             .checked_add(1)
             .and_then(|items| items.checked_add(disposition.capacity()))
             .and_then(|items| items.checked_add(destination.capacity()))

@@ -2,14 +2,551 @@ use std::sync::Arc;
 
 use gpui::{SharedString, px};
 use gpui_text_input::{
-    AtomFact, AtomId, BindingId, ByteOffset, ByteRange, ClipboardCompletion, ClipboardId,
-    ClipboardKind, ClipboardLimits, ClipboardProgress, ClipboardWriteOutcome, InlineObjectFact,
-    InlineObjectGap, InlineObjectId, InlineObjectNeighbor, InlineObjectOrder,
-    InlineObjectPresentation, LogicalExtent, MutationPositions, ObjectPage, ObjectPageEdgeFact,
-    ObjectPageId, ObjectRequestId, PageDirection, PageEdgeFact, PageId, PageRequestId,
-    PresentationGeneration, RangeBinding, RangeClipboardCoordinator, RangePage, SourcePosition,
-    SourceRange, SourceRevision, TextInputAtomClipboardPolicy,
+    AtomFact, AtomId, BindingId, ByteOffset, ByteRange, ClipboardCompletion, ClipboardError,
+    ClipboardId, ClipboardKey, ClipboardKind, ClipboardLimits, ClipboardProgress,
+    ClipboardProvenanceLimits, ClipboardProvenancePage, ClipboardProvenancePolicy,
+    ClipboardWriteOutcome, InlineObjectFact, InlineObjectGap, InlineObjectId, InlineObjectNeighbor,
+    InlineObjectOrder, InlineObjectPresentation, LogicalExtent, MutationPositions, ObjectPage,
+    ObjectPageEdgeFact, ObjectPageId, ObjectRequestId, PageDirection, PageEdgeFact, PageId,
+    PageRequestId, PresentationGeneration, RangeBinding, RangeClipboardCoordinator, RangePage,
+    SourcePosition, SourceRange, SourceRevision, TextInputAtomClipboardPolicy,
 };
+
+trait PreparedClipboardHarness {
+    fn admit_object_page(&mut self, page: ObjectPage) -> Result<ClipboardProgress, ClipboardError>;
+    fn admit_text_page(&mut self, page: RangePage) -> Result<ClipboardProgress, ClipboardError>;
+}
+
+impl PreparedClipboardHarness for RangeClipboardCoordinator {
+    fn admit_object_page(&mut self, page: ObjectPage) -> Result<ClipboardProgress, ClipboardError> {
+        let prepared = self.prepare_object_page(&page)?;
+        let commit = self.commit_object_page(page, prepared)?;
+        finish_prepared(self, commit)
+    }
+
+    fn admit_text_page(&mut self, page: RangePage) -> Result<ClipboardProgress, ClipboardError> {
+        let prepared = self.prepare_text_page(&page)?;
+        let commit = self.commit_text_page(page, prepared)?;
+        finish_prepared(self, commit)
+    }
+}
+
+fn finish_prepared(
+    collector: &mut RangeClipboardCoordinator,
+    mut commit: gpui_text_input::ClipboardPreparedCommit,
+) -> Result<ClipboardProgress, ClipboardError> {
+    loop {
+        if let Some(progress) = commit.into_progress() {
+            return Ok(progress);
+        }
+        let prepared = collector.prepare_next()?;
+        commit = collector.commit_prepared(prepared)?;
+    }
+}
+
+#[test]
+fn prepared_begin_is_exact_nonmutating_and_instance_bound_for_all_modes() {
+    for (ordinal, stream) in [false, true].into_iter().enumerate() {
+        for empty in [true, false] {
+            let source = "a";
+            let mut collector = if stream {
+                provenance_coordinator(source, 64, 1, 2, 4096)
+            } else {
+                coordinator(source, 64, 1)
+            };
+            let selection = SourceRange::new(position(0), position(u64::from(!empty))).unwrap();
+            let prepared = collector
+                .prepare_begin(
+                    ClipboardId::new(95_000 + ordinal as u64 * 2 + u64::from(!empty)),
+                    ClipboardKind::Copy,
+                    selection,
+                    predecessor(selection),
+                )
+                .unwrap();
+            assert_eq!(collector.state(), gpui_text_input::ClipboardState::Idle);
+            assert_eq!(collector.counts(), Default::default());
+            assert_eq!(collector.ownership_charge(), Default::default());
+            assert_eq!(prepared.peak_ownership(), prepared.successor_ownership());
+            assert_eq!(
+                prepared.successor_ownership().items(),
+                if stream { 2 } else { 1 }
+            );
+            assert!(prepared.successor_ownership().bytes() > 0);
+            let exact = prepared.successor_ownership();
+            let admitted = |bytes, items| exact.bytes() <= bytes && exact.items() <= items;
+            assert!(admitted(exact.bytes(), exact.items()));
+            assert!(!admitted(exact.bytes() - 1, exact.items()));
+            assert!(!admitted(exact.bytes(), exact.items() - 1));
+            assert_eq!(collector.state(), gpui_text_input::ClipboardState::Idle);
+            assert_eq!(collector.ownership_charge(), Default::default());
+
+            let progress = collector.commit_begin(prepared).unwrap();
+            if empty {
+                assert!(matches!(progress, ClipboardProgress::Write(_)));
+            } else {
+                assert!(matches!(progress, ClipboardProgress::NeedObjectPage { .. }));
+                assert_eq!(
+                    collector.ownership_charge().items(),
+                    if stream { 2 } else { 1 }
+                );
+            }
+        }
+    }
+
+    let selection = SourceRange::new(position(0), position(1)).unwrap();
+    let first = coordinator("a", 64, 1);
+    let prepared = first
+        .prepare_begin(
+            ClipboardId::new(95_100),
+            ClipboardKind::Cut,
+            selection,
+            predecessor(selection),
+        )
+        .unwrap();
+    let mut other = coordinator("a", 64, 1);
+    assert_eq!(
+        other.commit_begin(prepared),
+        Err(ClipboardError::StalePreparation)
+    );
+    assert_eq!(other.state(), gpui_text_input::ClipboardState::Idle);
+    assert_eq!(other.ownership_charge(), Default::default());
+
+    let mut rebound = coordinator("a", 64, 1);
+    let prepared = rebound
+        .prepare_begin(
+            ClipboardId::new(95_101),
+            ClipboardKind::Copy,
+            selection,
+            predecessor(selection),
+        )
+        .unwrap();
+    rebound.rebind(RangeBinding::new(
+        BindingId::new(7),
+        SourceRevision::new(10),
+        LogicalExtent::new(1, 1),
+    ));
+    assert_eq!(
+        rebound.commit_begin(prepared),
+        Err(ClipboardError::StalePreparation)
+    );
+    assert_eq!(rebound.ownership_charge(), Default::default());
+}
+
+#[test]
+fn terminal_response_preparations_consume_exact_response_and_release_dispatch() {
+    let selection = SourceRange::new(position(0), position(1)).unwrap();
+    let mut object_terminal = coordinator("a", 64, 1);
+    let ClipboardProgress::NeedObjectPage { key, .. } = object_terminal
+        .begin(
+            ClipboardId::new(90_001),
+            ClipboardKind::Copy,
+            selection,
+            predecessor(selection),
+        )
+        .unwrap()
+    else {
+        unreachable!()
+    };
+    let request = object_terminal
+        .request_object_page(key, ObjectRequestId::new(1))
+        .unwrap();
+    let oversized = ObjectPage::new(
+        ObjectPageId::new(1),
+        request.key(),
+        Vec::with_capacity(4096),
+        ObjectPageEdgeFact::EnvelopeBoundary,
+        ObjectPageEdgeFact::EnvelopeBoundary,
+        true,
+        None,
+    )
+    .unwrap();
+    let prepared = object_terminal.prepare_object_page(&oversized).unwrap();
+    assert!(prepared.transfers_response());
+    let committed = object_terminal
+        .commit_object_page(oversized, prepared)
+        .unwrap();
+    assert_eq!(committed.released_object_page(), Some(request.key()));
+    assert_eq!(
+        committed.into_progress(),
+        Some(ClipboardProgress::Terminal(ClipboardCompletion::Malformed))
+    );
+    assert_eq!(object_terminal.counts(), Default::default());
+
+    let mut text_terminal = coordinator("a", 64, 1);
+    let ClipboardProgress::NeedObjectPage { key, .. } = text_terminal
+        .begin(
+            ClipboardId::new(90_002),
+            ClipboardKind::Copy,
+            selection,
+            predecessor(selection),
+        )
+        .unwrap()
+    else {
+        unreachable!()
+    };
+    let object_request = text_terminal
+        .request_object_page(key, ObjectRequestId::new(1))
+        .unwrap();
+    let ClipboardProgress::NeedTextPage { key, .. } = text_terminal
+        .admit_object_page(object_page(object_request, &[], 2))
+        .unwrap()
+    else {
+        unreachable!()
+    };
+    let request = text_terminal
+        .request_text_page(key, PageRequestId::new(2))
+        .unwrap();
+    let range = ByteRange::from_u64(0, 1).unwrap();
+    let oversized = RangePage::new(
+        PageId::new(3),
+        request.key(),
+        range,
+        "a".to_owned(),
+        vec![AtomFact::new(AtomId::new(3), range, range, "overflow")],
+        PageEdgeFact::DocumentBoundary,
+        PageEdgeFact::DocumentBoundary,
+        true,
+    )
+    .unwrap();
+    let prepared = text_terminal.prepare_text_page(&oversized).unwrap();
+    assert!(prepared.transfers_response());
+    let committed = text_terminal.commit_text_page(oversized, prepared).unwrap();
+    assert_eq!(committed.released_text_page(), Some(request.key()));
+    assert_eq!(
+        committed.into_progress(),
+        Some(ClipboardProgress::Terminal(
+            ClipboardCompletion::TextPageTooLarge
+        ))
+    );
+    assert_eq!(text_terminal.counts(), Default::default());
+}
+
+#[test]
+fn exact_output_layout_failure_is_terminal_and_releases_retained_response() {
+    let source = "a";
+    let selection = SourceRange::new(position(0), position(1)).unwrap();
+    let impossible_layout = (isize::MAX as usize).checked_add(1).unwrap();
+    let mut collector = coordinator(source, impossible_layout, 1);
+    let ClipboardProgress::NeedObjectPage { key, .. } = collector
+        .begin(
+            ClipboardId::new(90_003),
+            ClipboardKind::Cut,
+            selection,
+            predecessor(selection),
+        )
+        .unwrap()
+    else {
+        unreachable!()
+    };
+    let object_request = collector
+        .request_object_page(key, ObjectRequestId::new(1))
+        .unwrap();
+    let ClipboardProgress::NeedTextPage { key, .. } = collector
+        .admit_object_page(object_page(object_request, &[], 1))
+        .unwrap()
+    else {
+        unreachable!()
+    };
+    let request = collector
+        .request_text_page(key, PageRequestId::new(2))
+        .unwrap();
+    let request_key = request.key();
+    let page = text_page(source, request, 2);
+    let prepared = collector.prepare_text_page(&page).unwrap();
+    let mut commit = collector.commit_text_page(page, prepared).unwrap();
+    let terminal = loop {
+        let released = commit.released_text_page();
+        if let Some(progress) = commit.into_progress() {
+            assert_eq!(released, Some(request_key));
+            break progress;
+        }
+        let prepared = collector.prepare_next().unwrap();
+        commit = collector.commit_prepared(prepared).unwrap();
+    };
+    assert_eq!(
+        terminal,
+        ClipboardProgress::Terminal(ClipboardCompletion::AllocationFailed)
+    );
+    assert_eq!(collector.state(), gpui_text_input::ClipboardState::Idle);
+    assert_eq!(collector.counts(), Default::default());
+    assert_eq!(collector.ownership_charge().bytes(), 0);
+}
+
+#[test]
+fn prepared_tokens_reject_wrong_response_coordinator_lifecycle_and_duplicates() {
+    let selection = SourceRange::new(position(0), position(1)).unwrap();
+    let begin = |collector: &mut RangeClipboardCoordinator| {
+        let ClipboardProgress::NeedObjectPage { key, .. } = collector
+            .begin(
+                ClipboardId::new(91_001),
+                ClipboardKind::Copy,
+                selection,
+                predecessor(selection),
+            )
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        collector
+            .request_object_page(key, ObjectRequestId::new(1))
+            .unwrap()
+    };
+    let left = object(91, 0, 1, "a");
+    let right = object(92, 0, 1, "b");
+
+    let mut exact = coordinator("a", 64, 1);
+    let request = begin(&mut exact);
+    let mut left_objects = Vec::with_capacity(1);
+    left_objects.push(left);
+    let page = ObjectPage::new(
+        ObjectPageId::new(1),
+        request.key(),
+        left_objects,
+        ObjectPageEdgeFact::EnvelopeBoundary,
+        ObjectPageEdgeFact::EnvelopeBoundary,
+        true,
+        None,
+    )
+    .unwrap();
+    let mut right_objects = Vec::with_capacity(1);
+    right_objects.push(right);
+    let different = ObjectPage::new(
+        ObjectPageId::new(1),
+        request.key(),
+        right_objects,
+        ObjectPageEdgeFact::EnvelopeBoundary,
+        ObjectPageEdgeFact::EnvelopeBoundary,
+        true,
+        None,
+    )
+    .unwrap();
+    assert_eq!(page.retained_charge(), different.retained_charge());
+    let wrong = exact.prepare_object_page(&page).unwrap();
+    assert_eq!(
+        exact.commit_object_page(different, wrong),
+        Err(ClipboardError::WrongPreparation)
+    );
+    assert_eq!(
+        exact.state(),
+        gpui_text_input::ClipboardState::ObjectPagePending
+    );
+    let mut equal_objects = Vec::with_capacity(1);
+    equal_objects.push(object(91, 0, 1, "a"));
+    let independent_equal = ObjectPage::new(
+        ObjectPageId::new(1),
+        request.key(),
+        equal_objects,
+        ObjectPageEdgeFact::EnvelopeBoundary,
+        ObjectPageEdgeFact::EnvelopeBoundary,
+        true,
+        None,
+    )
+    .unwrap();
+    assert_eq!(page.retained_charge(), independent_equal.retained_charge());
+    let wrong = exact.prepare_object_page(&page).unwrap();
+    assert_eq!(
+        exact.commit_object_page(independent_equal, wrong),
+        Err(ClipboardError::WrongPreparation)
+    );
+    let clone = page.clone();
+    let first = exact.prepare_object_page(&page).unwrap();
+    let duplicate = exact.prepare_object_page(&page).unwrap();
+    exact.commit_object_page(clone, first).unwrap();
+    assert_eq!(
+        exact.commit_object_page(page, duplicate),
+        Err(ClipboardError::StalePreparation)
+    );
+
+    let mut capacity_bound = coordinator("a", 64, 1);
+    let request = begin(&mut capacity_bound);
+    let mut spare = Vec::with_capacity(4);
+    spare.push(object(93, 0, 1, "c"));
+    let page = ObjectPage::new(
+        ObjectPageId::new(4),
+        request.key(),
+        spare,
+        ObjectPageEdgeFact::EnvelopeBoundary,
+        ObjectPageEdgeFact::EnvelopeBoundary,
+        true,
+        None,
+    )
+    .unwrap();
+    let compact_clone = page.clone();
+    assert_ne!(page.retained_charge(), compact_clone.retained_charge());
+    let prepared = capacity_bound.prepare_object_page(&page).unwrap();
+    assert_eq!(
+        capacity_bound.commit_object_page(compact_clone, prepared),
+        Err(ClipboardError::WrongPreparation)
+    );
+    let prepared = capacity_bound.prepare_object_page(&page).unwrap();
+    capacity_bound.commit_object_page(page, prepared).unwrap();
+
+    let mut first = coordinator("a", 64, 1);
+    let first_request = begin(&mut first);
+    let first_page = object_page(first_request, &[], 2);
+    let foreign = first.prepare_object_page(&first_page).unwrap();
+    let mut second = coordinator("a", 64, 1);
+    let second_request = begin(&mut second);
+    assert_eq!(first_request.key(), second_request.key());
+    let second_page = object_page(second_request, &[], 2);
+    assert_eq!(
+        second.commit_object_page(second_page, foreign),
+        Err(ClipboardError::WrongPreparation)
+    );
+    assert_eq!(
+        second.state(),
+        gpui_text_input::ClipboardState::ObjectPagePending
+    );
+
+    let stale = first.prepare_object_page(&first_page).unwrap();
+    let cancelled_key = ClipboardKey::new(
+        ClipboardId::new(91_001),
+        binding("a").binding(),
+        binding("a").revision(),
+        selection,
+        predecessor(selection),
+    );
+    assert_eq!(
+        first.cancel(cancelled_key).unwrap(),
+        ClipboardCompletion::Cancelled
+    );
+    assert_eq!(
+        first.commit_object_page(first_page, stale),
+        Err(ClipboardError::StalePreparation)
+    );
+
+    let mut dropped = coordinator("a", 64, 1);
+    let dropped_request = begin(&mut dropped);
+    let dropped_page = object_page(dropped_request, &[], 3);
+    let dropped_token = dropped.prepare_object_page(&dropped_page).unwrap();
+    drop(dropped);
+    let mut recreated = coordinator("a", 64, 1);
+    let recreated_request = begin(&mut recreated);
+    assert_eq!(dropped_request.key(), recreated_request.key());
+    assert_eq!(
+        recreated.commit_object_page(dropped_page, dropped_token),
+        Err(ClipboardError::WrongPreparation)
+    );
+}
+
+#[test]
+fn response_capacity_charge_is_exact_for_sparse_pages_and_coordinator_transfer() {
+    let selection = SourceRange::new(position(0), position(1)).unwrap();
+    let mut collector = coordinator("a", 64, 8);
+    let ClipboardProgress::NeedObjectPage { key, .. } = collector
+        .begin(
+            ClipboardId::new(92_001),
+            ClipboardKind::Copy,
+            selection,
+            predecessor(selection),
+        )
+        .unwrap()
+    else {
+        unreachable!()
+    };
+    let request = collector
+        .request_object_page(key, ObjectRequestId::new(1))
+        .unwrap();
+    let mut fallback = String::with_capacity(257);
+    fallback.push('o');
+    let mut display = String::with_capacity(513);
+    display.push('p');
+    let presentation =
+        InlineObjectPresentation::new(92, display, px(8.0), px(8.0), px(6.0), None, 0, true)
+            .unwrap();
+    let mut objects = Vec::with_capacity(8);
+    objects.push(InlineObjectFact::new(
+        InlineObjectId::new(92),
+        ByteOffset::new(0),
+        InlineObjectOrder::new(1),
+        fallback,
+        presentation,
+    ));
+    let page = ObjectPage::new(
+        ObjectPageId::new(92),
+        request.key(),
+        objects,
+        ObjectPageEdgeFact::EnvelopeBoundary,
+        ObjectPageEdgeFact::EnvelopeBoundary,
+        true,
+        None,
+    )
+    .unwrap();
+    let charge = page.retained_charge();
+    assert_eq!(charge.objects(), 1);
+    let current = collector.ownership_charge();
+    let prepared = collector.prepare_object_page(&page).unwrap();
+    assert_eq!(
+        prepared.successor_ownership().bytes() - current.bytes(),
+        charge.bytes() - std::mem::size_of::<ObjectPage>()
+    );
+    assert_eq!(prepared.successor_ownership().items() - current.items(), 8);
+    collector.commit_object_page(page, prepared).unwrap();
+
+    let mut text_collector = coordinator("a", 64, 1);
+    let ClipboardProgress::NeedObjectPage { key, .. } = text_collector
+        .begin(
+            ClipboardId::new(92_002),
+            ClipboardKind::Copy,
+            selection,
+            predecessor(selection),
+        )
+        .unwrap()
+    else {
+        unreachable!()
+    };
+    let object_request = text_collector
+        .request_object_page(key, ObjectRequestId::new(1))
+        .unwrap();
+    let ClipboardProgress::NeedTextPage { key, .. } = text_collector
+        .admit_object_page(object_page(object_request, &[], 93))
+        .unwrap()
+    else {
+        unreachable!()
+    };
+    let request = text_collector
+        .request_text_page(key, PageRequestId::new(2))
+        .unwrap();
+    let mut text = String::with_capacity(64);
+    text.push('a');
+    let mut atom_fallback = String::with_capacity(129);
+    atom_fallback.push('x');
+    let range = ByteRange::from_u64(0, 1).unwrap();
+    let mut atoms = Vec::with_capacity(8);
+    atoms.push(AtomFact::new(AtomId::new(93), range, range, atom_fallback));
+    let page = RangePage::new(
+        PageId::new(93),
+        request.key(),
+        range,
+        text,
+        atoms,
+        PageEdgeFact::DocumentBoundary,
+        PageEdgeFact::DocumentBoundary,
+        true,
+    )
+    .unwrap();
+    let charge = page.retained_charge();
+    let current = text_collector.ownership_charge();
+    let prepared = text_collector.prepare_text_page(&page).unwrap();
+    assert_eq!(
+        prepared.successor_ownership().bytes() - current.bytes(),
+        charge.bytes() - std::mem::size_of::<RangePage>()
+    );
+    assert_eq!(
+        prepared.successor_ownership().items() - current.items(),
+        charge.items() - 1
+    );
+    text_collector.commit_text_page(page, prepared).unwrap();
+}
+
+fn acknowledge_prepared(
+    collector: &mut RangeClipboardCoordinator,
+    page: ClipboardProvenancePage,
+) -> Result<ClipboardProgress, ClipboardError> {
+    let prepared = collector.acknowledge_provenance_page(page)?;
+    let commit = collector.commit_prepared(prepared)?;
+    finish_prepared(collector, commit)
+}
 
 fn binding(source: &str) -> RangeBinding {
     RangeBinding::new(
@@ -75,6 +612,26 @@ fn coordinator_with_policy(
         atom_policy,
         ClipboardLimits::new_composite(cap, 4, object_count, 64 * 1024).unwrap(),
     )
+    .unwrap()
+}
+
+fn provenance_coordinator(
+    source: &str,
+    cap: usize,
+    object_count: usize,
+    page_items: usize,
+    page_bytes: usize,
+) -> RangeClipboardCoordinator {
+    let provenance = ClipboardProvenanceLimits::new(page_items, page_bytes).unwrap();
+    RangeClipboardCoordinator::new_composite(
+        binding(source),
+        PresentationGeneration::new(9),
+        TextInputAtomClipboardPolicy::PlainText,
+        ClipboardLimits::new_composite(cap, 4, object_count, 64 * 1024)
+            .unwrap()
+            .with_provenance(ClipboardProvenancePolicy::Stream(provenance)),
+    )
+    .unwrap()
 }
 
 fn object_page(
@@ -202,6 +759,7 @@ fn propagating_coordinator(source: &str, max_bytes: usize) -> RangeClipboardCoor
         TextInputAtomClipboardPolicy::Propagate,
         ClipboardLimits::new_composite(max_bytes, 8, 1, 64 * 1024).unwrap(),
     )
+    .unwrap()
 }
 
 fn collect(
@@ -233,9 +791,384 @@ fn collect(
                     .unwrap()
             }
             ClipboardProgress::Write(write) => return write,
+            ClipboardProgress::ProvenancePage(_) => {
+                panic!("omit policy emitted provenance")
+            }
             ClipboardProgress::Terminal(outcome) => panic!("unexpected terminal: {outcome:?}"),
         };
     }
+}
+
+fn collect_provenance(
+    collector: &mut RangeClipboardCoordinator,
+    source: &str,
+    objects: &[InlineObjectFact],
+    mut progress: ClipboardProgress,
+) -> (
+    Vec<ClipboardProvenancePage>,
+    gpui_text_input::ClipboardWriteRequest,
+) {
+    let mut request_id = 1u64;
+    let mut pages = Vec::new();
+    loop {
+        progress = match progress {
+            ClipboardProgress::NeedObjectPage { key, .. } => {
+                let request = collector
+                    .request_object_page(key, ObjectRequestId::new(request_id))
+                    .unwrap();
+                request_id += 1;
+                collector
+                    .admit_object_page(object_page(request, objects, request_id))
+                    .unwrap()
+            }
+            ClipboardProgress::NeedTextPage { key, .. } => {
+                let request = collector
+                    .request_text_page(key, PageRequestId::new(request_id))
+                    .unwrap();
+                request_id += 1;
+                collector
+                    .admit_text_page(text_page(source, request, request_id))
+                    .unwrap()
+            }
+            ClipboardProgress::ProvenancePage(page) => {
+                pages.push(page.clone());
+                acknowledge_prepared(collector, page).unwrap()
+            }
+            ClipboardProgress::Write(write) => return (pages, write),
+            ClipboardProgress::Terminal(outcome) => panic!("unexpected terminal: {outcome:?}"),
+        };
+    }
+}
+
+#[test]
+fn provenance_stream_pages_same_anchor_and_empty_fallbacks_exactly() {
+    let source = "ab";
+    let objects = vec![
+        object(11, 1, 1, ""),
+        object(12, 1, 2, "XY"),
+        object(13, 1, 3, "z"),
+    ];
+    let selection = SourceRange::new(position(0), position(2)).unwrap();
+    let mut collector = provenance_coordinator(source, 16, 1, 2, 4096);
+    let progress = collector
+        .begin(
+            ClipboardId::new(41),
+            ClipboardKind::Copy,
+            selection,
+            predecessor(selection),
+        )
+        .unwrap();
+    let (pages, write) = collect_provenance(&mut collector, source, &objects, progress);
+
+    assert_eq!(write.text(), "aXYzb");
+    assert_eq!(pages.len(), 2);
+    assert_eq!(pages[0].key().page_ordinal(), 0);
+    assert_eq!(pages[1].key().page_ordinal(), 1);
+    assert_eq!(pages[1].prior_identity(), pages[0].cumulative_identity());
+    assert_eq!(pages[0].items().len(), 2);
+    assert_eq!(pages[1].items().len(), 1);
+    assert_eq!(pages[0].items()[0].object_id(), InlineObjectId::new(11));
+    assert_eq!(
+        pages[0].items()[0].output_range(),
+        ByteRange::from_u64(1, 1).unwrap()
+    );
+    assert_eq!(
+        pages[0].items()[1].output_range(),
+        ByteRange::from_u64(1, 3).unwrap()
+    );
+    assert_eq!(
+        pages[1].items()[0].output_range(),
+        ByteRange::from_u64(3, 4).unwrap()
+    );
+    assert_eq!(pages[0].next_cursor().item_ordinal(), 2);
+    assert_eq!(pages[1].next_cursor().item_ordinal(), 3);
+    assert_eq!(
+        pages[0].next_cursor().preceding_object(),
+        Some(objects[1].cursor())
+    );
+    assert_eq!(
+        pages[1].next_cursor().preceding_object(),
+        Some(objects[2].cursor())
+    );
+    assert!(pages.iter().all(|page| page.retained_bytes() <= 4096));
+
+    let closure = write.provenance().expect("stream closes on write");
+    assert_eq!(closure.page_count(), 2);
+    assert_eq!(closure.item_count(), 3);
+    assert_eq!(closure.fallback_bytes(), 3);
+    assert_eq!(closure.output_bytes(), 5);
+    assert_eq!(closure.prior_identity(), pages[1].cumulative_identity());
+    assert_ne!(closure.final_identity(), closure.prior_identity());
+    assert_eq!(collector.counts().retained_provenance_items, 0);
+    assert_eq!(collector.counts().retained_provenance_bytes, 0);
+    assert_eq!(
+        collector
+            .acknowledge_write(write.key(), ClipboardWriteOutcome::Written)
+            .unwrap(),
+        ClipboardCompletion::Copied
+    );
+    assert_eq!(collector.counts(), Default::default());
+}
+
+#[test]
+fn provenance_acknowledgement_collides_same_key_and_preserves_custody_for_wrong_keys() {
+    let source = "ab";
+    let selection = SourceRange::new(position(0), position(2)).unwrap();
+    let first_objects = vec![object(21, 1, 1, "x"), object(22, 1, 2, "y")];
+    let collision_objects = vec![object(31, 1, 1, "x"), object(32, 1, 2, "y")];
+
+    let first_page = |objects: &[InlineObjectFact]| {
+        let mut collector = provenance_coordinator(source, 16, 2, 1, 4096);
+        let mut progress = collector
+            .begin(
+                ClipboardId::new(51),
+                ClipboardKind::Copy,
+                selection,
+                predecessor(selection),
+            )
+            .unwrap();
+        let mut request_id = 1;
+        loop {
+            progress = match progress {
+                ClipboardProgress::NeedObjectPage { key, .. } => {
+                    let request = collector
+                        .request_object_page(key, ObjectRequestId::new(request_id))
+                        .unwrap();
+                    request_id += 1;
+                    collector
+                        .admit_object_page(object_page(request, objects, request_id))
+                        .unwrap()
+                }
+                ClipboardProgress::NeedTextPage { key, .. } => {
+                    let request = collector
+                        .request_text_page(key, PageRequestId::new(request_id))
+                        .unwrap();
+                    request_id += 1;
+                    collector
+                        .admit_text_page(text_page(source, request, request_id))
+                        .unwrap()
+                }
+                ClipboardProgress::ProvenancePage(page) => return (collector, page),
+                ClipboardProgress::Write(_) => panic!("missing provenance page"),
+                ClipboardProgress::Terminal(outcome) => panic!("unexpected terminal: {outcome:?}"),
+            };
+        }
+    };
+
+    let (mut collided, page) = first_page(&first_objects);
+    let (_, collision) = first_page(&collision_objects);
+    assert_eq!(page.key(), collision.key());
+    assert_ne!(page, collision);
+    assert_eq!(
+        collided.acknowledge_provenance_page(collision),
+        Err(ClipboardError::ProvenancePageCollision(page.key()))
+    );
+    assert_eq!(collided.counts(), Default::default());
+
+    let (mut collector, page) = first_page(&first_objects);
+    let next = acknowledge_prepared(&mut collector, page.clone()).unwrap();
+    let next_page = match next {
+        ClipboardProgress::ProvenancePage(next_page) => next_page,
+        other => panic!("expected successive provenance page, got {other:?}"),
+    };
+    let next_page_key = next_page.key();
+    let (mut reordered, expected_first) = first_page(&first_objects);
+    assert_eq!(
+        reordered.acknowledge_provenance_page(next_page),
+        Err(ClipboardError::WrongProvenancePage {
+            expected: expected_first.key(),
+            actual: next_page_key,
+        })
+    );
+    assert_eq!(
+        collector.acknowledge_provenance_page(page.clone()),
+        Err(ClipboardError::WrongProvenancePage {
+            expected: next_page_key,
+            actual: page.key(),
+        })
+    );
+    assert_eq!(
+        reordered.cancel(expected_first.key().clipboard()).unwrap(),
+        ClipboardCompletion::Cancelled
+    );
+    assert_eq!(reordered.counts(), Default::default());
+    let expected_first_key = expected_first.key();
+    assert_eq!(
+        reordered.acknowledge_provenance_page(expected_first),
+        Err(ClipboardError::ObsoleteProvenancePage(expected_first_key))
+    );
+}
+
+#[test]
+fn provenance_limits_accept_exact_retained_charge_and_reject_one_under() {
+    assert_eq!(
+        ClipboardProvenanceLimits::new(0, usize::MAX),
+        Err(ClipboardError::InvalidLimits)
+    );
+    assert_eq!(
+        ClipboardProvenanceLimits::new(1, 1),
+        Err(ClipboardError::InvalidLimits)
+    );
+
+    let source = "ab";
+    let objects = vec![object(61, 1, 1, "")];
+    let selection = SourceRange::new(position(0), position(2)).unwrap();
+    let mut roomy = provenance_coordinator(source, 16, 1, 1, 4096);
+    let progress = roomy
+        .begin(
+            ClipboardId::new(61),
+            ClipboardKind::Copy,
+            selection,
+            predecessor(selection),
+        )
+        .unwrap();
+    let (pages, _) = collect_provenance(&mut roomy, source, &objects, progress);
+    let exact = pages[0].retained_bytes();
+    assert!(ClipboardProvenanceLimits::new(1, exact).is_ok());
+    assert_eq!(
+        ClipboardProvenanceLimits::new(1, exact - 1),
+        Err(ClipboardError::InvalidLimits)
+    );
+}
+
+#[test]
+fn clipboard_ownership_charge_counts_queued_and_current_object_payloads_exactly() {
+    let source = "ab";
+    let selection = SourceRange::new(position(0), position(2)).unwrap();
+    let charge_after_objects = |objects: &[InlineObjectFact]| {
+        let mut collector = provenance_coordinator(source, 64 * 1024, 2, 2, 4096);
+        let progress = collector
+            .begin(
+                ClipboardId::new(71),
+                ClipboardKind::Copy,
+                selection,
+                predecessor(selection),
+            )
+            .unwrap();
+        let key = match progress {
+            ClipboardProgress::NeedObjectPage { key, .. } => key,
+            other => panic!("expected object demand, got {other:?}"),
+        };
+        let request = collector
+            .request_object_page(key, ObjectRequestId::new(1))
+            .unwrap();
+        let progress = collector
+            .admit_object_page(object_page(request, objects, 1))
+            .unwrap();
+        assert!(matches!(progress, ClipboardProgress::NeedTextPage { .. }));
+        let counts = collector.counts();
+        assert_eq!(counts.retained_object_facts, 2);
+        assert_eq!(counts.owned_bytes, collector.ownership_charge().bytes());
+        assert_eq!(counts.owned_items, collector.ownership_charge().items());
+        let charge = collector.ownership_charge();
+        assert_eq!(
+            collector.cancel(key).unwrap(),
+            ClipboardCompletion::Cancelled
+        );
+        assert_eq!(collector.ownership_charge(), Default::default());
+        charge
+    };
+
+    let empty = [object(711, 1, 1, ""), object(712, 1, 2, "")];
+    let payload = "x".repeat(257);
+    let populated = [object(711, 1, 1, ""), object(712, 1, 2, &payload)];
+    let empty_charge = charge_after_objects(&empty);
+    let populated_charge = charge_after_objects(&populated);
+    assert_eq!(
+        populated_charge.bytes() - empty_charge.bytes(),
+        payload.len() * 2
+    );
+    assert_eq!(populated_charge.items(), empty_charge.items());
+}
+
+#[test]
+fn provenance_ack_releases_page_before_lazy_next_builder_allocation() {
+    let source = "abcdefghij";
+    let objects = [object(721, 1, 1, ""), object(722, 9, 1, "")];
+    let selection = SourceRange::new(position(0), position(10)).unwrap();
+    let mut collector = provenance_coordinator(source, 64, 1, 1, 4096);
+    let mut progress = collector
+        .begin(
+            ClipboardId::new(72),
+            ClipboardKind::Copy,
+            selection,
+            predecessor(selection),
+        )
+        .unwrap();
+    let fixed_collection = collector.counts().retained_provenance_bytes;
+    assert!(fixed_collection > 0);
+    let mut request_id = 1;
+    let first_page = loop {
+        progress = match progress {
+            ClipboardProgress::NeedObjectPage { key, .. } => {
+                let request = collector
+                    .request_object_page(key, ObjectRequestId::new(request_id))
+                    .unwrap();
+                request_id += 1;
+                collector
+                    .admit_object_page(object_page(request, &objects, request_id))
+                    .unwrap()
+            }
+            ClipboardProgress::NeedTextPage { key, .. } => {
+                let request = collector
+                    .request_text_page(key, PageRequestId::new(request_id))
+                    .unwrap();
+                request_id += 1;
+                collector
+                    .admit_text_page(text_page(source, request, request_id))
+                    .unwrap()
+            }
+            ClipboardProgress::ProvenancePage(page) => break page,
+            other => panic!("expected first provenance page, got {other:?}"),
+        };
+    };
+    let page_owned = collector.counts().retained_provenance_bytes;
+    assert!(page_owned > fixed_collection);
+
+    progress = acknowledge_prepared(&mut collector, first_page).unwrap();
+    let fixed = collector.counts().retained_provenance_bytes;
+    assert_eq!(fixed, fixed_collection, "progress={progress:?}");
+    assert!(fixed < page_owned);
+    assert_eq!(collector.counts().retained_provenance_items, 0);
+    assert!(matches!(
+        progress,
+        ClipboardProgress::NeedObjectPage { .. } | ClipboardProgress::NeedTextPage { .. }
+    ));
+
+    let key = loop {
+        if let ClipboardProgress::ProvenancePage(page) = &progress {
+            break page.key().clipboard();
+        }
+        assert_eq!(collector.counts().retained_provenance_bytes, fixed);
+        progress = match progress {
+            ClipboardProgress::NeedObjectPage { key, .. } => {
+                let request = collector
+                    .request_object_page(key, ObjectRequestId::new(request_id))
+                    .unwrap();
+                request_id += 1;
+                collector
+                    .admit_object_page(object_page(request, &objects, request_id))
+                    .unwrap()
+            }
+            ClipboardProgress::NeedTextPage { key, .. } => {
+                let request = collector
+                    .request_text_page(key, PageRequestId::new(request_id))
+                    .unwrap();
+                request_id += 1;
+                collector
+                    .admit_text_page(text_page(source, request, request_id))
+                    .unwrap()
+            }
+            ClipboardProgress::ProvenancePage(_) => unreachable!(),
+            other => panic!("expected bounded progress to next provenance page, got {other:?}"),
+        };
+    };
+    assert!(collector.counts().retained_provenance_bytes > fixed);
+    assert_eq!(
+        collector.cancel(key).unwrap(),
+        ClipboardCompletion::Cancelled
+    );
+    assert_eq!(collector.ownership_charge(), Default::default());
 }
 
 #[test]
@@ -517,6 +1450,9 @@ fn propagation_classifies_late_source_atoms_beyond_output_cap_for_copy_and_cut()
                     break;
                 }
                 ClipboardProgress::Write(_) => panic!("atom-bearing selection reached write"),
+                ClipboardProgress::ProvenancePage(_) => {
+                    panic!("omit policy emitted provenance")
+                }
             };
         }
         assert!(
@@ -578,6 +1514,9 @@ fn atom_free_classification_restarts_exact_text_collection_before_write_or_cap()
                         .unwrap()
                 }
                 ClipboardProgress::Write(write) => break Ok(write),
+                ClipboardProgress::ProvenancePage(_) => {
+                    panic!("omit policy emitted provenance")
+                }
                 ClipboardProgress::Terminal(outcome) => break Err(outcome),
             };
         };
@@ -727,6 +1666,9 @@ fn exact_cap_is_accepted_and_one_byte_over_is_terminal_before_write() {
                 break;
             }
             ClipboardProgress::Write(_) => panic!("over-cap value reached platform write"),
+            ClipboardProgress::ProvenancePage(_) => {
+                panic!("omit policy emitted provenance")
+            }
         };
     }
     assert_eq!(over.counts(), Default::default());

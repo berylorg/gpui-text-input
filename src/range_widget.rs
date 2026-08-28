@@ -40,6 +40,12 @@ use crate::{
     RangeEditCoordinator, RangeResidency, SegmentationContinuation,
 };
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DispatchedClipboard {
+    Provenance(crate::ClipboardProvenancePageKey),
+    Write(crate::ClipboardKey),
+}
+
 pub struct RangeTextInput {
     focus_handle: FocusHandle,
     enabled: bool,
@@ -55,7 +61,7 @@ pub struct RangeTextInput {
         crate::ClipboardKey,
         Vec<crate::range_edit::SourcePositionProof>,
     )>,
-    dispatched_clipboard_write: Option<crate::ClipboardKey>,
+    dispatched_clipboard: Option<DispatchedClipboard>,
     surface: Option<CoherentRangeSurface>,
     last_surface_admission: Option<RangeSurfaceCharge>,
     last_realization_step: RangeRealizationStep,
@@ -362,10 +368,11 @@ impl RangeTextInput {
                 config.presentation_generation,
                 config.atom_clipboard_policy,
                 config.clipboard_limits,
-            ),
+            )
+            .map_err(RangeTextInputError::Clipboard)?,
             pending_clipboard_page: None,
             clipboard_cut_proofs: None,
-            dispatched_clipboard_write: None,
+            dispatched_clipboard: None,
             surface: None,
             last_surface_admission: None,
             last_realization_step: RangeRealizationStep {
@@ -553,7 +560,10 @@ impl RangeTextInput {
                 self.dispatched_mutations.insert(commit.key());
             }
             RangeTextInputRequest::ClipboardWrite(write) => {
-                self.dispatched_clipboard_write = Some(write.key());
+                self.dispatched_clipboard = Some(DispatchedClipboard::Write(write.key()));
+            }
+            RangeTextInputRequest::ClipboardProvenancePage(page) => {
+                self.dispatched_clipboard = Some(DispatchedClipboard::Provenance(page.key()));
             }
             _ => {}
         }
@@ -598,7 +608,7 @@ impl RangeTextInput {
             && self.dispatched_mutations.len() == 0
             && self.pending_history.is_none()
             && matches!(self.clipboard.state(), crate::ClipboardState::Idle)
-            && self.dispatched_clipboard_write.is_none()
+            && self.dispatched_clipboard.is_none()
             && self.requests.iter().all(|request| {
                 matches!(
                     request,
@@ -608,6 +618,7 @@ impl RangeTextInput {
                         | RangeTextInputRequest::ObjectPage(_)
                         | RangeTextInputRequest::CancelObjectPage(_)
                         | RangeTextInputRequest::ReleaseObjectPage(_)
+                        | RangeTextInputRequest::CancelClipboardProvenancePage(_)
                         | RangeTextInputRequest::CancelClipboardWrite(_)
                 )
             })
@@ -709,7 +720,10 @@ impl RangeTextInput {
         if self.requests.len() == self.requests.capacity() {
             return Err(RangeTextInputError::SurfaceCapacity);
         }
-        let payload = transition::queued_request_payload_charge(std::iter::once(&request))?;
+        let payload = transition::queued_request_payload_charge(
+            std::iter::once(&request),
+            self.clipboard.current_provenance_page(),
+        )?;
         let current = self.current_realization_ownership();
         let peak = RangeSurfaceCharge {
             bytes: current

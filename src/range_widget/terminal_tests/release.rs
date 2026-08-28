@@ -495,7 +495,10 @@ fn public_response_capacity_returns_exact_object_custody_for_retry(cx: &mut gpui
         RangeSurfaceCharge {
             bytes: current.owned_bytes + charge.bytes() - std::mem::size_of::<ObjectPage>()
                 + charge.bytes(),
-            items: current.owned_items + page.objects().len() + page.objects().len() + 1,
+            items: current.owned_items
+                + page.retained_charge().allocated_items()
+                + page.retained_charge().allocated_items()
+                + 1,
         }
     });
     input.update(cx, |input, _| {
@@ -796,7 +799,7 @@ fn geometry_text_and_object_capacity_return_typed_custody_and_retry(cx: &mut gpu
         RangeSurfaceCharge {
             bytes: current.owned_bytes + charge.bytes() - std::mem::size_of::<ObjectPage>()
                 + charge.bytes(),
-            items: current.owned_items + charge.objects() + charge.objects() + 1,
+            items: current.owned_items + charge.allocated_items() + charge.allocated_items() + 1,
         }
     });
     object_input.update(cx, |input, _| {

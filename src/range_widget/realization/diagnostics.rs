@@ -64,7 +64,7 @@ impl RangeTextInput {
         let surface_objects = surface_object_pages
             .iter()
             .try_fold(0usize, |total, page| {
-                total.checked_add(page.objects().len())
+                total.checked_add(page.retained_charge().allocated_items())
             })
             .expect("validated object ownership fits usize");
         let resident_objects = surface_objects
@@ -72,7 +72,7 @@ impl RangeTextInput {
                 self.object_residency
                     .resident_pages()
                     .try_fold(0usize, |total, page| {
-                        total.checked_add(page.objects().len())
+                        total.checked_add(page.retained_charge().allocated_items())
                     })
                     .expect("validated object ownership fits usize"),
             )
@@ -116,7 +116,7 @@ impl RangeTextInput {
                     bytes: charge.bytes.checked_add(page.retained_charge().bytes())?,
                     items: charge
                         .items
-                        .checked_add(page.objects().len())?
+                        .checked_add(page.retained_charge().allocated_items())?
                         .checked_add(1)?,
                 })
             })
@@ -126,6 +126,13 @@ impl RangeTextInput {
             .as_ref()
             .map_or(RangeSurfaceCharge::default(), CoherentRangeSurface::charge);
         let geometry = self.geometry.counts();
+        let geometry_overlap = self
+            .geometry_presentation_overlap_bytes()
+            .expect("validated presentation ownership fits usize");
+        let owned_geometry_bytes = geometry
+            .total_bytes()
+            .checked_sub(geometry_overlap)
+            .expect("validated presentation ownership fits usize");
         let request_storage = RangeSurfaceCharge {
             bytes: self
                 .requests
@@ -134,9 +141,11 @@ impl RangeTextInput {
                 .expect("validated request storage fits usize"),
             items: self.requests.capacity(),
         };
-        let request_payload =
-            super::super::transition::queued_request_payload_charge(self.requests.iter())
-                .expect("admitted request payload fits usize");
+        let request_payload = super::super::transition::queued_request_payload_charge(
+            self.requests.iter(),
+            self.clipboard.current_provenance_page(),
+        )
+        .expect("admitted request payload fits usize");
         let deferred = self
             .deferred_geometry_response
             .as_ref()
@@ -144,6 +153,7 @@ impl RangeTextInput {
                 response.incremental_charge()
             });
         let response_custody = self.response_custody_storage_charge();
+        let clipboard = self.clipboard.ownership_charge();
         let aliases = Self::page_alias_storage_charge(&self.pending_page_aliases)
             .expect("admitted page alias storage fits usize");
         let pending_configuration = self.pending_layout_intent.as_ref().map_or(
@@ -201,12 +211,13 @@ impl RangeTextInput {
             non_surface_object_charge.bytes,
             pending_page_bytes,
             objects.pending_bytes,
-            geometry.total_bytes(),
+            owned_geometry_bytes,
             request_storage.bytes,
             request_payload.bytes,
             deferred.bytes,
             response_custody.bytes,
             self.active_response_processing.bytes,
+            clipboard.bytes(),
             aliases.bytes,
             pending_configuration.bytes,
             pending_rebind.bytes,
@@ -229,6 +240,7 @@ impl RangeTextInput {
             deferred.items,
             response_custody.items,
             self.active_response_processing.items,
+            clipboard.items(),
             aliases.items,
             pending_configuration.items,
             pending_rebind.items,
@@ -245,6 +257,8 @@ impl RangeTextInput {
             resident_object_bytes,
             pending_page_bytes,
             pending_object_bytes: objects.pending_bytes,
+            clipboard_bytes: clipboard.bytes(),
+            clipboard_items: clipboard.items(),
             geometry_bytes: geometry.total_bytes(),
             geometry_items: geometry.total_items(),
             request_storage_bytes: request_storage.bytes,
@@ -346,6 +360,14 @@ impl RangeTextInput {
             .realization_high_water
             .pending_object_bytes
             .max(current.pending_object_bytes);
+        self.realization_high_water.clipboard_bytes = self
+            .realization_high_water
+            .clipboard_bytes
+            .max(current.clipboard_bytes);
+        self.realization_high_water.clipboard_items = self
+            .realization_high_water
+            .clipboard_items
+            .max(current.clipboard_items);
         self.realization_high_water.geometry_bytes = self
             .realization_high_water
             .geometry_bytes

@@ -36,8 +36,12 @@ pub use object_residency::{
 pub use options::{TextInputMode, TextInputOptions};
 pub use range_clipboard::{
     ClipboardCancellation, ClipboardCompletion, ClipboardCounts, ClipboardError, ClipboardId,
-    ClipboardKey, ClipboardKind, ClipboardLimits, ClipboardProgress, ClipboardState,
-    ClipboardWriteOutcome, ClipboardWriteRequest, CutDeletion, RangeClipboardCoordinator,
+    ClipboardKey, ClipboardKind, ClipboardLimits, ClipboardOwnershipCharge, ClipboardPreparedBegin,
+    ClipboardPreparedCommit, ClipboardPreparedStep, ClipboardProgress, ClipboardProvenanceClosure,
+    ClipboardProvenanceCursor, ClipboardProvenanceIdentity, ClipboardProvenanceItem,
+    ClipboardProvenanceLimits, ClipboardProvenancePage, ClipboardProvenancePageKey,
+    ClipboardProvenancePolicy, ClipboardState, ClipboardWriteOutcome, ClipboardWriteRequest,
+    CutDeletion, RangeClipboardCoordinator,
 };
 pub use range_edit::{
     ActiveObjectEffect, AtomChange, MutationBeginRequest, MutationCancelRequest,

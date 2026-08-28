@@ -62,9 +62,13 @@ impl AtomFact {
     fn retained_bytes(&self) -> usize {
         self.fallback_copy.len()
     }
+
+    pub(crate) fn owned_payload_allocation_bytes(&self) -> usize {
+        self.fallback_copy.capacity()
+    }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct RangePage {
     id: PageId,
     key: PageRequestKey,
@@ -76,6 +80,29 @@ pub struct RangePage {
     end_of_source: bool,
     retained_bytes: usize,
     retained_charge: RangePageCharge,
+    response_identity: u64,
+}
+
+impl Clone for RangePage {
+    fn clone(&self) -> Self {
+        let text = self.text.clone();
+        let atoms = self.atoms.clone();
+        let retained_charge = Self::allocation_charge(&text, &atoms)
+            .expect("bounded cloned range page allocation fits usize");
+        Self {
+            id: self.id,
+            key: self.key,
+            range: self.range,
+            text,
+            atoms,
+            preceding: self.preceding,
+            following: self.following,
+            end_of_source: self.end_of_source,
+            retained_bytes: self.retained_bytes,
+            retained_charge,
+            response_identity: self.response_identity,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

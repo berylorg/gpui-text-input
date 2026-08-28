@@ -74,6 +74,30 @@ struct PreparedActiveTarget {
 }
 
 impl PreparedTargetResponse {
+    pub(crate) fn presentation_overlap_bytes<'a>(
+        &self,
+        pages: impl Iterator<Item = &'a crate::ObjectPage> + Clone,
+    ) -> Option<usize> {
+        match &self.state {
+            PreparedTargetResponseState::Active(active) => {
+                super::types::presentation_overlap_bytes(
+                    &active.object_presentations,
+                    pages.clone(),
+                )?
+                .checked_add(super::types::presentation_overlap_bytes(
+                    &active.delta.scanner.object_presentations,
+                    pages,
+                )?)
+            }
+            PreparedTargetResponseState::CompleteTarget(target) => {
+                target.presentation_overlap_bytes(pages)
+            }
+            PreparedTargetResponseState::CompleteIndex { target, .. } => {
+                target.terminal_target()?.presentation_overlap_bytes(pages)
+            }
+        }
+    }
+
     pub(crate) const fn key(&self) -> crate::GeometryJobKey {
         match &self.state {
             PreparedTargetResponseState::Active(active) => active.delta.key,
@@ -500,7 +524,7 @@ impl ExactGeometryOwner {
         let page_items = text_page
             .retained_charge()
             .items()
-            .checked_add(object_page.objects().len())
+            .checked_add(object_page.retained_charge().allocated_items())
             .and_then(|items| items.checked_add(1))
             .ok_or_else(|| {
                 self.prepared_validation_failure(ExactGeometryError::CapacityExceeded)

@@ -305,8 +305,11 @@ impl CoherentRangeSurface {
         let object_page_items = object_pages
             .clone()
             .try_fold(0usize, |total, page| {
-                total.checked_add(page.objects().len().checked_add(1)?)
+                total.checked_add(page.retained_charge().allocated_items().checked_add(1)?)
             })
+            .ok_or(crate::RangeTextInputError::SurfaceCapacity)?;
+        let presentation_overlap = target
+            .presentation_overlap_bytes(object_pages.clone())
             .ok_or(crate::RangeTextInputError::SurfaceCapacity)?;
         let fragment_bytes = target
             .charge()
@@ -317,6 +320,7 @@ impl CoherentRangeSurface {
                     .output_record_bytes()
                     .ok_or(crate::RangeTextInputError::SurfaceCapacity)?,
             )
+            .and_then(|bytes| bytes.checked_sub(presentation_overlap))
             .ok_or(crate::RangeTextInputError::SurfaceCapacity)?;
         let fragment_items = target
             .item_charge()
@@ -1170,7 +1174,7 @@ fn realize_composite_geometry<'a>(
             return Err(crate::RangeTextInputError::IncompleteSurface);
         }
         let presentation = record.presentation();
-        if presentation.display() != &fragment.presentation
+        if presentation.display() != fragment.presentation.as_ref()
             || presentation.width() != fragment.bounds.size.width
             || presentation.height() != fragment.bounds.size.height
             || presentation.baseline() != fragment.baseline()

@@ -14,14 +14,14 @@ use gpui::{
 };
 use gpui_scrollbar::ScrollbarStyle;
 use gpui_text_input::{
-    AtomFact, AtomId, BindingId, ByteOffset, ByteRange, ClipboardLimits, ClipboardWriteOutcome,
-    ExactGeometryLimits, ExactGeometryOwner, InlineObjectFact, InlineObjectGap, InlineObjectId,
-    InlineObjectNeighbor, InlineObjectOrder, InlineObjectPresentation,
-    InlineObjectSurfaceDismissal, LogicalExtent, MutationBeginRequest, MutationCursor, MutationKey,
-    MutationKind, MutationLimits, MutationPositions, MutationProposal, ObjectDemand,
-    ObjectDemandEnvelope, ObjectDirection, ObjectPage, ObjectPageEdgeFact, ObjectPageId,
-    ObjectPurpose, ObjectRequestId, ObjectResidency, ObjectResidencyLimits, PageDemand,
-    PageDemandEnvelope, PageDirection, PageEdgeFact, PageFailure, PageId, PagePurpose,
+    AtomFact, AtomId, BindingId, ByteOffset, ByteRange, ClipboardLimits, ClipboardProvenanceLimits,
+    ClipboardProvenancePolicy, ClipboardWriteOutcome, ExactGeometryLimits, ExactGeometryOwner,
+    InlineObjectFact, InlineObjectGap, InlineObjectId, InlineObjectNeighbor, InlineObjectOrder,
+    InlineObjectPresentation, InlineObjectSurfaceDismissal, LogicalExtent, MutationBeginRequest,
+    MutationCursor, MutationKey, MutationKind, MutationLimits, MutationPositions, MutationProposal,
+    ObjectDemand, ObjectDemandEnvelope, ObjectDirection, ObjectPage, ObjectPageEdgeFact,
+    ObjectPageId, ObjectPurpose, ObjectRequestId, ObjectResidency, ObjectResidencyLimits,
+    PageDemand, PageDemandEnvelope, PageDirection, PageEdgeFact, PageFailure, PageId, PagePurpose,
     PageRequestId, PlatformRangeResult, PresentationGeneration, RangeBinding, RangePage,
     RangeResidency, RangeRestorationScrollAnchor, RangeRestorationSeed, RangeSelection,
     RangeSourceSelection, RangeSurfaceHit, RangeTextInput, RangeTextInputConfig,
@@ -30,6 +30,65 @@ use gpui_text_input::{
     StreamingOversizePresentation, TextInputAtomClipboardPolicy, TextInputEnterKey,
     TextInputRichPastePolicy, TextInputTheme, ensure_text_input_bindings,
 };
+
+#[gpui::test]
+fn clipboard_begin_exact_peak_follows_the_ordinary_request_path(cx: &mut gpui::TestAppContext) {
+    let source = "a";
+    let start = ordinary_position(0);
+    let end = ordinary_position(1);
+    let selection = SourceRange::new(start, end).unwrap();
+    let predecessor = MutationPositions::new(end, start, end);
+    let clipboard_limits = ClipboardLimits::new_composite(64, 4, 1, 4096)
+        .unwrap()
+        .with_provenance(ClipboardProvenancePolicy::Stream(
+            ClipboardProvenanceLimits::new(2, 4096).unwrap(),
+        ));
+    let configured = |bytes, items| {
+        let mut configuration = config(source, 1);
+        configuration.clipboard_limits = clipboard_limits;
+        configuration.limits.max_surface_bytes = bytes;
+        configuration.limits.max_surface_items = items;
+        configuration
+    };
+
+    let (probe, cx) = cx.add_window_view(|window, cx| {
+        RangeTextInput::new(configured(16 * 1024 * 1024, 2 * 1024 * 1024), window, cx).unwrap()
+    });
+    assert!(drive_pages(&probe, cx, source).is_empty());
+
+    let begin = |input: &gpui::Entity<RangeTextInput>, cx: &mut gpui::VisualTestContext| {
+        let (text, objects) = admitted_sources(source, 1, &[start, end]);
+        input.update(cx, |input, cx| {
+            input.begin_composite_clipboard(
+                gpui_text_input::ClipboardKind::Copy,
+                selection,
+                predecessor,
+                &text,
+                &objects,
+                cx,
+            )
+        })
+    };
+
+    begin(&probe, cx).unwrap();
+    assert!(matches!(
+        probe.update(cx, |input, _| input.take_request()),
+        Some(RangeTextInputRequest::ObjectPage(_))
+    ));
+    let high_water = probe.read_with(cx, |input, _| input.realization_diagnostics().high_water);
+    let exact_bytes = high_water.owned_bytes;
+    let exact_items = high_water.owned_items;
+
+    let (exact, cx) = cx.add_window_view(|window, cx| {
+        RangeTextInput::new(configured(exact_bytes, exact_items), window, cx).unwrap()
+    });
+    assert!(drive_pages(&exact, cx, source).is_empty());
+    begin(&exact, cx).unwrap();
+    assert!(matches!(
+        exact.update(cx, |input, _| input.take_request()),
+        Some(RangeTextInputRequest::ObjectPage(_))
+    ));
+}
 
 fn binding(source: &str, revision: u64) -> RangeBinding {
     RangeBinding::new(
@@ -121,6 +180,31 @@ fn object_neighbor(id: u128, order: u128) -> InlineObjectNeighbor {
 
 fn object_fact(id: u128, anchor: u64, order: u128) -> InlineObjectFact {
     object_fact_with_activation(id, anchor, order, true)
+}
+
+fn object_fact_with_fallback(
+    id: u128,
+    anchor: u64,
+    order: u128,
+    fallback: String,
+) -> InlineObjectFact {
+    InlineObjectFact::new(
+        InlineObjectId::new(id),
+        ByteOffset::new(anchor),
+        InlineObjectOrder::new(order),
+        fallback,
+        InlineObjectPresentation::new(
+            id as u64,
+            SharedString::new_static(""),
+            px(10.),
+            px(10.),
+            px(0.),
+            None,
+            0,
+            true,
+        )
+        .unwrap(),
+    )
 }
 
 fn object_fact_with_activation(
@@ -849,6 +933,55 @@ fn page_for_with_local_atom(
     .unwrap()
 }
 
+fn page_for_split_atom(
+    source: &str,
+    id: u64,
+    request: gpui_text_input::PageRequest,
+    atom: AtomId,
+    global_range: ByteRange,
+    fallback: &str,
+) -> RangePage {
+    let key = request.key();
+    let PageDemandEnvelope::Adjacent {
+        anchor,
+        direction: PageDirection::Forward,
+        max_payload_bytes,
+    } = key.demand()
+    else {
+        return page_for(source, id, request);
+    };
+    let start = anchor.get() as usize;
+    let end = start
+        .saturating_add(4)
+        .min(start.saturating_add(max_payload_bytes as usize))
+        .min(source.len());
+    let range = ByteRange::from_u64(start as u64, end as u64).unwrap();
+    let atoms = global_range
+        .intersection(range)
+        .filter(|fragment| !fragment.is_empty())
+        .map(|fragment| vec![AtomFact::new(atom, global_range, fragment, fallback)])
+        .unwrap_or_default();
+    RangePage::new(
+        PageId::new(id),
+        key,
+        range,
+        source[start..end].to_owned(),
+        atoms,
+        if start == 0 {
+            PageEdgeFact::DocumentBoundary
+        } else {
+            PageEdgeFact::Continues
+        },
+        if end == source.len() {
+            PageEdgeFact::DocumentBoundary
+        } else {
+            PageEdgeFact::Continues
+        },
+        end == source.len(),
+    )
+    .unwrap()
+}
+
 fn malformed_geometry_text_page(
     id: u64,
     request: gpui_text_input::PageRequest,
@@ -945,6 +1078,180 @@ fn restoration_object_page(
         continuation,
     )
     .unwrap()
+}
+
+fn take_clipboard_provenance_page(
+    input: &gpui::Entity<RangeTextInput>,
+    cx: &mut gpui::VisualTestContext,
+    source: &str,
+    facts: &[InlineObjectFact],
+    page_id: &mut u64,
+) -> gpui_text_input::ClipboardProvenancePage {
+    try_take_clipboard_provenance_page(input, cx, source, facts, page_id).unwrap()
+}
+
+fn take_request_after_scheduled_frames(
+    input: &gpui::Entity<RangeTextInput>,
+    cx: &mut gpui::VisualTestContext,
+    boundary: &str,
+) -> RangeTextInputRequest {
+    for _ in 0..256 {
+        if let Some(request) = input.update(cx, |input, _| input.take_request()) {
+            return request;
+        }
+        cx.update(|window, app| window.draw(app).clear());
+        cx.run_until_parked();
+    }
+    panic!(
+        "{boundary} did not dispatch within the bounded frame drive: {:?}",
+        input.read_with(cx, |input, _| input.realization_diagnostics())
+    )
+}
+
+fn try_take_clipboard_provenance_page(
+    input: &gpui::Entity<RangeTextInput>,
+    cx: &mut gpui::VisualTestContext,
+    source: &str,
+    facts: &[InlineObjectFact],
+    page_id: &mut u64,
+) -> Result<gpui_text_input::ClipboardProvenancePage, gpui_text_input::RangeTextInputError> {
+    for _ in 0..256 {
+        let Some(request) = input.update(cx, |input, _| input.take_request()) else {
+            cx.update(|window, app| window.draw(app).clear());
+            cx.run_until_parked();
+            continue;
+        };
+        match request {
+            RangeTextInputRequest::Page(request)
+                if request.key().purpose() == PagePurpose::Clipboard =>
+            {
+                let page = page_for(source, *page_id, request);
+                *page_id += 1;
+                cx.update(|window, app| {
+                    input.update(app, |input, cx| input.deliver_page(page, window, cx))
+                })?;
+            }
+            RangeTextInputRequest::ObjectPage(request)
+                if request.key().purpose() == ObjectPurpose::Clipboard =>
+            {
+                let page = restoration_object_page(request, facts, *page_id);
+                *page_id += 1;
+                cx.update(|window, app| {
+                    input.update(app, |input, cx| {
+                        input.deliver_object_page_in_window(page, window, cx)
+                    })
+                })?;
+            }
+            RangeTextInputRequest::ClipboardProvenancePage(page) => return Ok(page),
+            RangeTextInputRequest::ReleasePage(_) | RangeTextInputRequest::ReleaseObjectPage(_) => {
+            }
+            other => panic!("unexpected clipboard request: {other:?}"),
+        }
+    }
+    let capacity_rejected = input.read_with(cx, |input, _| {
+        let diagnostics = input.realization_diagnostics();
+        let counts = input.clipboard_counts();
+        diagnostics.last_response_rejection
+            == Some(gpui_text_input::RangeResponseRejectionClass::ResidencyCapacity)
+            && counts.pending_object_pages != 0
+            && counts.retained_object_facts != 0
+    });
+    if capacity_rejected {
+        return Err(gpui_text_input::RangeTextInputError::SurfaceCapacity);
+    }
+    panic!(
+        "clipboard provenance drive exhausted: {:?}",
+        input.read_with(cx, |input, _| input.realization_diagnostics())
+    )
+}
+
+fn begin_clipboard_to_provenance(
+    input: &gpui::Entity<RangeTextInput>,
+    cx: &mut gpui::VisualTestContext,
+    source: &str,
+    facts: &[InlineObjectFact],
+    page_id: &mut u64,
+) -> Result<gpui_text_input::ClipboardProvenancePage, gpui_text_input::RangeTextInputError> {
+    let start = ordinary_position(0);
+    let end = ordinary_position(source.len() as u64);
+    let selection = SourceRange::new(start, end).unwrap();
+    let (text, objects) = admitted_sources(source, 1, &[start, end]);
+    input.update(cx, |input, cx| {
+        input.begin_composite_clipboard(
+            gpui_text_input::ClipboardKind::Copy,
+            selection,
+            MutationPositions::new(end, start, end),
+            &text,
+            &objects,
+            cx,
+        )
+    })?;
+    try_take_clipboard_provenance_page(input, cx, source, facts, page_id)
+}
+
+fn begin_split_atom_clipboard_to_provenance(
+    input: &gpui::Entity<RangeTextInput>,
+    cx: &mut gpui::VisualTestContext,
+    source: &str,
+    facts: &[InlineObjectFact],
+    atom: AtomId,
+    global_range: ByteRange,
+    fallback: &str,
+    page_id: &mut u64,
+) -> Result<gpui_text_input::ClipboardProvenancePage, gpui_text_input::RangeTextInputError> {
+    let start = ordinary_position(0);
+    let end = ordinary_position(source.len() as u64);
+    let selection = SourceRange::new(start, end).unwrap();
+    let (text, objects) = admitted_sources(source, 1, &[start, end]);
+    input.update(cx, |input, cx| {
+        input.begin_composite_clipboard(
+            gpui_text_input::ClipboardKind::Copy,
+            selection,
+            MutationPositions::new(end, start, end),
+            &text,
+            &objects,
+            cx,
+        )
+    })?;
+    loop {
+        let request = match input.update(cx, |input, _| input.take_request()) {
+            Some(request) => request,
+            None => {
+                cx.update(|window, app| window.draw(app).clear());
+                cx.run_until_parked();
+                input
+                    .update(cx, |input, _| input.take_request())
+                    .expect("split-atom clipboard progress after continuation")
+            }
+        };
+        match request {
+            RangeTextInputRequest::Page(request)
+                if request.key().purpose() == PagePurpose::Clipboard =>
+            {
+                let page =
+                    page_for_split_atom(source, *page_id, request, atom, global_range, fallback);
+                *page_id += 1;
+                cx.update(|window, app| {
+                    input.update(app, |input, cx| input.deliver_page(page, window, cx))
+                })?;
+            }
+            RangeTextInputRequest::ObjectPage(request)
+                if request.key().purpose() == ObjectPurpose::Clipboard =>
+            {
+                let page = restoration_object_page(request, facts, *page_id);
+                *page_id += 1;
+                cx.update(|window, app| {
+                    input.update(app, |input, cx| {
+                        input.deliver_object_page_in_window(page, window, cx)
+                    })
+                })?;
+            }
+            RangeTextInputRequest::ClipboardProvenancePage(page) => return Ok(page),
+            RangeTextInputRequest::ReleasePage(_) | RangeTextInputRequest::ReleaseObjectPage(_) => {
+            }
+            other => panic!("unexpected split-atom clipboard request: {other:?}"),
+        }
+    }
 }
 
 fn forward_object_page_with_limit(
@@ -1165,6 +1472,64 @@ fn drive_pages(
         cx.run_until_parked();
     }
     other
+}
+
+fn drive_pages_with_split_atom_to_publication(
+    input: &gpui::Entity<RangeTextInput>,
+    cx: &mut gpui::VisualTestContext,
+    source: &str,
+    atom: AtomId,
+    global_range: ByteRange,
+    fallback: &str,
+) {
+    for _ in 0..256 {
+        if input.read_with(cx, |input, _| input.surface().is_some()) {
+            return;
+        }
+        let request = input.update(cx, |input, _| input.take_request());
+        let had_request = request.is_some();
+        match request {
+            Some(RangeTextInputRequest::Page(request)) => {
+                let page = page_for_split_atom(
+                    source,
+                    request.key().id().get(),
+                    request,
+                    atom,
+                    global_range,
+                    fallback,
+                );
+                cx.update(|window, app| {
+                    input.update(app, |input, cx| {
+                        input.deliver_page(page, window, cx).unwrap()
+                    })
+                });
+            }
+            Some(RangeTextInputRequest::ObjectPage(request)) => {
+                let page = restoration_object_page(request, &[], request.key().id().get());
+                cx.update(|window, app| {
+                    input.update(app, |input, cx| {
+                        input
+                            .deliver_object_page_in_window(page, window, cx)
+                            .unwrap()
+                    })
+                });
+            }
+            Some(RangeTextInputRequest::ReleasePage(_))
+            | Some(RangeTextInputRequest::CancelPage(_))
+            | Some(RangeTextInputRequest::ReleaseObjectPage(_))
+            | Some(RangeTextInputRequest::CancelObjectPage(_)) => {}
+            Some(request) => panic!("unexpected split-atom surface request: {request:?}"),
+            None => {}
+        }
+        if !had_request {
+            cx.update(|window, app| window.draw(app).clear());
+            cx.run_until_parked();
+        }
+    }
+    panic!(
+        "split-atom publication drive exhausted: {:?}",
+        input.read_with(cx, |input, _| input.realization_diagnostics())
+    );
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -2820,6 +3185,995 @@ fn dispatched_clipboard_write_cancels_exactly_once_and_late_success_cannot_delet
             Err(gpui_text_input::RangeTextInputError::Stale)
         ));
         assert!(input.is_quiescent());
+    });
+}
+
+#[gpui::test]
+fn provenance_page_dispatch_acknowledgement_and_write_failure_release_exactly(
+    cx: &mut gpui::TestAppContext,
+) {
+    let source = "ab";
+    let mut configuration = config(source, 1);
+    configuration.clipboard_limits = ClipboardLimits::new_composite(32, 4, 2, 64 * 1024)
+        .unwrap()
+        .with_provenance(ClipboardProvenancePolicy::Stream(
+            ClipboardProvenanceLimits::new(1, 4096).unwrap(),
+        ));
+    let (input, cx) =
+        cx.add_window_view(|window, cx| RangeTextInput::new(configuration, window, cx).unwrap());
+    assert!(drive_pages(&input, cx, source).is_empty());
+
+    let start = ordinary_position(0);
+    let end = ordinary_position(2);
+    let selection = SourceRange::new(start, end).unwrap();
+    let (text, objects) = admitted_sources(source, 1, &[start, end]);
+    input.update(cx, |input, cx| {
+        input
+            .begin_composite_clipboard(
+                gpui_text_input::ClipboardKind::Copy,
+                selection,
+                MutationPositions::new(end, start, end),
+                &text,
+                &objects,
+                cx,
+            )
+            .unwrap();
+    });
+    let facts = [object_fact(301, 1, 1), object_fact(302, 1, 2)];
+    let mut page_id = 80_000;
+    let mut provenance_pages = Vec::new();
+    let mut write = None;
+    for _ in 0..256 {
+        let request = take_request_after_scheduled_frames(&input, cx, "clipboard progress request");
+        match request {
+            RangeTextInputRequest::Page(request)
+                if request.key().purpose() == PagePurpose::Clipboard =>
+            {
+                let page = page_for(source, page_id, request);
+                page_id += 1;
+                cx.update(|window, app| {
+                    input.update(app, |input, cx| {
+                        input.deliver_page(page, window, cx).unwrap()
+                    })
+                });
+            }
+            RangeTextInputRequest::ObjectPage(request)
+                if request.key().purpose() == ObjectPurpose::Clipboard =>
+            {
+                let page = restoration_object_page(request, &facts, page_id);
+                page_id += 1;
+                cx.update(|window, app| {
+                    input.update(app, |input, cx| {
+                        input
+                            .deliver_object_page_in_window(page, window, cx)
+                            .unwrap()
+                    })
+                });
+            }
+            RangeTextInputRequest::ClipboardProvenancePage(page) => {
+                provenance_pages.push(page.clone());
+                input.update(cx, |input, cx| {
+                    input
+                        .acknowledge_clipboard_provenance_page(page, cx)
+                        .unwrap()
+                });
+            }
+            RangeTextInputRequest::ClipboardWrite(request) => {
+                write = Some(request);
+                break;
+            }
+            RangeTextInputRequest::ReleasePage(_) | RangeTextInputRequest::ReleaseObjectPage(_) => {
+            }
+            other => panic!("unexpected clipboard request: {other:?}"),
+        }
+    }
+    let write = write.expect("clipboard write within bounded request drive");
+
+    assert_eq!(provenance_pages.len(), 2);
+    assert_eq!(write.text(), "a[301][302]b");
+    let closure = write.provenance().expect("provenance closure");
+    assert_eq!(closure.page_count(), 2);
+    assert_eq!(closure.item_count(), 2);
+    assert_eq!(closure.fallback_bytes(), 10);
+    assert_eq!(closure.output_bytes(), 12);
+    input.update(cx, |input, cx| {
+        assert_eq!(
+            input
+                .settle_clipboard_write(write.key(), ClipboardWriteOutcome::Failed, cx)
+                .unwrap(),
+            gpui_text_input::ClipboardCompletion::WriteFailed
+        );
+    });
+    let lifecycle = drive_pages(&input, cx, source);
+    assert!(lifecycle.iter().all(|request| matches!(
+        request,
+        RangeTextInputRequest::ReleasePage(_) | RangeTextInputRequest::ReleaseObjectPage(_)
+    )));
+    input.read_with(cx, |input, _| {
+        assert_eq!(input.clipboard_counts(), Default::default())
+    });
+}
+
+#[gpui::test]
+fn dispatched_provenance_page_rebinds_with_one_exact_cancel_and_rejects_late_ack(
+    cx: &mut gpui::TestAppContext,
+) {
+    let source = "ab";
+    let mut configuration = config(source, 1);
+    configuration.clipboard_limits = ClipboardLimits::new_composite(32, 4, 1, 64 * 1024)
+        .unwrap()
+        .with_provenance(ClipboardProvenancePolicy::Stream(
+            ClipboardProvenanceLimits::new(1, 4096).unwrap(),
+        ));
+    let (input, cx) =
+        cx.add_window_view(|window, cx| RangeTextInput::new(configuration, window, cx).unwrap());
+    assert!(drive_pages(&input, cx, source).is_empty());
+
+    let start = ordinary_position(0);
+    let end = ordinary_position(2);
+    let selection = SourceRange::new(start, end).unwrap();
+    let (text, objects) = admitted_sources(source, 1, &[start, end]);
+    input.update(cx, |input, cx| {
+        input
+            .begin_composite_clipboard(
+                gpui_text_input::ClipboardKind::Copy,
+                selection,
+                MutationPositions::new(end, start, end),
+                &text,
+                &objects,
+                cx,
+            )
+            .unwrap();
+    });
+    let facts = [object_fact(401, 1, 1)];
+    let mut page_id = 81_000;
+    let mut provenance = None;
+    for _ in 0..256 {
+        match take_request_after_scheduled_frames(&input, cx, "clipboard progress request") {
+            RangeTextInputRequest::Page(request)
+                if request.key().purpose() == PagePurpose::Clipboard =>
+            {
+                let page = page_for(source, page_id, request);
+                page_id += 1;
+                cx.update(|window, app| {
+                    input.update(app, |input, cx| {
+                        input.deliver_page(page, window, cx).unwrap()
+                    })
+                });
+            }
+            RangeTextInputRequest::ObjectPage(request)
+                if request.key().purpose() == ObjectPurpose::Clipboard =>
+            {
+                let page = restoration_object_page(request, &facts, page_id);
+                page_id += 1;
+                cx.update(|window, app| {
+                    input.update(app, |input, cx| {
+                        input
+                            .deliver_object_page_in_window(page, window, cx)
+                            .unwrap()
+                    })
+                });
+            }
+            RangeTextInputRequest::ClipboardProvenancePage(page) => {
+                provenance = Some(page);
+                break;
+            }
+            RangeTextInputRequest::ReleasePage(_) | RangeTextInputRequest::ReleaseObjectPage(_) => {
+            }
+            other => panic!("unexpected clipboard request: {other:?}"),
+        }
+    }
+    let provenance = provenance.expect("provenance page within bounded request drive");
+    let provenance_key = provenance.key();
+
+    cx.update(|window, app| {
+        input.update(app, |input, cx| {
+            input.rebind(binding(source, 2), None, window, cx).unwrap()
+        })
+    });
+    let requests = drive_pages(&input, cx, source);
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| matches!(
+                request,
+                RangeTextInputRequest::CancelClipboardProvenancePage(key) if *key == provenance_key
+            ))
+            .count(),
+        1
+    );
+    input.update(cx, |input, cx| {
+        assert!(matches!(
+            input.acknowledge_clipboard_provenance_page(provenance, cx),
+            Err(gpui_text_input::RangeTextInputError::Stale)
+        ));
+        assert_eq!(input.clipboard_counts(), Default::default());
+    });
+}
+
+#[gpui::test]
+fn stale_page_zero_cannot_clear_current_operation_dispatch(cx: &mut gpui::TestAppContext) {
+    let source = "ab";
+    let mut configuration = config(source, 1);
+    configuration.clipboard_limits = ClipboardLimits::new_composite(64, 4, 2, 64 * 1024)
+        .unwrap()
+        .with_provenance(ClipboardProvenancePolicy::Stream(
+            ClipboardProvenanceLimits::new(1, 4096).unwrap(),
+        ));
+    let (input, cx) =
+        cx.add_window_view(|window, cx| RangeTextInput::new(configuration, window, cx).unwrap());
+    assert!(drive_pages(&input, cx, source).is_empty());
+
+    let start = ordinary_position(0);
+    let end = ordinary_position(2);
+    let selection = SourceRange::new(start, end).unwrap();
+    let predecessor = MutationPositions::new(end, start, end);
+    let (text, objects) = admitted_sources(source, 1, &[start, end]);
+    let mut page_id = 82_000;
+
+    input.update(cx, |input, cx| {
+        input
+            .begin_composite_clipboard(
+                gpui_text_input::ClipboardKind::Copy,
+                selection,
+                predecessor,
+                &text,
+                &objects,
+                cx,
+            )
+            .unwrap();
+    });
+    let old_page =
+        take_clipboard_provenance_page(&input, cx, source, &[object_fact(501, 1, 1)], &mut page_id);
+    input.update(cx, |input, cx| {
+        input
+            .acknowledge_clipboard_provenance_page(old_page.clone(), cx)
+            .unwrap()
+    });
+    let mut old_write = None;
+    for _ in 0..256 {
+        match take_request_after_scheduled_frames(&input, cx, "first clipboard write") {
+            RangeTextInputRequest::ClipboardWrite(write) => {
+                old_write = Some(write);
+                break;
+            }
+            RangeTextInputRequest::Page(request)
+                if request.key().purpose() == PagePurpose::Clipboard =>
+            {
+                let page = page_for(source, page_id, request);
+                page_id += 1;
+                cx.update(|window, app| {
+                    input.update(app, |input, cx| {
+                        input.deliver_page(page, window, cx).unwrap()
+                    })
+                });
+            }
+            RangeTextInputRequest::ObjectPage(request)
+                if request.key().purpose() == ObjectPurpose::Clipboard =>
+            {
+                let page = restoration_object_page(request, &[object_fact(501, 1, 1)], page_id);
+                page_id += 1;
+                cx.update(|window, app| {
+                    input.update(app, |input, cx| {
+                        input
+                            .deliver_object_page_in_window(page, window, cx)
+                            .unwrap()
+                    })
+                });
+            }
+            RangeTextInputRequest::ReleasePage(_) | RangeTextInputRequest::ReleaseObjectPage(_) => {
+            }
+            other => panic!("unexpected first clipboard request: {other:?}"),
+        }
+    }
+    let old_write = old_write.expect("first clipboard write within bounded request drive");
+    input.update(cx, |input, cx| {
+        input
+            .settle_clipboard_write(old_write.key(), ClipboardWriteOutcome::Failed, cx)
+            .unwrap();
+    });
+
+    input.update(cx, |input, cx| {
+        input
+            .begin_composite_clipboard(
+                gpui_text_input::ClipboardKind::Copy,
+                selection,
+                predecessor,
+                &text,
+                &objects,
+                cx,
+            )
+            .unwrap();
+    });
+    let current_page = take_clipboard_provenance_page(
+        &input,
+        cx,
+        source,
+        &[object_fact(601, 1, 1), object_fact(602, 1, 2)],
+        &mut page_id,
+    );
+    assert_eq!(old_page.key().page_ordinal(), 0);
+    assert_eq!(current_page.key().page_ordinal(), 0);
+    assert_ne!(old_page.key().clipboard(), current_page.key().clipboard());
+    input.update(cx, |input, cx| {
+        assert!(matches!(
+            input.acknowledge_clipboard_provenance_page(old_page, cx),
+            Err(gpui_text_input::RangeTextInputError::Stale)
+        ));
+        input
+            .acknowledge_clipboard_provenance_page(current_page, cx)
+            .unwrap();
+    });
+    let next_page = take_clipboard_provenance_page(
+        &input,
+        cx,
+        source,
+        &[object_fact(601, 1, 1), object_fact(602, 1, 2)],
+        &mut page_id,
+    );
+    let next_key = next_page.key();
+
+    cx.update(|window, app| {
+        input.update(app, |input, cx| {
+            input.rebind(binding(source, 2), None, window, cx).unwrap()
+        })
+    });
+    let requests = drive_pages(&input, cx, source);
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| matches!(
+                request,
+                RangeTextInputRequest::CancelClipboardProvenancePage(key) if *key == next_key
+            ))
+            .count(),
+        1
+    );
+    input.update(cx, |input, cx| {
+        assert!(matches!(
+            input.acknowledge_clipboard_provenance_page(next_page, cx),
+            Err(gpui_text_input::RangeTextInputError::Stale)
+        ));
+        assert_eq!(input.clipboard_counts(), Default::default());
+    });
+}
+
+#[gpui::test]
+fn clipboard_ownership_is_exact_across_objects_shared_page_write_and_release(
+    cx: &mut gpui::TestAppContext,
+) {
+    let source = "ab";
+    let facts = [
+        object_fact_with_fallback(701, 1, 1, String::new()),
+        object_fact_with_fallback(702, 1, 2, "x".repeat(512 * 1024)),
+    ];
+    let configured = |max_surface_bytes| {
+        let mut configuration = config(source, 1);
+        configuration.limits.max_surface_bytes = max_surface_bytes;
+        configuration.limits.max_surface_items = 2 * 1024 * 1024;
+        configuration.clipboard_limits =
+            ClipboardLimits::new_composite(1024 * 1024, 4, 2, 1024 * 1024)
+                .unwrap()
+                .with_provenance(ClipboardProvenancePolicy::Stream(
+                    ClipboardProvenanceLimits::new(2, 4096).unwrap(),
+                ));
+        configuration.object_residency_limits =
+            ObjectResidencyLimits::new(8, 64, 1024 * 1024, 1024 * 1024, 8, 64, 1024 * 1024)
+                .unwrap();
+        configuration
+    };
+
+    let (probe, cx) = cx.add_window_view(|window, cx| {
+        RangeTextInput::new(configured(4 * 1024 * 1024), window, cx).unwrap()
+    });
+    assert!(drive_pages(&probe, cx, source).is_empty());
+    let before_peak = probe.read_with(cx, |input, _| {
+        input.realization_diagnostics().high_water.owned_bytes
+    });
+    let mut page_id = 83_000;
+    let page = begin_clipboard_to_provenance(&probe, cx, source, &facts, &mut page_id).unwrap();
+    assert_eq!(page.items().len(), 2);
+    assert_eq!(
+        page.items()[0].output_range().start(),
+        page.items()[0].output_range().end()
+    );
+    probe.read_with(cx, |input, _| {
+        let counts = input.clipboard_counts();
+        let diagnostics = input.realization_diagnostics();
+        assert_eq!(counts.retained_object_facts, 0);
+        assert_eq!(counts.retained_provenance_items, 2);
+        assert_eq!(diagnostics.current.clipboard_bytes, counts.owned_bytes);
+        assert_eq!(diagnostics.current.clipboard_items, counts.owned_items);
+        assert_eq!(diagnostics.current.request_payload_bytes, 0);
+        assert_eq!(diagnostics.high_water.request_payload_bytes, 0);
+        assert!(diagnostics.high_water.owned_bytes > before_peak);
+    });
+    probe.update(cx, |input, cx| {
+        input
+            .acknowledge_clipboard_provenance_page(page, cx)
+            .unwrap()
+    });
+    while probe.read_with(cx, |input, _| input.clipboard_counts().staged_bytes) != 0 {
+        let Some(request) = probe.update(cx, |input, _| input.take_request()) else {
+            cx.update(|window, app| window.draw(app).clear());
+            cx.run_until_parked();
+            continue;
+        };
+        match request {
+            RangeTextInputRequest::Page(request)
+                if request.key().purpose() == PagePurpose::Clipboard =>
+            {
+                let page = page_for(source, page_id, request);
+                page_id += 1;
+                cx.update(|window, app| {
+                    probe.update(app, |input, cx| {
+                        input.deliver_page(page, window, cx).unwrap()
+                    })
+                });
+            }
+            RangeTextInputRequest::ReleasePage(_) | RangeTextInputRequest::ReleaseObjectPage(_) => {
+            }
+            other => panic!("unexpected remaining clipboard request: {other:?}"),
+        }
+    }
+    let transfer = probe.read_with(cx, |input, _| {
+        let counts = input.clipboard_counts();
+        let diagnostics = input.realization_diagnostics();
+        assert_eq!(counts.staged_bytes, 0);
+        assert_eq!(counts.retained_object_facts, 0);
+        assert_eq!(counts.retained_provenance_items, 0);
+        assert_eq!(diagnostics.current.clipboard_bytes, counts.owned_bytes);
+        assert!(counts.owned_bytes > 0);
+        assert!(diagnostics.current.request_payload_bytes >= 512 * 1024 + 2);
+        counts.owned_bytes
+    });
+    let write = loop {
+        let Some(request) = probe.update(cx, |input, _| input.take_request()) else {
+            cx.update(|window, app| window.draw(app).clear());
+            cx.run_until_parked();
+            continue;
+        };
+        match request {
+            RangeTextInputRequest::ClipboardWrite(write) => break write,
+            RangeTextInputRequest::ReleasePage(_) | RangeTextInputRequest::ReleaseObjectPage(_) => {
+            }
+            other => panic!("unexpected final clipboard request: {other:?}"),
+        }
+    };
+    probe.read_with(cx, |input, _| {
+        let diagnostics = input.realization_diagnostics();
+        assert_eq!(diagnostics.current.clipboard_bytes, transfer);
+        assert_eq!(diagnostics.current.request_payload_bytes, 0);
+    });
+    probe.update(cx, |input, cx| {
+        input
+            .settle_clipboard_write(write.key(), ClipboardWriteOutcome::Failed, cx)
+            .unwrap();
+        assert_eq!(input.clipboard_counts(), Default::default());
+        assert_eq!(input.realization_diagnostics().current.clipboard_bytes, 0);
+    });
+    let exact_peak = probe.read_with(cx, |input, _| {
+        input.realization_diagnostics().high_water.owned_bytes
+    });
+
+    let (exact, cx) = cx.add_window_view(|window, cx| {
+        RangeTextInput::new(configured(exact_peak), window, cx).unwrap()
+    });
+    assert!(drive_pages(&exact, cx, source).is_empty());
+    let mut exact_page_id = 84_000;
+    let exact_page =
+        begin_clipboard_to_provenance(&exact, cx, source, &facts, &mut exact_page_id).unwrap();
+    assert_eq!(
+        exact.read_with(cx, |input, _| {
+            input.realization_diagnostics().high_water.owned_bytes
+        }),
+        exact_peak
+    );
+    let exact_key = exact_page.key().clipboard();
+    cx.update(|window, app| {
+        exact.update(app, |input, cx| {
+            input.rebind(binding(source, 2), None, window, cx).unwrap()
+        })
+    });
+    let cancelled = drive_pages(&exact, cx, source);
+    assert!(cancelled.iter().any(|request| matches!(
+        request,
+        RangeTextInputRequest::CancelClipboardProvenancePage(key)
+            if key.clipboard() == exact_key
+    )));
+    exact.read_with(cx, |input, _| {
+        assert_eq!(input.clipboard_counts(), Default::default());
+        assert_eq!(input.realization_diagnostics().current.clipboard_bytes, 0);
+    });
+
+    let (one_under, cx) = cx.add_window_view(|window, cx| {
+        RangeTextInput::new(configured(exact_peak - 1), window, cx).unwrap()
+    });
+    assert!(drive_pages(&one_under, cx, source).is_empty());
+    let mut rejected_page_id = 85_000;
+    let rejected =
+        begin_clipboard_to_provenance(&one_under, cx, source, &facts, &mut rejected_page_id);
+    assert!(
+        matches!(
+            rejected,
+            Err(gpui_text_input::RangeTextInputError::SurfaceCapacity)
+        ),
+        "unexpected one-under result: {rejected:?}"
+    );
+    one_under.read_with(cx, |input, _| {
+        let counts = input.clipboard_counts();
+        assert_eq!(counts.pending_object_pages, 1);
+        assert_eq!(counts.retained_object_facts, 2);
+        assert!(counts.owned_bytes > 0);
+    });
+    let before_retry = one_under.read_with(cx, |input, _| input.clipboard_counts());
+    let retry = cx.update(|window, app| {
+        one_under.update(app, |input, cx| {
+            input.rebind(binding(source, 2), None, window, cx)
+        })
+    });
+    assert!(matches!(
+        retry,
+        Err(gpui_text_input::RangeTextInputError::SurfaceCapacity)
+    ));
+    one_under.read_with(cx, |input, _| {
+        assert_eq!(input.clipboard_counts(), before_retry);
+        assert!(input.realization_diagnostics().current.clipboard_bytes > 0);
+    });
+}
+
+#[gpui::test]
+fn shared_large_object_presentation_is_charged_once_through_publication(
+    cx: &mut gpui::TestAppContext,
+) {
+    let source = "ab";
+    let display_len = 8 * 1024;
+    let mut display = String::with_capacity(64 * 1024);
+    display.push_str(&"p".repeat(display_len));
+    assert!(display.capacity() > display.len());
+    let facts = [InlineObjectFact::new(
+        InlineObjectId::new(92_911),
+        ByteOffset::new(1),
+        InlineObjectOrder::new(1),
+        "[large]",
+        InlineObjectPresentation::new(92_911, display, px(120.), px(100.), px(80.), None, 0, true)
+            .unwrap(),
+    )];
+    let configured = |max_surface_bytes| {
+        let mut configuration = config(source, 1);
+        configuration.layout.limits.segment_bytes = 16 * 1024;
+        configuration.layout.limits.runs = 16;
+        configuration.layout.limits.decorations = 16;
+        configuration.layout.limits.glyphs = 16 * 1024;
+        configuration.layout.limits.wraps = 256;
+        configuration.layout.limits.maps = 513;
+        configuration.layout.limits.fragments = 8;
+        configuration.layout.limits.retained_items = 16 * 1024;
+        configuration.layout.limits.retained_bytes = 512 * 1024;
+        configuration.geometry_limits =
+            ExactGeometryLimits::new(16 * 1024, 16, 2 * 1024 * 1024, 64 * 1024).unwrap();
+        configuration.residency_limits = ResidencyLimits::new(8, 512 * 1024, 8, 32 * 1024).unwrap();
+        configuration.object_residency_limits =
+            ObjectResidencyLimits::new(8, 64, 512 * 1024, 256 * 1024, 8, 64, 512 * 1024).unwrap();
+        configuration.limits =
+            RangeTextInputLimits::new(max_surface_bytes, 64 * 1024, 8, px(256.), 32, 32, px(16.))
+                .unwrap();
+        configuration
+    };
+    let drive = |input: &gpui::Entity<RangeTextInput>,
+                 cx: &mut gpui::VisualTestContext,
+                 facts: &[InlineObjectFact]| {
+        let mut observed_quiescent = false;
+        for _ in 0..512 {
+            if !facts.is_empty()
+                && input.read_with(cx, |input, _| {
+                    input
+                        .surface()
+                        .is_some_and(|surface| !surface.realized_objects().is_empty())
+                })
+            {
+                return Ok(());
+            }
+            if input.read_with(cx, |input, _| {
+                input
+                    .realization_diagnostics()
+                    .last_response_rejection
+                    .is_some()
+            }) {
+                return Err(gpui_text_input::RangeTextInputError::SurfaceCapacity);
+            }
+            let request = input.update(cx, |input, _| input.take_request());
+            let had_request = request.is_some();
+            match request {
+                Some(RangeTextInputRequest::Page(request)) => {
+                    observed_quiescent = false;
+                    let page = page_for(source, request.key().id().get(), request);
+                    cx.update(|window, app| {
+                        input.update(app, |input, cx| input.deliver_page(page, window, cx))
+                    })?;
+                }
+                Some(RangeTextInputRequest::ObjectPage(request)) => {
+                    observed_quiescent = false;
+                    let page = restoration_object_page(request, facts, request.key().id().get());
+                    cx.update(|window, app| {
+                        input.update(app, |input, cx| {
+                            input.deliver_object_page_in_window(page, window, cx)
+                        })
+                    })?;
+                }
+                Some(RangeTextInputRequest::ReleasePage(_))
+                | Some(RangeTextInputRequest::CancelPage(_))
+                | Some(RangeTextInputRequest::ReleaseObjectPage(_))
+                | Some(RangeTextInputRequest::CancelObjectPage(_)) => {
+                    observed_quiescent = false;
+                }
+                None => {
+                    let quiescent = input.read_with(cx, |input, _| input.is_quiescent());
+                    if quiescent && observed_quiescent {
+                        return Ok(());
+                    }
+                    observed_quiescent = quiescent;
+                }
+                Some(request) => panic!("unexpected large-display request: {request:?}"),
+            }
+            if !had_request {
+                cx.update(|window, app| window.draw(app).clear());
+                cx.run_until_parked();
+            }
+        }
+        panic!(
+            "large-display drive exhausted: {:?}",
+            input.read_with(cx, |input, _| input.realization_diagnostics())
+        )
+    };
+
+    let (probe, cx) = cx.add_window_view(|window, cx| {
+        RangeTextInput::new(configured(16 * 1024 * 1024), window, cx).unwrap()
+    });
+    drive(&probe, cx, &facts).unwrap_or_else(|error| {
+        panic!(
+            "large-display probe failed with {error:?}: {:?}",
+            probe.read_with(cx, |input, _| input.realization_diagnostics())
+        )
+    });
+    let exact_bytes = probe.read_with(cx, |input, _| {
+        let diagnostics = input.realization_diagnostics();
+        assert_eq!(
+            input.surface().unwrap().object_pages()[0].objects()[0]
+                .presentation()
+                .display()
+                .len(),
+            display_len
+        );
+        assert!(diagnostics.current.resident_object_bytes >= display_len);
+        diagnostics.high_water.owned_bytes
+    });
+
+    let (exact, cx) = cx.add_window_view(|window, cx| {
+        RangeTextInput::new(configured(exact_bytes), window, cx).unwrap()
+    });
+    drive(&exact, cx, &facts).unwrap();
+    exact.read_with(cx, |input, _| {
+        assert_eq!(
+            input.realization_diagnostics().high_water.owned_bytes,
+            exact_bytes
+        );
+        assert_eq!(
+            input.surface().unwrap().object_pages()[0].objects()[0]
+                .presentation()
+                .display()
+                .len(),
+            display_len
+        );
+    });
+    cx.update(|window, app| {
+        exact.update(app, |input, cx| {
+            let _ = input.dispose(window, cx);
+        })
+    });
+    exact.read_with(cx, |input, _| {
+        assert_eq!(
+            input
+                .realization_diagnostics()
+                .current
+                .resident_object_bytes,
+            0
+        );
+        assert!(input.surface().is_none());
+    });
+
+    let (one_under, cx) = cx.add_window_view(|window, cx| {
+        RangeTextInput::new(configured(exact_bytes - 1), window, cx).unwrap()
+    });
+    assert!(matches!(
+        drive(&one_under, cx, &facts),
+        Err(gpui_text_input::RangeTextInputError::SurfaceCapacity)
+    ));
+    one_under.read_with(cx, |input, _| {
+        let diagnostics = input.realization_diagnostics();
+        assert_eq!(diagnostics.current.response_custody_count, 1);
+        assert!(diagnostics.surface_high_water.bytes < exact_bytes);
+        assert!(
+            input
+                .surface()
+                .is_none_or(|surface| surface.realized_objects().is_empty())
+        );
+    });
+}
+
+#[gpui::test]
+fn clipboard_sparse_response_capacity_is_admitted_before_transfer_allocation(
+    cx: &mut gpui::TestAppContext,
+) {
+    let source = "ab";
+    let configured = |max_surface_bytes, max_surface_items| {
+        let mut configuration = config(source, 1);
+        configuration.limits.max_surface_bytes = max_surface_bytes;
+        configuration.limits.max_surface_items = max_surface_items;
+        configuration.clipboard_limits = ClipboardLimits::new_composite(1024, 4, 32, 1024 * 1024)
+            .unwrap()
+            .with_provenance(ClipboardProvenancePolicy::Stream(
+                ClipboardProvenanceLimits::new(1, 4096).unwrap(),
+            ));
+        configuration
+    };
+    let stage_request = |input: &gpui::Entity<RangeTextInput>, cx: &mut gpui::VisualTestContext| {
+        let start = ordinary_position(0);
+        let end = ordinary_position(2);
+        let (text, objects) = admitted_sources(source, 1, &[start, end]);
+        input
+            .update(cx, |input, cx| {
+                input.begin_composite_clipboard(
+                    gpui_text_input::ClipboardKind::Copy,
+                    SourceRange::new(start, end).unwrap(),
+                    MutationPositions::new(end, start, end),
+                    &text,
+                    &objects,
+                    cx,
+                )
+            })
+            .unwrap();
+        loop {
+            match input.update(cx, |input, _| input.take_request()).unwrap() {
+                RangeTextInputRequest::ObjectPage(request)
+                    if request.key().purpose() == ObjectPurpose::Clipboard =>
+                {
+                    break request;
+                }
+                RangeTextInputRequest::ReleasePage(_)
+                | RangeTextInputRequest::ReleaseObjectPage(_) => {}
+                other => panic!("unexpected sparse clipboard request: {other:?}"),
+            }
+        }
+    };
+    let response = |request: gpui_text_input::ObjectRequest, id| {
+        let mut fallback = String::with_capacity(128 * 1024);
+        fallback.push('x');
+        let mut display = String::with_capacity(64 * 1024);
+        display.push('p');
+        let presentation =
+            InlineObjectPresentation::new(id, display, px(8.0), px(8.0), px(6.0), None, 0, true)
+                .unwrap();
+        let mut objects = Vec::with_capacity(512);
+        objects.push(InlineObjectFact::new(
+            InlineObjectId::new(id.into()),
+            ByteOffset::new(1),
+            InlineObjectOrder::new(1),
+            fallback,
+            presentation,
+        ));
+        ObjectPage::new(
+            ObjectPageId::new(id),
+            request.key(),
+            objects,
+            ObjectPageEdgeFact::EnvelopeBoundary,
+            ObjectPageEdgeFact::EnvelopeBoundary,
+            true,
+            None,
+        )
+        .unwrap()
+    };
+
+    let (probe, cx) = cx.add_window_view(|window, cx| {
+        RangeTextInput::new(configured(2 * 1024 * 1024, 2 * 1024 * 1024), window, cx).unwrap()
+    });
+    assert!(drive_pages(&probe, cx, source).is_empty());
+    let request = stage_request(&probe, cx);
+    let page = response(request, 93_001);
+    cx.update(|window, app| {
+        probe.update(app, |input, cx| {
+            input
+                .deliver_object_page_in_window(page, window, cx)
+                .unwrap()
+        })
+    });
+    let (exact_bytes, exact_items) = probe.read_with(cx, |input, _| {
+        let admission = input.realization_diagnostics().surface_high_water;
+        (admission.bytes, admission.items)
+    });
+
+    let (one_under, cx) = cx.add_window_view(|window, cx| {
+        RangeTextInput::new(configured(exact_bytes - 1, 2 * 1024 * 1024), window, cx).unwrap()
+    });
+    assert!(drive_pages(&one_under, cx, source).is_empty());
+    let request = stage_request(&one_under, cx);
+    let page = response(request, 93_001);
+    let rejected = cx
+        .update(|window, app| {
+            one_under.update(app, |input, cx| {
+                input.deliver_object_page_in_window(page, window, cx)
+            })
+        })
+        .unwrap_err();
+    let gpui_text_input::RangeTextInputError::ObjectResponseCapacity(page) = rejected else {
+        panic!("unexpected sparse one-under response: {rejected:?}");
+    };
+    assert_eq!(page.objects().len(), 1);
+    assert_eq!(page.objects()[0].fallback_copy(), "x");
+    one_under.read_with(cx, |input, _| {
+        assert_eq!(input.clipboard_counts().retained_object_facts, 0);
+        assert!(input.realization_diagnostics().surface_high_water.bytes < exact_bytes);
+    });
+
+    let (item_under, cx) = cx.add_window_view(|window, cx| {
+        RangeTextInput::new(configured(2 * 1024 * 1024, exact_items - 1), window, cx).unwrap()
+    });
+    assert!(drive_pages(&item_under, cx, source).is_empty());
+    let request = stage_request(&item_under, cx);
+    let page = response(request, 93_001);
+    let rejected = cx
+        .update(|window, app| {
+            item_under.update(app, |input, cx| {
+                input.deliver_object_page_in_window(page, window, cx)
+            })
+        })
+        .unwrap_err();
+    assert!(matches!(
+        rejected,
+        gpui_text_input::RangeTextInputError::ObjectResponseCapacity(_)
+    ));
+    item_under.read_with(cx, |input, _| {
+        assert_eq!(input.clipboard_counts().retained_object_facts, 0);
+        assert!(input.realization_diagnostics().surface_high_water.items < exact_items);
+    });
+}
+
+#[gpui::test]
+fn clipboard_prepare_exact_fit_and_one_under_cross_split_atom_before_empty_object_provenance(
+    cx: &mut gpui::TestAppContext,
+) {
+    let source = "abcdefghij";
+    let atom = AtomId::new(711);
+    let atom_range = ByteRange::from_u64(0, 8).unwrap();
+    let facts = [object_fact_with_fallback(712, 9, 1, String::new())];
+    let configured = |max_surface_bytes| {
+        let mut configuration = config(source, 1);
+        configuration.limits.max_surface_bytes = max_surface_bytes;
+        configuration.limits.max_surface_items = 2 * 1024 * 1024;
+        configuration.clipboard_limits = ClipboardLimits::new_composite(64, 8, 4, 64 * 1024)
+            .unwrap()
+            .with_provenance(ClipboardProvenancePolicy::Stream(
+                ClipboardProvenanceLimits::new(32 * 1024, 4 * 1024 * 1024).unwrap(),
+            ));
+        configuration
+    };
+
+    let (probe, cx) = cx.add_window_view(|window, cx| {
+        RangeTextInput::new(configured(16 * 1024 * 1024), window, cx).unwrap()
+    });
+    drive_pages_with_split_atom_to_publication(&probe, cx, source, atom, atom_range, "");
+    let baseline = probe.read_with(cx, |input, _| {
+        input.realization_diagnostics().high_water.owned_bytes
+    });
+    let mut page_id = 86_000;
+    let page = begin_split_atom_clipboard_to_provenance(
+        &probe,
+        cx,
+        source,
+        &facts,
+        atom,
+        atom_range,
+        "",
+        &mut page_id,
+    )
+    .unwrap();
+    assert_eq!(page.items().len(), 1);
+    assert_eq!(page.items()[0].object_id(), facts[0].id());
+    assert_eq!(page.items()[0].output_range().start(), ByteOffset::new(1));
+    assert_eq!(page.items()[0].output_range().end(), ByteOffset::new(1));
+    let exact_peak = probe.read_with(cx, |input, _| {
+        input.realization_diagnostics().high_water.owned_bytes
+    });
+    assert!(exact_peak > baseline);
+    let probe_key = page.key().clipboard();
+    cx.update(|window, app| {
+        probe.update(app, |input, cx| {
+            input.rebind(binding(source, 2), None, window, cx).unwrap()
+        })
+    });
+    let _ = probe_key;
+
+    let (exact, cx) = cx.add_window_view(|window, cx| {
+        RangeTextInput::new(configured(exact_peak), window, cx).unwrap()
+    });
+    drive_pages_with_split_atom_to_publication(&exact, cx, source, atom, atom_range, "");
+    let mut exact_page_id = 87_000;
+    let exact_page = begin_split_atom_clipboard_to_provenance(
+        &exact,
+        cx,
+        source,
+        &facts,
+        atom,
+        atom_range,
+        "",
+        &mut exact_page_id,
+    )
+    .unwrap();
+    assert_eq!(exact_page.items().len(), 1);
+    assert_eq!(
+        exact.read_with(cx, |input, _| {
+            input.realization_diagnostics().high_water.owned_bytes
+        }),
+        exact_peak
+    );
+    exact.update(cx, |input, cx| {
+        input
+            .acknowledge_clipboard_provenance_page(exact_page, cx)
+            .unwrap()
+    });
+    cx.update(|window, app| {
+        exact.update(app, |input, cx| {
+            input.rebind(binding(source, 2), None, window, cx).unwrap()
+        })
+    });
+
+    let (one_under, cx) = cx.add_window_view(|window, cx| {
+        RangeTextInput::new(configured(exact_peak - 1), window, cx).unwrap()
+    });
+    drive_pages_with_split_atom_to_publication(&one_under, cx, source, atom, atom_range, "");
+    let mut rejected_page_id = 88_000;
+    let rejected = begin_split_atom_clipboard_to_provenance(
+        &one_under,
+        cx,
+        source,
+        &facts,
+        atom,
+        atom_range,
+        "",
+        &mut rejected_page_id,
+    );
+    assert!(
+        matches!(
+            rejected,
+            Err(gpui_text_input::RangeTextInputError::SurfaceCapacity)
+        ),
+        "unexpected one-under result: {rejected:?}"
+    );
+    one_under.read_with(cx, |input, _| {
+        let counts = input.clipboard_counts();
+        assert_eq!(counts.pending_object_pages, 0);
+        assert_eq!(counts.retained_object_facts, 0);
+        assert_eq!(counts.retained_provenance_items, 0);
+        assert!(counts.retained_provenance_bytes > 1024 * 1024);
+        assert_eq!(counts.staged_bytes, 64);
+        assert!(
+            input.realization_diagnostics().high_water.owned_bytes < exact_peak,
+            "one-under destination allocation crossed the admitted cap"
+        );
+    });
+    let before_retry = one_under.read_with(cx, |input, _| input.clipboard_counts());
+    let retry = cx.update(|window, app| {
+        one_under.update(app, |input, cx| {
+            input.rebind(binding(source, 2), None, window, cx)
+        })
+    });
+    assert!(matches!(
+        retry,
+        Err(gpui_text_input::RangeTextInputError::SurfaceCapacity)
+    ));
+    one_under.read_with(cx, |input, _| {
+        assert_eq!(input.clipboard_counts(), before_retry);
+        assert!(input.realization_diagnostics().current.clipboard_bytes > 0);
     });
 }
 

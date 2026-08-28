@@ -196,7 +196,7 @@ impl RangeTextInput {
                     .retained_items()
                     .checked_sub(
                         charge
-                            .objects()
+                            .allocated_items()
                             .checked_add(1)
                             .ok_or(RangeTextInputError::SurfaceCapacity)?,
                     )
@@ -228,7 +228,7 @@ impl RangeTextInput {
                 .items
                 .checked_add(
                     charge
-                        .objects()
+                        .allocated_items()
                         .checked_add(1)
                         .ok_or(RangeTextInputError::SurfaceCapacity)?,
                 )
@@ -262,15 +262,37 @@ impl RangeTextInput {
             .checked_mul(size_of::<RangeTextInputRequest>())
             .ok_or(RangeTextInputError::SurfaceCapacity)?;
         let current_realization_state = self.current_auxiliary_realization_charge()?;
-        let current_request_payload =
-            super::super::transition::queued_request_payload_charge(self.requests.iter())?;
+        let current_request_payload = super::super::transition::queued_request_payload_charge(
+            self.requests.iter(),
+            self.clipboard.current_provenance_page(),
+        )?;
         let destination_request_bytes = destination_requests
             .capacity()
             .checked_mul(size_of::<RangeTextInputRequest>())
             .ok_or(RangeTextInputError::SurfaceCapacity)?;
+        let surface_object_pages = self
+            .surface
+            .as_ref()
+            .into_iter()
+            .flat_map(|surface| surface.object_pages().iter());
+        let presentation_overlap = if let Some(admission) = object_admission.as_ref() {
+            geometry.presentation_overlap_bytes(
+                surface_object_pages
+                    .chain(admission.projected_resident_pages(&self.object_residency)),
+            )
+        } else {
+            geometry.presentation_overlap_bytes(
+                surface_object_pages.chain(self.object_residency.resident_page_iter()),
+            )
+        }
+        .ok_or(RangeTextInputError::SurfaceCapacity)?;
+        let geometry_bytes = geometry
+            .retained_bytes()
+            .checked_sub(presentation_overlap)
+            .ok_or(RangeTextInputError::SurfaceCapacity)?;
         let candidate_bytes = [
             size_of::<PreparedNonterminalResponsePublication>(),
-            geometry.retained_bytes(),
+            geometry_bytes,
             text_allocation.0,
             object_allocation.0,
             residency_payload.bytes,
@@ -540,8 +562,8 @@ impl RangeTextInput {
                 items: charge
                     .items
                     .checked_add(
-                        page.objects()
-                            .len()
+                        page.retained_charge()
+                            .allocated_items()
                             .checked_add(1)
                             .ok_or(RangeTextInputError::SurfaceCapacity)?,
                     )

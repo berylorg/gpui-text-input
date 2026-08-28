@@ -579,6 +579,9 @@ impl RangeTextInput {
             if let Some(page) = cancel.pending_object_page() {
                 self.cancel_object_page_dispatch(page);
             }
+            if let Some(page) = cancel.pending_provenance_page() {
+                self.cancel_clipboard_provenance_dispatch(page);
+            }
             if cancel.awaiting_write() {
                 self.cancel_clipboard_write_dispatch(cancel.key());
             }
@@ -675,10 +678,27 @@ impl RangeTextInput {
             matches!(request, RangeTextInputRequest::ClipboardWrite(write) if write.key() == key)
         }) {
             self.requests.remove(index);
-        } else if self.dispatched_clipboard_write == Some(key) {
-            self.dispatched_clipboard_write = None;
+        } else if self.dispatched_clipboard == Some(super::DispatchedClipboard::Write(key)) {
+            self.dispatched_clipboard = None;
             self.requests
                 .push_back(RangeTextInputRequest::CancelClipboardWrite(key));
+        }
+    }
+
+    pub(super) fn cancel_clipboard_provenance_dispatch(
+        &mut self,
+        key: crate::ClipboardProvenancePageKey,
+    ) {
+        if let Some(index) = self.requests.iter().position(|request| {
+            matches!(request, RangeTextInputRequest::ClipboardProvenancePage(page) if page.key() == key)
+        }) {
+            self.requests.remove(index);
+        } else if self.dispatched_clipboard
+            == Some(super::DispatchedClipboard::Provenance(key))
+        {
+            self.dispatched_clipboard = None;
+            self.requests
+                .push_back(RangeTextInputRequest::CancelClipboardProvenancePage(key));
         }
     }
 

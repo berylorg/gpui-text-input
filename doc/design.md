@@ -410,6 +410,145 @@ unless it has the complete exact representation within that cap. Text-page or ob
 revision conflict, cancellation, rebind, unmount, or a representation exceeding the cap makes no
 document mutation.
 
+The range-backed clipboard boundary has one explicit provenance policy. `Omit` produces the
+ordinary capped plain-text write without provenance. `Stream` emits bounded provenance pages for
+selected source-zero-width objects while constructing that same one contiguous result; it does not
+collect a whole provenance vector, register objects, merge the selection a second time, or build a
+second text value. Source-covering atom fallbacks are not provenance-page items: one such fallback
+may cross several text pages and has no object-item continuation in the source protocol. Its plain
+fallback remains part of the exact contiguous result under either policy.
+
+Each streamed provenance item contains the stable object identity, exact source anchor and
+same-anchor order, and the checked half-open output-byte range occupied by that object's fallback.
+The enclosing clipboard key qualifies every page to the exact binding, revision, directed
+predecessor positions, and composite selection, including endpoint gap witnesses. Empty fallbacks
+produce empty output ranges but still advance the page item ordinal and object cursor, so any
+number of same-anchor objects remains pageable independently of output bytes.
+
+Every provenance page has a positive item ceiling and positive retained-byte ceiling, an exact
+selection-qualified start cursor, page ordinal, next cursor, canonical page identity, prior
+cumulative identity, and resulting cumulative identity. Canonical identities include every
+semantic field and the prior chain. The coordinator retains the current page through one shared
+bounded allocation until acknowledgement and otherwise retains only fixed cumulative cursor,
+count, byte, ordinal, and identity state. The host must return that exact current page for
+acknowledgement. An exact current full page key plus structural equality advances the stream. The
+same current full key with differing structure, including a malformed current-key page, is a
+collision that terminates and releases the stream. A different full key--whether from a foreign
+operation, previous, skipped or reordered ordinal, or stale selection--is not an acknowledgement of
+current custody: it is rejected as stale or wrong without mutating or clearing the current page, so
+the correct current page remains acknowledgeable or cancellable.
+
+Page accounting includes the exact fixed item-storage extent, its shared allocation header and handles, and
+peak coexistence with the in-progress contiguous output, current source page, queued object facts,
+and final write ownership. A configured page envelope that cannot hold one fixed-size item is
+invalid. Item counts, ordinals, output offsets, fallback-byte totals, page counts, and cumulative
+identities advance with checked arithmetic. Exceeding either page limit or any checked total
+terminates without a write.
+
+The clipboard coordinator reports one exact dynamic ownership charge to the widget surface budget.
+It includes the active owner allocation, the contiguous-output backing extent, queued-object storage
+capacity, current and queued object payload allocation capacities, and either the provenance builder allocation
+or the current shared page allocation. The widget combines that charge with current source-response
+custody and queued-request ownership for every admission and high-water observation. When the
+coordinator and queued or dispatched request hold the same provenance page, its shared allocation
+is charged exactly once while both fixed handle records remain covered by their respective owner
+storage. Exact acknowledgement captures the chained fields, releases both current-page handles,
+and leaves only fixed cumulative state; a next builder is allocated lazily only when another
+selected object arrives, so the acknowledged page never coexists with replacement builder
+capacity. Final-write transfer releases object/provenance allocations before the single output
+allocation moves to request custody; cancellation and settlement return the coordinator charge to
+zero.
+
+Starting an operation uses the same coordinator-owned preparation boundary. An inactive
+coordinator prepares an opaque begin token without allocation or mutation; the token binds the
+non-reused coordinator instance, inactive preparation generation, intended clipboard key, kind,
+selection, and predecessor, and reports the exact active-owner and optional provenance-owner
+successor charge. The widget admits its current surface ownership plus that charge before commit.
+Byte- or item-one-under rejection leaves the coordinator inactive with zero clipboard ownership;
+exact-fit commit revalidates the token and only then allocates and publishes the active operation.
+This rule applies equally to empty and nonempty selections and to omitted and streamed provenance.
+
+Text-page and object-page response charges include their text, atom, and object vector capacities,
+every fallback string capacity, and every presentation allocation extent rather than only initialized
+lengths. These exact charges apply both to initial widget custody and coordinator transfer, including
+tiny logical pages whose supplied owners have large spare capacity.
+Every widget owner of an object page likewise charges the page header plus every allocated object-
+vector slot, including spare slots. Geometry preparation, deferred response custody, residency,
+surface publication, diagnostics, and their coexistence peaks use that allocation-slot count plus
+one page-owner item; semantic object-count limits alone continue to use initialized object length.
+Inline-object display presentation uses one immutable shared backing from the admitted object fact
+through GPUI fragment construction and target publication. Cloning source response custody creates
+a distinct backing, while geometry fragment and target handles alias the admitted source backing
+without copying it. The combined widget charge identifies that overlap and charges the backing once
+across response, residency, geometry staging, publication, and release; fixed handles remain covered
+by their containing records. Admission observes the exact successor before publishing any alias.
+
+Text-page and object-page responses enter the clipboard merge only through the coordinator-owned
+prepare/commit lifecycle. Preparation borrows the exact retained response, validates its current
+key and continuation, and runs the single authoritative merge engine only to its next fixed-size
+semantic step. It returns an opaque response-qualified step plus the exact coordinator peak and
+successor ownership charges. Preparation neither allocates, mutates coordinator state, consumes the
+response, nor clears dispatch custody. It may therefore be repeated byte-for-byte after a rejected
+admission without replay ambiguity.
+
+The widget admits each prepared step against the exact current surface ownership with the prior
+coordinator charge replaced by the prepared peak. A rejected, stale, overflowing, or one-under
+admission leaves both response and dispatch custody unchanged. Accepted commit consumes that opaque
+step only when its non-reused coordinator instance, active clipboard key, monotonic operation
+instance, preparation generation, and exact immutable response-instance identity still match. A
+byte-equal clone of the same immutable response retains that identity; an independently constructed
+response, including an empty or equal-charge response, receives another checked non-reused identity.
+Commit also requires the same exact retained charge and prepared structure, so a clone whose deep
+allocation capacities differ does not satisfy a token prepared from its lineage peer.
+It applies the already selected
+transition without another merge or projection. A terminal response preparation commits through the
+same response-specific entry point: it consumes that exact response, releases its dispatch, and
+returns terminal progress atomically. Multi-step response processing retains the one bounded source
+response until its final prepared step commits; source release and dispatch removal occur together
+only then. Cancellation, rebind, unmount, collision, finish, or coordinator reuse invalidates every
+outstanding prepared step. Repeated preparation is harmless; after one token commits, every
+duplicate is stale even when its charge and response body match.
+
+The first prepared transition that needs nonempty output charges and fallibly establishes one exact
+fixed backing allocation for the configured complete-output byte ceiling. Every later append writes
+into that same allocation without growth or accumulated-payload copying, and final write transfer
+reuses it allocation-free. An operation that produces no bytes never allocates it. Provenance builders
+likewise use fallibly allocated exact fixed item storage; page emission moves that storage into one
+fixed shared page owner without a second item allocation. No allocator-reported excess capacity or
+post-allocation observation participates in admission.
+Failure to establish an already admitted exact output or provenance allocation is a terminal local
+resource failure, not stale input and not retryable capacity. The coordinator closes the active
+operation atomically, releases any retained response and dispatch custody, discards prepared local
+work, and returns a typed terminal completion; the widget publishes no clipboard write or cut
+deletion and schedules no retry from that failed operation.
+
+Prepared steps cover the single output-backing allocation, source-covering atom fragments
+that continue across text pages, current and next zero-width object facts with deep fallback and
+presentation payloads, lazy provenance-builder allocation, builder-to-current-page transfer, and
+final output transfer. Their response identity, preparation generation, source cursor, output
+offset, object cursor, provenance cursor, and ownership arithmetic are checked. A step prepared from
+one state or response cannot commit against another, and overflow fails before allocation or
+mutation. The successor generation is reserved before any allocation or mutation; exhaustion leaves
+the response, coordinator, and dispatch unchanged. When admission rejects coordinator-derived work
+after a response was already transferred or released, the unchanged generation remains runnable and
+the widget schedules that exact work without redispatching a response. No widget-side merge forecast,
+whole-page conservative reservation, cloned retry payload, output growth copy, or post-mutation
+capacity check is part of this boundary.
+
+After the final page is acknowledged, the single cap-bounded contiguous write request closes the
+stream. Its compact closure binds the exact page and item totals, fallback-byte total, output-byte
+total, prior cumulative identity, and a canonical final identity that also covers the complete
+plain-text bytes. `Omit` carries an explicit absent closure rather than simulating an empty stream.
+The final write never owns provenance items and no provenance allocation is live when it is
+dispatched.
+
+Malformed source pages, provenance limit exhaustion, current-key collision, text or object failure,
+cancellation, rebind, unmount, coordinator disposal or reuse, clipboard write success, and
+clipboard write failure release current page and final-write custody exactly. A stale or wrong-key
+page is rejected without releasing current custody. No terminal path authorizes a partial
+provenance stream, a clipboard write after failed closure, or cut deletion before successful final
+write acknowledgement.
+
 Cut writes the complete clipboard representation first. Only a successful clipboard write may
 start the staged deletion transaction against the same binding, base revision, and selected range.
 If that later deletion conflicts, is rejected, is cancelled, or fails, the copied clipboard value

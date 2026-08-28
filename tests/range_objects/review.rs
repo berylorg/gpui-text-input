@@ -353,9 +353,8 @@ fn equal_page_id_reconciles_exact_payload_and_rejects_changed_facts() {
         None,
     )
     .unwrap();
-    residency
-        .admit(retry.clone(), anchor_proofs(&text, &retry))
-        .unwrap();
+    let retry_proofs = anchor_proofs(&text, &retry);
+    residency.admit(retry, retry_proofs).unwrap();
     assert_eq!(residency.counts(), before);
 }
 

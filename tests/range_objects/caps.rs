@@ -109,10 +109,11 @@ fn resident_retained_byte_cap_accepts_exact_and_rejects_one_under_independently(
     let mut residency = ObjectResidency::new(binding(1), PresentationGeneration::new(4), one_under);
     let page = page_for(&mut residency, 1, 1, 4, 1);
     let proofs = anchor_proofs(&text, &page);
+    let retry = empty_retry_page(&page);
     let prior_fingerprint = format!("{residency:?}");
     let prior_counts = residency.counts();
     assert_eq!(
-        residency.admit(page.clone(), proofs),
+        residency.admit(page, proofs),
         Err(ObjectPageAdmissionError::LimitExceeded(
             ObjectResidencyLimitKind::ResidentBytes
         ))
@@ -120,7 +121,6 @@ fn resident_retained_byte_cap_accepts_exact_and_rejects_one_under_independently(
     assert_eq!(format!("{residency:?}"), prior_fingerprint);
     assert_eq!(residency.counts(), prior_counts);
 
-    let retry = empty_retry_page(&page);
     let retry_proofs = anchor_proofs(&text, &retry);
     residency.admit(retry, retry_proofs).unwrap();
     assert_eq!(residency.counts().pending_requests, 0);

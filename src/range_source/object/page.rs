@@ -81,6 +81,16 @@ impl InlineObjectFact {
             .checked_add(self.payload_bytes()?)
             .ok_or(ObjectContractError::RetainedByteCountOverflow)
     }
+
+    pub(crate) fn owned_payload_allocation_bytes(&self) -> Option<usize> {
+        self.fallback_copy
+            .capacity()
+            .checked_add(self.presentation.payload_allocation_bytes())
+    }
+
+    pub(crate) fn presentation_allocation(&self) -> (*const u8, usize) {
+        self.presentation.display_allocation()
+    }
 }
 
 /// Exact fact about one edge of a returned object page.
@@ -97,6 +107,7 @@ pub enum ObjectPageEdgeFact {
 pub struct ObjectPageCharge {
     bytes: usize,
     objects: usize,
+    allocated_items: usize,
     presentation_bytes: usize,
 }
 
@@ -111,6 +122,10 @@ impl ObjectPageCharge {
         self.objects
     }
 
+    pub(crate) const fn allocated_items(self) -> usize {
+        self.allocated_items
+    }
+
     /// Display and fallback string bytes.
     pub const fn presentation_bytes(self) -> usize {
         self.presentation_bytes
@@ -118,7 +133,7 @@ impl ObjectPageCharge {
 }
 
 /// One exact bounded source-zero-width object page.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub struct ObjectPage {
     id: ObjectPageId,
     key: ObjectRequestKey,
@@ -128,9 +143,77 @@ pub struct ObjectPage {
     complete: bool,
     continuation: Option<ObjectCursor>,
     charge: ObjectPageCharge,
+    response_identity: u64,
+}
+
+impl Clone for ObjectPage {
+    fn clone(&self) -> Self {
+        let objects = self.objects.clone();
+        let charge = Self::allocation_charge(&objects, self.charge.presentation_bytes)
+            .expect("bounded cloned object page allocation fits usize");
+        Self {
+            id: self.id,
+            key: self.key,
+            objects,
+            preceding: self.preceding,
+            following: self.following,
+            complete: self.complete,
+            continuation: self.continuation,
+            charge,
+            response_identity: self.response_identity,
+        }
+    }
 }
 
 impl ObjectPage {
+    pub(crate) fn presentation_allocations(&self) -> impl Iterator<Item = (*const u8, usize)> + '_ {
+        self.objects
+            .iter()
+            .map(InlineObjectFact::presentation_allocation)
+    }
+
+    fn allocation_charge(
+        objects: &Vec<InlineObjectFact>,
+        presentation_bytes: usize,
+    ) -> Option<ObjectPageCharge> {
+        let bytes = size_of::<Self>()
+            .checked_add(
+                objects
+                    .capacity()
+                    .checked_mul(size_of::<InlineObjectFact>())?,
+            )?
+            .checked_add(objects.iter().try_fold(0usize, |bytes, object| {
+                bytes.checked_add(object.owned_payload_allocation_bytes()?)
+            })?)?;
+        Some(ObjectPageCharge {
+            bytes,
+            objects: objects.len(),
+            allocated_items: objects.capacity(),
+            presentation_bytes,
+        })
+    }
+
+    pub(crate) fn into_clipboard_parts(
+        self,
+    ) -> (
+        ObjectRequestKey,
+        Vec<InlineObjectFact>,
+        bool,
+        Option<ObjectCursor>,
+    ) {
+        (self.key, self.objects, self.complete, self.continuation)
+    }
+
+    pub(crate) fn clipboard_allocation_charge(&self) -> Option<(usize, usize)> {
+        let records = self
+            .objects
+            .capacity()
+            .checked_mul(size_of::<InlineObjectFact>())?;
+        let payload = self.objects.iter().try_fold(0usize, |total, object| {
+            total.checked_add(object.owned_payload_allocation_bytes()?)
+        })?;
+        Some((records.checked_add(payload)?, self.objects.capacity()))
+    }
     /// Constructs and validates one exact response to its frozen object request.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -208,7 +291,7 @@ impl ObjectPage {
                 .checked_add(object.payload_bytes()?)
                 .ok_or(ObjectContractError::RetainedByteCountOverflow)
         })?;
-        let bytes = size_of::<Self>()
+        let retained_bytes = size_of::<Self>()
             .checked_add(
                 objects
                     .len()
@@ -217,14 +300,11 @@ impl ObjectPage {
             )
             .and_then(|bytes| bytes.checked_add(presentation_bytes))
             .ok_or(ObjectContractError::RetainedByteCountOverflow)?;
-        if bytes > demand.max_retained_bytes() {
+        if retained_bytes > demand.max_retained_bytes() {
             return Err(ObjectContractError::RetainedByteLimitExceeded);
         }
-        let charge = ObjectPageCharge {
-            bytes,
-            objects: objects.len(),
-            presentation_bytes,
-        };
+        let charge = Self::allocation_charge(&objects, presentation_bytes)
+            .ok_or(ObjectContractError::RetainedByteCountOverflow)?;
         Ok(Self {
             id,
             key,
@@ -234,6 +314,8 @@ impl ObjectPage {
             complete,
             continuation,
             charge,
+            response_identity: crate::range_source::next_response_instance()
+                .ok_or(ObjectContractError::RetainedByteCountOverflow)?,
         })
     }
 
@@ -275,6 +357,10 @@ impl ObjectPage {
     /// Returns exact retained record and payload accounting.
     pub const fn retained_charge(&self) -> ObjectPageCharge {
         self.charge
+    }
+
+    pub(crate) fn response_allocation_identity(&self) -> u64 {
+        self.response_identity
     }
 
     /// Reports whether the same stable page identity names exactly the same payload and facts.
