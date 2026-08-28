@@ -1073,6 +1073,7 @@ impl RangeTextInput {
         let geometry = match geometry {
             Ok(geometry) => geometry,
             Err(failure) => {
+                self.pending_response_exact_geometry_failure_stage = Some(failure.stage());
                 let error = RangeTextInputError::Geometry(failure.error().clone());
                 if matches!(failure.error(), crate::ExactGeometryError::SourceContract) {
                     self.reject_delivered_geometry_object_page(key, cx);
@@ -1205,6 +1206,7 @@ impl RangeTextInput {
         let geometry = match geometry {
             Ok(geometry) => geometry,
             Err(failure) => {
+                self.pending_response_exact_geometry_failure_stage = Some(failure.stage());
                 let error = RangeTextInputError::Geometry(failure.error().clone());
                 if matches!(failure.error(), crate::ExactGeometryError::SourceContract) {
                     self.reject_delivered_geometry_page(key, cx);
@@ -1318,7 +1320,18 @@ impl RangeTextInput {
         let geometry = match geometry {
             Ok(geometry) => geometry,
             Err(failure) => {
+                self.pending_response_exact_geometry_failure_stage = Some(failure.stage());
                 let error = RangeTextInputError::Geometry(failure.error().clone());
+                if matches!(
+                    failure.error(),
+                    crate::ExactGeometryError::Layout(
+                        gpui::StreamingLayoutError::CapacityExceeded(_)
+                    )
+                ) {
+                    let preparation =
+                        self.prepare_terminal_object_response_failure(job, key, error)?;
+                    return self.commit_terminal_response_preparation(preparation, cx);
+                }
                 if matches!(failure.error(), crate::ExactGeometryError::SourceContract) {
                     self.reject_delivered_geometry_object_page(key, cx);
                 }
@@ -1405,6 +1418,7 @@ impl RangeTextInput {
         let geometry = match geometry {
             Ok(geometry) => geometry,
             Err(failure) => {
+                self.pending_response_exact_geometry_failure_stage = Some(failure.stage());
                 let error = RangeTextInputError::Geometry(failure.error().clone());
                 if matches!(failure.error(), crate::ExactGeometryError::SourceContract) {
                     self.reject_delivered_geometry_page(key, cx);

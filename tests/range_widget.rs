@@ -2853,6 +2853,53 @@ fn empty_coherent_surface_owns_and_paints_placeholder_across_widget_states(
 }
 
 #[gpui::test]
+fn disabled_render_omits_input_routes_while_prepaint_advances_realization(
+    cx: &mut gpui::TestAppContext,
+) {
+    cx.update(ensure_text_input_bindings);
+    let source = (0..100)
+        .map(|line| format!("line-{line:03}\n"))
+        .collect::<String>();
+    let (input, cx) = cx.add_window_view(|window, cx| {
+        let input = RangeTextInput::new(config(&source, 1), window, cx).unwrap();
+        input.focus(window);
+        input
+    });
+    assert!(drive_pages(&input, cx, &source).is_empty());
+    let before_disabled_render = input.read_with(cx, |input, _| {
+        input.realization_diagnostics().frame_generation
+    });
+    input.update(cx, |input, cx| input.set_enabled(false, cx));
+
+    cx.update(|window, app| window.draw_and_present_for_test(app));
+
+    input.read_with(cx, |input, _| {
+        assert!(!input.is_enabled());
+        assert!(input.realization_diagnostics().frame_generation > before_disabled_render);
+    });
+    assert!(drive_pages(&input, cx, &source).is_empty());
+    let before = range_publication_fingerprint(&input, cx);
+    let events = restoration_events(&input, cx);
+    cx.simulate_keystrokes("ctrl-a");
+    cx.simulate_event(MouseDownEvent {
+        position: point(px(1.), px(1.)),
+        modifiers: Modifiers::none(),
+        button: MouseButton::Left,
+        click_count: 1,
+        first_mouse: false,
+    });
+    cx.simulate_event(ScrollWheelEvent {
+        position: point(px(1.), px(1.)),
+        delta: ScrollDelta::Pixels(point(px(0.), px(-48.))),
+        ..Default::default()
+    });
+
+    assert!(input.update(cx, |input, _| input.take_request()).is_none());
+    assert_eq!(range_publication_fingerprint(&input, cx), before);
+    assert!(events.borrow().is_empty());
+}
+
+#[gpui::test]
 fn clipboard_reuses_concurrent_geometry_resident_page_without_stranding(
     cx: &mut gpui::TestAppContext,
 ) {

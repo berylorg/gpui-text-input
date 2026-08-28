@@ -69,6 +69,195 @@ fn drain_release_requests(input: &mut RangeTextInput) {
 }
 
 #[gpui::test]
+fn ordinary_eight_kib_geometry_target_capacity_failure_closes_exact_custody(
+    cx: &mut gpui::TestAppContext,
+) {
+    let source = "a".repeat(8 * 1024);
+    let mut configuration = config(8 * 1024 * 1024, 131_072);
+    configuration.layout.wrap_width = px(320.);
+    configuration.layout.limits.segment_bytes = 4096;
+    configuration.layout.limits.glyphs = 4096;
+    configuration.layout.limits.wraps = 256;
+    configuration.layout.limits.maps = 4097;
+    configuration.layout.limits.fragments = 4;
+    configuration.geometry_limits =
+        ExactGeometryLimits::new(source.len() as u64, 8, 2 * 1024 * 1024, 32_768).unwrap();
+    configuration.residency_limits = ResidencyLimits::new(6, 384 * 1024, 8, 8 * 1024).unwrap();
+    configuration.object_residency_limits =
+        ObjectResidencyLimits::new(6, 4096, 384 * 1024, 128 * 1024, 8, 4096, 384 * 1024).unwrap();
+    configuration.limits.max_realization_work_per_frame = 64;
+    configuration.limits.max_realized_block_extent = px(64.);
+    configuration.limits.page_bytes = 4096;
+    configuration.viewport_extent = px(640.);
+    configuration.overscan = Pixels::ZERO;
+    let (input, cx) = cx
+        .add_window_view(move |window, cx| RangeTextInput::new(configuration, window, cx).unwrap());
+    drive_surface_for_source(&input, cx, SOURCE);
+    let prior_publication = input.read_with(cx, |input, _| {
+        format!("{:?}", input.surface.as_ref().expect("prior publication"))
+    });
+    let successor = RangeBinding::new(
+        BindingId::new(610_100),
+        SourceRevision::new(2),
+        LogicalExtent::new(source.len() as u64, 1),
+    );
+    cx.update(|window, app| {
+        input.update(app, |input, cx| {
+            input.rebind(successor, None, window, cx).unwrap()
+        })
+    });
+
+    let mut terminal = None;
+    for id in 1..1_536 {
+        cx.update(|window, app| window.draw(app).clear());
+        cx.run_until_parked();
+        match input.update(cx, |input, _| input.take_request()) {
+            Some(RangeTextInputRequest::Page(request)) => {
+                let page = page_for_source(request, id, &source);
+                cx.update(|window, app| {
+                    input.update(app, |input, cx| {
+                        input.deliver_page(page, window, cx).unwrap()
+                    })
+                });
+            }
+            Some(RangeTextInputRequest::ObjectPage(request)) => {
+                let key = request.key();
+                let page = ObjectPage::new(
+                    ObjectPageId::new(id),
+                    key,
+                    vec![],
+                    ObjectPageEdgeFact::EnvelopeBoundary,
+                    ObjectPageEdgeFact::EnvelopeBoundary,
+                    true,
+                    None,
+                )
+                .unwrap();
+                let prior = input.read_with(cx, |input, _| {
+                    (
+                        input.surface.as_ref().map(|surface| format!("{surface:?}")),
+                        input
+                            .residency
+                            .resident_pages()
+                            .map(|page| format!("{page:?}"))
+                            .collect::<Vec<_>>(),
+                        input
+                            .object_residency
+                            .resident_pages()
+                            .map(|page| format!("{page:?}"))
+                            .collect::<Vec<_>>(),
+                    )
+                });
+                let result = cx.update(|window, app| {
+                    input.update(app, |input, cx| {
+                        input.deliver_object_page_in_window(page, window, cx)
+                    })
+                });
+                match result {
+                    Err(RangeTextInputError::Geometry(crate::ExactGeometryError::Layout(
+                        gpui::StreamingLayoutError::CapacityExceeded(_),
+                    ))) => {
+                        terminal = Some((key, prior));
+                        break;
+                    }
+                    other => other.unwrap(),
+                }
+            }
+            Some(RangeTextInputRequest::ReleasePage(_))
+            | Some(RangeTextInputRequest::ReleaseObjectPage(_))
+            | Some(RangeTextInputRequest::CancelPage(_))
+            | Some(RangeTextInputRequest::CancelObjectPage(_)) => {}
+            Some(request) => panic!("unexpected geometry request: {request:?}"),
+            None => {}
+        }
+    }
+
+    let (key, prior) = terminal.expect("ordinary fixture did not close terminal custody");
+    assert_eq!(key.purpose(), ObjectPurpose::GeometryTarget);
+    assert_eq!(prior.0.as_ref(), Some(&prior_publication));
+    input.read_with(cx, |input, _| {
+        let diagnostics = input.realization_diagnostics();
+        assert_eq!(diagnostics.response_rejection_count, 1);
+        assert_eq!(
+            diagnostics.last_response_rejection,
+            Some(RangeResponseRejectionClass::ExactGeometryLayoutCapacityExceeded)
+        );
+        assert_eq!(
+            diagnostics.last_response_rejection_stage,
+            Some(crate::ExactGeometryFailureStage::Scan)
+        );
+        assert_eq!(
+            input.surface.as_ref().map(|surface| format!("{surface:?}")),
+            prior.0
+        );
+        assert_eq!(
+            input
+                .residency
+                .resident_pages()
+                .map(|page| format!("{page:?}"))
+                .collect::<Vec<_>>(),
+            prior.1
+        );
+        assert_eq!(
+            input
+                .object_residency
+                .resident_pages()
+                .map(|page| format!("{page:?}"))
+                .collect::<Vec<_>>(),
+            prior.2
+        );
+        assert!(input.response_custody.is_empty());
+        assert!(!input.dispatched_object_pages.contains(&key));
+        assert!(input.pending_geometry_page.is_none());
+        assert!(input.pending_geometry_object.is_none());
+        assert!(input.active_geometry.is_none());
+        assert!(input.surface_candidate.is_none());
+        assert!(input.pending_target_intent.is_none());
+        assert!(!input.pending_index_intent);
+        assert_eq!(diagnostics.current.response_custody_count, 0);
+        assert_eq!(diagnostics.current.pending_object_requests, 0);
+        assert_eq!(diagnostics.current.dispatched_object_requests, 0);
+        assert_eq!(diagnostics.current.active_geometry_jobs, 0);
+        assert_eq!(diagnostics.current.pending_geometry_objects, 0);
+        assert_eq!(diagnostics.current.candidates, 0);
+        assert_eq!(diagnostics.current.pending_target_intents, 0);
+        assert_eq!(diagnostics.current.pending_index_intents, 0);
+        assert_eq!(diagnostics.capacity, RangeRealizationCapacityState::Normal);
+        assert_eq!(
+            input
+                .requests
+                .iter()
+                .filter(|request| matches!(request, RangeTextInputRequest::ReleaseObjectPage(released) if *released == key))
+                .count(),
+            1
+        );
+        assert!(!input.requests.iter().any(|request| matches!(
+            request,
+            RangeTextInputRequest::Page(_) | RangeTextInputRequest::ObjectPage(_)
+        )));
+    });
+    cx.update(|window, app| {
+        input.update(app, |input, _| {
+            assert!(matches!(
+                input.take_request(),
+                Some(RangeTextInputRequest::ReleaseObjectPage(released)) if released == key
+            ));
+            assert!(input.take_request().is_none());
+        });
+        for _ in 0..4 {
+            window.draw(app).clear();
+        }
+    });
+    cx.run_until_parked();
+    input.update(cx, |input, _| {
+        assert!(input.take_request().is_none());
+        assert!(input.response_custody.is_empty());
+        assert!(input.active_geometry.is_none());
+        assert!(input.pending_target_intent.is_none());
+        assert!(!input.pending_index_intent);
+    });
+}
+
+#[gpui::test]
 fn scheduled_frames_drain_mixed_text_object_and_alias_custody_tail(cx: &mut gpui::TestAppContext) {
     let (input, cx) = cx.add_window_view(|window, cx| {
         let mut configuration = config(2 * 1024 * 1024, 32_768);

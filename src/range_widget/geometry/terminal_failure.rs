@@ -17,6 +17,64 @@ pub(super) struct PreparedTerminalResponseFailure {
 }
 
 impl RangeTextInput {
+    fn prepare_terminal_response_failure(
+        &self,
+        job: crate::GeometryJobKey,
+        completed_page: Option<PageRequestKey>,
+        completed_object_page: Option<ObjectRequestKey>,
+        delivered_page: bool,
+        delivered_object_page: bool,
+        error: RangeTextInputError,
+    ) -> Result<TerminalResponsePreparation, RangeTextInputError> {
+        let geometry = match (completed_page, completed_object_page) {
+            (Some(key), None) => self.geometry.prepare_terminal_page_failure(job, key)?,
+            (None, Some(key)) => self.geometry.prepare_terminal_object_failure(job, key)?,
+            _ => unreachable!("terminal response names exactly one completed input"),
+        };
+        let release_request = match (delivered_page, delivered_object_page) {
+            (true, false) => completed_page.map(RangeTextInputRequest::ReleasePage),
+            (false, true) => completed_object_page.map(RangeTextInputRequest::ReleaseObjectPage),
+            _ => None,
+        };
+        let maximum = super::super::checked_request_capacity(&self.config)
+            .expect("constructed range widget retains a valid request capacity");
+        let required = self
+            .requests
+            .len()
+            .checked_add(usize::from(release_request.is_some()))
+            .expect("bounded terminal cleanup request count remains representable");
+        assert!(
+            required <= maximum,
+            "range widget reserves request capacity for terminal cleanup"
+        );
+        let destination_requests = VecDeque::with_capacity(maximum);
+        assert!(
+            destination_requests.capacity() <= maximum,
+            "terminal cleanup destination exceeds the configured request capacity"
+        );
+        Ok(TerminalResponsePreparation::Failure(
+            PreparedTerminalResponseFailure {
+                geometry,
+                completed_page,
+                completed_object_page,
+                delivered_page,
+                delivered_object_page,
+                error,
+                release_request,
+                destination_requests,
+            },
+        ))
+    }
+
+    pub(super) fn prepare_terminal_object_response_failure(
+        &self,
+        job: crate::GeometryJobKey,
+        key: ObjectRequestKey,
+        error: RangeTextInputError,
+    ) -> Result<TerminalResponsePreparation, RangeTextInputError> {
+        self.prepare_terminal_response_failure(job, None, Some(key), false, true, error)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn prepare_terminal_response_publication(
         &self,
@@ -50,54 +108,14 @@ impl RangeTextInput {
         match result {
             Ok(publication) => Ok(TerminalResponsePreparation::Publication(publication)),
             Err(RangeTextInputError::SurfaceCapacity) => Err(RangeTextInputError::SurfaceCapacity),
-            Err(_error) => {
-                let geometry = match (completed_page, completed_object_page) {
-                    (Some(key), None) => self
-                        .geometry
-                        .prepare_terminal_page_failure(job, key)
-                        .expect("terminal text preparation retains the exact active response"),
-                    (None, Some(key)) => self
-                        .geometry
-                        .prepare_terminal_object_failure(job, key)
-                        .expect("terminal object preparation retains the exact active response"),
-                    _ => unreachable!("terminal response names exactly one completed input"),
-                };
-                let release_request = match (delivered_page, delivered_object_page) {
-                    (true, false) => completed_page.map(RangeTextInputRequest::ReleasePage),
-                    (false, true) => {
-                        completed_object_page.map(RangeTextInputRequest::ReleaseObjectPage)
-                    }
-                    _ => None,
-                };
-                let maximum = super::super::checked_request_capacity(&self.config)
-                    .expect("constructed range widget retains a valid request capacity");
-                let required = self
-                    .requests
-                    .len()
-                    .checked_add(usize::from(release_request.is_some()))
-                    .expect("bounded terminal cleanup request count remains representable");
-                assert!(
-                    required <= maximum,
-                    "range widget reserves request capacity for terminal cleanup"
-                );
-                let destination_requests = VecDeque::with_capacity(maximum);
-                assert!(
-                    destination_requests.capacity() <= maximum,
-                    "terminal cleanup destination exceeds the configured request capacity"
-                );
-                Ok(TerminalResponsePreparation::Failure(
-                    PreparedTerminalResponseFailure {
-                        geometry,
-                        completed_page,
-                        completed_object_page,
-                        delivered_page,
-                        delivered_object_page,
-                        error: RangeTextInputError::IncompleteSurface,
-                        release_request,
-                        destination_requests,
-                    },
-                ))
-            }
+            Err(_error) => self.prepare_terminal_response_failure(
+                job,
+                completed_page,
+                completed_object_page,
+                delivered_page,
+                delivered_object_page,
+                RangeTextInputError::IncompleteSurface,
+            ),
         }
     }
 
@@ -154,6 +172,8 @@ impl RangeTextInput {
         }
         self.release_geometry(&release, completed_page, completed_object_page, None);
         self.active_geometry = None;
+        self.pending_target_intent = None;
+        self.pending_index_intent = false;
         self.observe_realization_ownership();
         cx.notify();
         Err(error)

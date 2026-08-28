@@ -152,6 +152,42 @@ pub struct RangeRealizationOwnership {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RangeResponseRejectionClass {
+    AlignmentKeyJobStale,
+    ResidencyStale,
+    ResidencyCapacity,
+    ExactGeometryInvalidLimits,
+    ExactGeometryInvalidMetric,
+    ExactGeometryDisposed,
+    ExactGeometryEpochExhausted,
+    ExactGeometryIdNotMonotonic,
+    ExactGeometryIndexIncomplete,
+    ExactGeometryInactiveOrWrongJob,
+    ExactGeometryPageAlreadyPending,
+    ExactGeometryWrongPage,
+    ExactGeometryWrongInputKind,
+    ExactGeometryWrongObjectPage,
+    ExactGeometryNoncontiguousPage,
+    ExactGeometryPageTooLarge,
+    ExactGeometrySourceContract,
+    ExactGeometryLayoutInvalidConfiguration,
+    ExactGeometryLayoutInvalidMetric,
+    ExactGeometryLayoutInputMismatch,
+    ExactGeometryLayoutSegmentPolicyMismatch,
+    ExactGeometryLayoutOutOfOrder,
+    ExactGeometryLayoutInvalidPosition,
+    ExactGeometryLayoutInvalidSegment,
+    ExactGeometryLayoutEnded,
+    ExactGeometryLayoutCapacityExceeded,
+    ExactGeometryLayoutOverflow,
+    ExactGeometryLayoutCancelled,
+    ExactGeometryCapacity,
+    CandidateSurfaceIncomplete,
+    Busy,
+    OtherDeterministic,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RangeRealizationDiagnostics {
     pub max_surface_bytes: usize,
     pub max_surface_items: usize,
@@ -183,6 +219,9 @@ pub struct RangeRealizationDiagnostics {
     pub surface_high_water: crate::RangeSurfaceCharge,
     pub geometry_high_water_bytes: usize,
     pub geometry_high_water_items: usize,
+    pub last_response_rejection: Option<RangeResponseRejectionClass>,
+    pub response_rejection_count: u64,
+    pub last_response_rejection_stage: Option<crate::ExactGeometryFailureStage>,
 }
 
 #[derive(Clone)]

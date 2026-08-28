@@ -433,6 +433,13 @@ handling, closes the named response and geometry work with a content-free failur
 capacity fallback or pending successor intent. The prior coherent publication and unrelated
 residency remain unchanged.
 
+Exact-geometry scan component capacity exceeded by an immutable response under unchanged configured
+layout limits is a deterministic preparation failure, not retryable terminal-publication capacity.
+It uses the same atomic response-and-job closure. Content-free diagnostics retain only the last
+response-rejection class, rejection count, and exact-geometry failure stage; they expose no request
+key, source offset, payload, or content. Only explicit surface-publication capacity preserves exact
+response custody for retry, and every retained retry schedules realization liveness.
+
 Pending Select All is part of terminal preparation rather than a successor transition. The exact
 completed index retains constant-size first and last object cursors, from which the candidate derives
 document endpoints before coherent-surface admission. Rejection therefore preserves the prior
@@ -527,6 +534,12 @@ object presentation, placeholder rendering, and visible-range
 behavior. In the range-backed variant these mechanics operate only on the current coherent resident
 projection and the bounded coordination state defined above. The widget has no accessibility-
 specific payload, OS accessibility tree, or assistive-technology action route.
+
+A disabled widget retains its ordinary sizing, clipping, painting, and bounded range-realization
+layout and prepaint, but the widget layer installs no focus, tab, key-context, action, pointer,
+wheel, platform-input, or scrollbar route and therefore creates no input hitbox. This lets a host
+advance a disabled noninteractive realization surface through ordinary GPUI lifecycle work without
+creating a hidden input or event surface.
 
 The widget exposes app-neutral callbacks, events, and key-propagation policies for text-input activity. Those hooks report or delegate baseline text-input activity; they do not encode host commands such as settings apply, conversation submission, color-picker opening, numeric stepping, or backend steering.
 

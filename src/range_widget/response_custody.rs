@@ -100,6 +100,52 @@ impl RangeResponseCustody {
         }
     }
 
+    fn geometry_alignment_is_current(&self, input: &RangeTextInput) -> bool {
+        match self {
+            Self::Object(page)
+                if matches!(
+                    page.key().purpose(),
+                    crate::ObjectPurpose::GeometryIndex | crate::ObjectPurpose::GeometryTarget
+                ) =>
+            {
+                let key = page.key();
+                let Some(pending) = input.pending_geometry_object.as_ref() else {
+                    return false;
+                };
+                input.dispatched_object_pages.contains(&key)
+                    && pending.request.key() == key
+                    && input.active_geometry == Some(pending.job)
+                    && matches!(pending.wait, geometry::GeometryObjectWait::Coalesced(wait) if wait == key)
+                    && (!matches!(key.purpose(), crate::ObjectPurpose::GeometryTarget)
+                        || input
+                            .surface_candidate
+                            .as_ref()
+                            .is_some_and(|candidate| candidate.job == pending.job))
+            }
+            Self::Page(page) | Self::PageNoAliases(page)
+                if matches!(
+                    page.key().purpose(),
+                    crate::PagePurpose::GeometryIndex | crate::PagePurpose::GeometryTarget
+                ) =>
+            {
+                let key = page.key();
+                let Some(pending) = input.pending_geometry_page.as_ref() else {
+                    return false;
+                };
+                input.dispatched_pages.contains(&key)
+                    && pending.request.key() == key
+                    && input.active_geometry == Some(pending.job)
+                    && matches!(pending.wait, geometry::GeometryPageWait::Coalesced(wait) if wait == key)
+                    && (!matches!(key.purpose(), crate::PagePurpose::GeometryTarget)
+                        || input
+                            .surface_candidate
+                            .as_ref()
+                            .is_some_and(|candidate| candidate.job == pending.job))
+            }
+            _ => true,
+        }
+    }
+
     fn transient_charge(&self) -> Result<RangeSurfaceCharge, RangeTextInputError> {
         let incremental = self.incremental_charge()?;
         let processing = self.processing_charge()?;
@@ -117,6 +163,110 @@ impl RangeResponseCustody {
 }
 
 impl RangeTextInput {
+    fn record_response_rejection(
+        &mut self,
+        response: &RangeResponseCustody,
+        error: &RangeTextInputError,
+    ) {
+        use crate::ExactGeometryError;
+
+        self.last_response_rejection_stage =
+            self.pending_response_exact_geometry_failure_stage.take();
+        self.last_response_rejection = Some(match error {
+            RangeTextInputError::Stale if !response.geometry_alignment_is_current(self) => {
+                RangeResponseRejectionClass::AlignmentKeyJobStale
+            }
+            RangeTextInputError::Stale => RangeResponseRejectionClass::ResidencyStale,
+            RangeTextInputError::SurfaceCapacity => RangeResponseRejectionClass::ResidencyCapacity,
+            RangeTextInputError::Geometry(ExactGeometryError::CapacityExceeded) => {
+                RangeResponseRejectionClass::ExactGeometryCapacity
+            }
+            RangeTextInputError::Geometry(ExactGeometryError::Busy)
+            | RangeTextInputError::Busy
+            | RangeTextInputError::Pending => RangeResponseRejectionClass::Busy,
+            RangeTextInputError::Geometry(
+                ExactGeometryError::NoActiveJob | ExactGeometryError::ObsoleteJob(_),
+            ) => RangeResponseRejectionClass::ExactGeometryInactiveOrWrongJob,
+            RangeTextInputError::Geometry(ExactGeometryError::InvalidLimits) => {
+                RangeResponseRejectionClass::ExactGeometryInvalidLimits
+            }
+            RangeTextInputError::Geometry(ExactGeometryError::InvalidMetric) => {
+                RangeResponseRejectionClass::ExactGeometryInvalidMetric
+            }
+            RangeTextInputError::Geometry(ExactGeometryError::Disposed) => {
+                RangeResponseRejectionClass::ExactGeometryDisposed
+            }
+            RangeTextInputError::Geometry(ExactGeometryError::EpochExhausted) => {
+                RangeResponseRejectionClass::ExactGeometryEpochExhausted
+            }
+            RangeTextInputError::Geometry(ExactGeometryError::IdNotMonotonic) => {
+                RangeResponseRejectionClass::ExactGeometryIdNotMonotonic
+            }
+            RangeTextInputError::Geometry(ExactGeometryError::IndexIncomplete) => {
+                RangeResponseRejectionClass::ExactGeometryIndexIncomplete
+            }
+            RangeTextInputError::Geometry(ExactGeometryError::PageAlreadyPending) => {
+                RangeResponseRejectionClass::ExactGeometryPageAlreadyPending
+            }
+            RangeTextInputError::Geometry(ExactGeometryError::WrongPage(_)) => {
+                RangeResponseRejectionClass::ExactGeometryWrongPage
+            }
+            RangeTextInputError::Geometry(ExactGeometryError::WrongInputKind) => {
+                RangeResponseRejectionClass::ExactGeometryWrongInputKind
+            }
+            RangeTextInputError::Geometry(ExactGeometryError::WrongObjectPage(_)) => {
+                RangeResponseRejectionClass::ExactGeometryWrongObjectPage
+            }
+            RangeTextInputError::Geometry(ExactGeometryError::NoncontiguousPage { .. }) => {
+                RangeResponseRejectionClass::ExactGeometryNoncontiguousPage
+            }
+            RangeTextInputError::Geometry(ExactGeometryError::PageTooLarge) => {
+                RangeResponseRejectionClass::ExactGeometryPageTooLarge
+            }
+            RangeTextInputError::Geometry(ExactGeometryError::SourceContract) => {
+                RangeResponseRejectionClass::ExactGeometrySourceContract
+            }
+            RangeTextInputError::Geometry(ExactGeometryError::Layout(
+                gpui::StreamingLayoutError::InvalidConfiguration,
+            )) => RangeResponseRejectionClass::ExactGeometryLayoutInvalidConfiguration,
+            RangeTextInputError::Geometry(ExactGeometryError::Layout(
+                gpui::StreamingLayoutError::InvalidMetric(_),
+            )) => RangeResponseRejectionClass::ExactGeometryLayoutInvalidMetric,
+            RangeTextInputError::Geometry(ExactGeometryError::Layout(
+                gpui::StreamingLayoutError::InputMismatch,
+            )) => RangeResponseRejectionClass::ExactGeometryLayoutInputMismatch,
+            RangeTextInputError::Geometry(ExactGeometryError::Layout(
+                gpui::StreamingLayoutError::SegmentPolicyMismatch,
+            )) => RangeResponseRejectionClass::ExactGeometryLayoutSegmentPolicyMismatch,
+            RangeTextInputError::Geometry(ExactGeometryError::Layout(
+                gpui::StreamingLayoutError::OutOfOrder,
+            )) => RangeResponseRejectionClass::ExactGeometryLayoutOutOfOrder,
+            RangeTextInputError::Geometry(ExactGeometryError::Layout(
+                gpui::StreamingLayoutError::InvalidPosition,
+            )) => RangeResponseRejectionClass::ExactGeometryLayoutInvalidPosition,
+            RangeTextInputError::Geometry(ExactGeometryError::Layout(
+                gpui::StreamingLayoutError::InvalidSegment,
+            )) => RangeResponseRejectionClass::ExactGeometryLayoutInvalidSegment,
+            RangeTextInputError::Geometry(ExactGeometryError::Layout(
+                gpui::StreamingLayoutError::Ended,
+            )) => RangeResponseRejectionClass::ExactGeometryLayoutEnded,
+            RangeTextInputError::Geometry(ExactGeometryError::Layout(
+                gpui::StreamingLayoutError::CapacityExceeded(_),
+            )) => RangeResponseRejectionClass::ExactGeometryLayoutCapacityExceeded,
+            RangeTextInputError::Geometry(ExactGeometryError::Layout(
+                gpui::StreamingLayoutError::Overflow(_),
+            )) => RangeResponseRejectionClass::ExactGeometryLayoutOverflow,
+            RangeTextInputError::Geometry(ExactGeometryError::Layout(
+                gpui::StreamingLayoutError::Cancelled,
+            )) => RangeResponseRejectionClass::ExactGeometryLayoutCancelled,
+            RangeTextInputError::IncompleteSurface => {
+                RangeResponseRejectionClass::CandidateSurfaceIncomplete
+            }
+            _ => RangeResponseRejectionClass::OtherDeterministic,
+        });
+        self.response_rejection_count = self.response_rejection_count.saturating_add(1);
+    }
+
     pub(super) fn retire_page_response_custody(&mut self, key: crate::PageRequestKey) {
         self.response_custody.retain(
             |response| !matches!(response, RangeResponseCustody::Page(page) | RangeResponseCustody::PageNoAliases(page) | RangeResponseCustody::ResidentPage(page) if page.key() == key)
@@ -329,6 +479,7 @@ impl RangeTextInput {
         let Some(response) = self.response_custody.pop_front() else {
             unreachable!("response custody was checked nonempty")
         };
+        self.pending_response_exact_geometry_failure_stage = None;
         let retry = response.clone();
         self.active_response_processing = retry
             .transient_charge()
@@ -351,13 +502,14 @@ impl RangeTextInput {
         };
         self.active_response_processing = RangeSurfaceCharge::default();
         if let Err(error) = result {
+            self.record_response_rejection(&retry, &error);
             self.refund_realization_credit();
             let retained = retry.remains_dispatched(self);
             if retained {
                 let has_tail = !self.response_custody.is_empty();
                 self.response_custody.push_back(retry);
                 self.observe_realization_ownership();
-                if has_tail {
+                if has_tail || matches!(error, RangeTextInputError::SurfaceCapacity) {
                     self.schedule_realization_continuation(cx);
                 }
             } else if !self.response_custody.is_empty() {
@@ -390,6 +542,7 @@ impl RangeTextInput {
             .response_custody
             .pop_front()
             .expect("checked response exists");
+        self.pending_response_exact_geometry_failure_stage = None;
         let retry = response.clone();
         let RangeResponseCustody::Object(page) = response else {
             unreachable!()
@@ -401,13 +554,14 @@ impl RangeTextInput {
         let result = self.deliver_custodied_object_page(page, None, cx);
         self.active_response_processing = RangeSurfaceCharge::default();
         if let Err(error) = result {
+            self.record_response_rejection(&retry, &error);
             self.refund_realization_credit();
             let retained = retry.remains_dispatched(self);
             if retained {
                 let has_tail = !self.response_custody.is_empty();
                 self.response_custody.push_back(retry);
                 self.observe_realization_ownership();
-                if has_tail {
+                if has_tail || matches!(error, RangeTextInputError::SurfaceCapacity) {
                     self.schedule_realization_continuation(cx);
                 }
             } else if !self.response_custody.is_empty() {

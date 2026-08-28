@@ -122,6 +122,12 @@ Public desired-state transitions align or replace in-flight target geometry. A t
 that does not align with its surface candidate is therefore a deterministic invariant failure: it
 closes the named response and geometry work with a content-free error while preserving the prior
 coherent publication, and it creates neither a capacity fallback nor a pending successor intent.
+Exact-geometry scan component capacity exceeded by an immutable response under unchanged configured
+layout limits is likewise deterministic, not terminal-publication capacity: it closes that exact
+response and job through the same atomic failure boundary. Content-free diagnostics expose the last
+response-rejection class, rejection count, and exact-geometry failure stage without keys, offsets,
+payloads, or source content. Only explicit surface-publication capacity retains exact custody for
+retry, and every retained custody retry schedules realization liveness.
 Pending Select All is resolved from the completed index's bounded exact document endpoints and is
 published inside that terminal surface, never by a second fallible transition.
 
@@ -132,6 +138,12 @@ movement, buffer start and end movement, selection extension, select all, backsp
 delete, Enter, Shift-Enter, copy, cut, paste, undo, and redo. Undo and redo operate on the local
 bounded history in owned-value variants. In range-backed mode they request fixed-size host-owned
 historical-root selection and never enter the ordinary mutation proposal stream.
+
+Disabled mode retains sizing, clipping, painting, and bounded range-realization layout and prepaint,
+but installs no focus, tab, key-context, action, pointer, wheel, platform-input, or scrollbar route.
+It creates no input hitbox and emits no widget input event. A host may therefore use a disabled
+range-backed instance as a noninteractive realization surface without bypassing ordinary GPUI
+layout and prepaint.
 
 Word movement, selection, deletion, and double-click selection share the crate-owned Unicode word
 segments from `doc/design.md`. Previous-word skips immediately preceding whitespace and lands at the

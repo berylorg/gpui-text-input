@@ -53,6 +53,7 @@ fn terminal_surface_capacity_retries_exact_custody_without_fallback(cx: &mut gpu
             assert_eq!(input.response_custody.len(), 1);
             assert!(input.dispatched_object_pages.contains(&key));
             assert!(input.pending_target_intent.is_none());
+            assert!(input.realization_continuation_scheduled);
 
             input.config.limits.max_surface_bytes = 2 * 1024 * 1024;
             input.config.limits.max_surface_items = 32_768;

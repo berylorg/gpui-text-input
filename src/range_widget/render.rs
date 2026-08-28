@@ -12,8 +12,7 @@ use crate::{RangeTextInput, RangeTextInputError};
 impl Render for RangeTextInput {
     fn render(&mut self, _window: &mut Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
         let input = cx.entity();
-        let focus = self.focus_handle.clone();
-        let scrollbar = self.render_scrollbar(input.clone());
+        let focus = self.enabled.then(|| self.focus_handle.clone());
         div()
             .relative()
             .w_full()
@@ -21,58 +20,65 @@ impl Render for RangeTextInput {
             .h_full()
             .overflow_hidden()
             .when(self.enabled, |element| {
+                let focus = focus.as_ref().expect("enabled input has a focus handle");
                 element
                     .key_context(TEXT_INPUT_KEY_CONTEXT)
-                    .track_focus(&focus)
+                    .track_focus(focus)
                     .tab_stop(true)
                     .cursor(CursorStyle::IBeam)
+                    .on_action(cx.listener(Self::backspace))
+                    .on_action(cx.listener(Self::delete))
+                    .on_action(cx.listener(Self::delete_word_backward))
+                    .on_action(cx.listener(Self::delete_word_forward))
+                    .on_action(cx.listener(Self::move_left))
+                    .on_action(cx.listener(Self::move_right))
+                    .on_action(cx.listener(Self::move_up))
+                    .on_action(cx.listener(Self::move_down))
+                    .on_action(cx.listener(Self::move_word_left))
+                    .on_action(cx.listener(Self::move_word_right))
+                    .on_action(cx.listener(Self::select_left))
+                    .on_action(cx.listener(Self::select_right))
+                    .on_action(cx.listener(Self::select_up))
+                    .on_action(cx.listener(Self::select_down))
+                    .on_action(cx.listener(Self::select_word_left))
+                    .on_action(cx.listener(Self::select_word_right))
+                    .on_action(cx.listener(Self::move_home))
+                    .on_action(cx.listener(Self::move_end))
+                    .on_action(cx.listener(Self::select_home))
+                    .on_action(cx.listener(Self::select_end))
+                    .on_action(cx.listener(Self::move_to_start))
+                    .on_action(cx.listener(Self::move_to_end))
+                    .on_action(cx.listener(Self::select_to_start))
+                    .on_action(cx.listener(Self::select_to_end))
+                    .on_action(cx.listener(Self::select_all))
+                    .on_action(cx.listener(Self::enter))
+                    .on_action(cx.listener(Self::space))
+                    .on_action(cx.listener(Self::insert_newline))
+                    .on_action(cx.listener(Self::copy))
+                    .on_action(cx.listener(Self::cut))
+                    .on_action(cx.listener(Self::paste))
+                    .on_action(cx.listener(Self::undo))
+                    .on_action(cx.listener(Self::redo))
+                    .on_mouse_down(MouseButton::Left, cx.listener(Self::pointer_down))
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|input, _, _, _| input.pointer_anchor = None),
+                    )
+                    .on_mouse_up_out(
+                        MouseButton::Left,
+                        cx.listener(|input, _, _, _| input.pointer_anchor = None),
+                    )
+                    .on_mouse_move(cx.listener(Self::pointer_move))
+                    .on_scroll_wheel(cx.listener(Self::scroll_wheel))
             })
-            .on_action(cx.listener(Self::backspace))
-            .on_action(cx.listener(Self::delete))
-            .on_action(cx.listener(Self::delete_word_backward))
-            .on_action(cx.listener(Self::delete_word_forward))
-            .on_action(cx.listener(Self::move_left))
-            .on_action(cx.listener(Self::move_right))
-            .on_action(cx.listener(Self::move_up))
-            .on_action(cx.listener(Self::move_down))
-            .on_action(cx.listener(Self::move_word_left))
-            .on_action(cx.listener(Self::move_word_right))
-            .on_action(cx.listener(Self::select_left))
-            .on_action(cx.listener(Self::select_right))
-            .on_action(cx.listener(Self::select_up))
-            .on_action(cx.listener(Self::select_down))
-            .on_action(cx.listener(Self::select_word_left))
-            .on_action(cx.listener(Self::select_word_right))
-            .on_action(cx.listener(Self::move_home))
-            .on_action(cx.listener(Self::move_end))
-            .on_action(cx.listener(Self::select_home))
-            .on_action(cx.listener(Self::select_end))
-            .on_action(cx.listener(Self::move_to_start))
-            .on_action(cx.listener(Self::move_to_end))
-            .on_action(cx.listener(Self::select_to_start))
-            .on_action(cx.listener(Self::select_to_end))
-            .on_action(cx.listener(Self::select_all))
-            .on_action(cx.listener(Self::enter))
-            .on_action(cx.listener(Self::space))
-            .on_action(cx.listener(Self::insert_newline))
-            .on_action(cx.listener(Self::copy))
-            .on_action(cx.listener(Self::cut))
-            .on_action(cx.listener(Self::paste))
-            .on_action(cx.listener(Self::undo))
-            .on_action(cx.listener(Self::redo))
-            .on_mouse_down(MouseButton::Left, cx.listener(Self::pointer_down))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|input, _, _, _| input.pointer_anchor = None),
-            )
-            .on_mouse_up_out(
-                MouseButton::Left,
-                cx.listener(|input, _, _, _| input.pointer_anchor = None),
-            )
-            .on_mouse_move(cx.listener(Self::pointer_move))
-            .on_scroll_wheel(cx.listener(Self::scroll_wheel))
-            .child(RangeTextInputElement { input })
-            .when_some(scrollbar, |element, scrollbar| element.child(scrollbar))
+            .child(RangeTextInputElement {
+                input: input.clone(),
+            })
+            .when(self.enabled, |element| {
+                element.when_some(self.render_scrollbar(input), |element, scrollbar| {
+                    element.child(scrollbar)
+                })
+            })
     }
 }
 
