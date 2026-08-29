@@ -5163,6 +5163,151 @@ fn malformed_exact_geometry_target_object_page_retains_prior_surface_and_can_res
     });
 }
 
+fn marker_object_configuration(source: &str, work_per_frame: usize) -> RangeTextInputConfig {
+    let first = object_neighbor(93_001, 10);
+    let mut configuration = config(source, 1);
+    configuration.layout.start_position =
+        SourcePosition::new(ByteOffset::new(0), InlineObjectGap::before(first)).into();
+    configuration.layout.limits.segment_bytes = 4096;
+    configuration.layout.limits.glyphs = 4096;
+    configuration.layout.limits.maps = 4097;
+    configuration.layout.limits.retained_items = 32_768;
+    configuration.layout.limits.retained_bytes = 2 * 1024 * 1024;
+    configuration.geometry_limits =
+        ExactGeometryLimits::new(49_152, 16, 4 * 1024 * 1024, 65_536).unwrap();
+    configuration.residency_limits = ResidencyLimits::new(6, 384 * 1024, 6, 384 * 1024).unwrap();
+    configuration.object_residency_limits =
+        ObjectResidencyLimits::new(6, 48, 65_536, 65_536, 6, 48, 65_536).unwrap();
+    configuration.limits = RangeTextInputLimits::new(
+        8 * 1024 * 1024,
+        131_072,
+        work_per_frame,
+        px(80.),
+        49_152,
+        49_152,
+        px(16.),
+    )
+    .unwrap();
+    configuration
+}
+
+#[gpui::test]
+fn selection_retarget_settles_superseded_object_response_and_nonterminal_index_accounting(
+    cx: &mut gpui::TestAppContext,
+) {
+    let source = "AB";
+    let facts = [
+        object_fact(93_001, 0, 10),
+        object_fact(93_002, 0, 20),
+        object_fact(93_003, 1, 10),
+        object_fact(93_004, 1, 20),
+    ];
+    let (input, cx) = cx.add_window_view(|window, cx| {
+        RangeTextInput::new(marker_object_configuration(source, 32), window, cx).unwrap()
+    });
+    for _ in 0..256 {
+        if input.read_with(cx, |input, _| input.is_surface_current_and_interactive()) {
+            break;
+        }
+        match input.update(cx, |input, _| input.take_request()) {
+            Some(RangeTextInputRequest::Page(request)) => {
+                let page = page_for(source, request.key().id().get(), request);
+                cx.update(|window, app| {
+                    input.update(app, |input, cx| {
+                        input.deliver_page(page, window, cx).unwrap()
+                    })
+                });
+            }
+            Some(RangeTextInputRequest::ObjectPage(request)) => {
+                let page = restoration_object_page(request, &facts, request.key().id().get());
+                cx.update(|window, app| {
+                    input.update(app, |input, cx| {
+                        input
+                            .deliver_object_page_in_window(page, window, cx)
+                            .unwrap()
+                    })
+                });
+            }
+            Some(RangeTextInputRequest::ReleasePage(_))
+            | Some(RangeTextInputRequest::CancelPage(_))
+            | Some(RangeTextInputRequest::ReleaseObjectPage(_))
+            | Some(RangeTextInputRequest::CancelObjectPage(_)) => {}
+            Some(other) => panic!("unexpected initial marker request: {other:?}"),
+            None => {
+                cx.update(|window, app| window.draw(app).clear());
+                cx.run_until_parked();
+            }
+        }
+    }
+    input.read_with(cx, |input, _| {
+        assert!(input.is_surface_current_and_interactive());
+        assert!(!input.is_quiescent());
+    });
+    let mut queued_index_object = false;
+    for _ in 0..256 {
+        match input.update(cx, |input, _| input.take_request()) {
+            Some(RangeTextInputRequest::Page(request)) => {
+                let page = page_for(source, request.key().id().get(), request);
+                cx.update(|window, app| {
+                    input.update(app, |input, cx| {
+                        input.deliver_page(page, window, cx).unwrap()
+                    })
+                });
+                queued_index_object = input.read_with(cx, |input, _| {
+                    let current = input.realization_diagnostics().current;
+                    current.pending_geometry_objects == 1 && current.queued_requests > 0
+                });
+            }
+            Some(RangeTextInputRequest::ObjectPage(request)) => {
+                let page = restoration_object_page(request, &facts, request.key().id().get());
+                cx.update(|window, app| {
+                    input.update(app, |input, cx| {
+                        input
+                            .deliver_object_page_in_window(page, window, cx)
+                            .unwrap()
+                    })
+                });
+            }
+            Some(RangeTextInputRequest::ReleasePage(_))
+            | Some(RangeTextInputRequest::CancelPage(_))
+            | Some(RangeTextInputRequest::ReleaseObjectPage(_))
+            | Some(RangeTextInputRequest::CancelObjectPage(_)) => {}
+            Some(other) => panic!("unexpected retarget request: {other:?}"),
+            None => {
+                cx.update(|window, app| window.draw(app).clear());
+                cx.run_until_parked();
+            }
+        }
+        if queued_index_object {
+            break;
+        }
+    }
+    assert!(queued_index_object);
+    let selection = RangeSourceSelection {
+        anchor: SourcePosition::new(
+            ByteOffset::new(0),
+            InlineObjectGap::before(object_neighbor(93_001, 10)),
+        ),
+        head: ordinary_position(source.len() as u64),
+    };
+    cx.update(|window, app| {
+        input.update(app, |input, cx| {
+            input
+                .rebind(binding(source, 1), Some(selection), window, cx)
+                .unwrap()
+        })
+    });
+    drive_pages_with_objects(&input, cx, source, &facts);
+    input.read_with(cx, |input, _| {
+        let diagnostics = input.realization_diagnostics();
+        assert_eq!(diagnostics.response_rejection_count, 0);
+        assert!(diagnostics.superseded_geometry_object_responses_settled > 0);
+        assert_eq!(diagnostics.current.response_custody_count, 0);
+        assert!(input.is_surface_current_and_interactive());
+        assert!(input.is_quiescent());
+    });
+}
+
 fn malformed_geometry_object_residency_conflict(cx: &mut gpui::TestAppContext, target: bool) {
     cx.update(ensure_text_input_bindings);
     let source = "x".repeat(120);

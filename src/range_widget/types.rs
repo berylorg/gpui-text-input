@@ -223,6 +223,7 @@ pub struct RangeRealizationDiagnostics {
     pub geometry_high_water_items: usize,
     pub last_response_rejection: Option<RangeResponseRejectionClass>,
     pub response_rejection_count: u64,
+    pub superseded_geometry_object_responses_settled: u64,
     pub last_response_rejection_stage: Option<crate::ExactGeometryFailureStage>,
 }
 

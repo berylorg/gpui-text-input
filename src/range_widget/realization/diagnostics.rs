@@ -40,6 +40,8 @@ impl RangeTextInput {
             geometry_high_water_items: self.geometry.retained_high_water_items(),
             last_response_rejection: self.last_response_rejection,
             response_rejection_count: self.response_rejection_count,
+            superseded_geometry_object_responses_settled: self
+                .superseded_geometry_object_responses_settled,
             last_response_rejection_stage: self.last_response_rejection_stage,
         }
     }

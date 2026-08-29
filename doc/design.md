@@ -599,8 +599,10 @@ Exact-geometry scan component capacity exceeded by an immutable response under u
 layout limits is a deterministic preparation failure, not retryable terminal-publication capacity.
 It uses the same atomic response-and-job closure. Content-free diagnostics retain only the last
 response-rejection class, rejection count, and exact-geometry failure stage; they expose no request
-key, source offset, payload, or content. Only explicit surface-publication capacity preserves exact
-response custody for retry, and every retained retry schedules realization liveness.
+key, source offset, payload, or content. A monotonic content-free counter separately records
+successful superseded-job object-response settlement. Only explicit surface-publication capacity
+preserves exact response custody for retry, and every retained retry schedules realization
+liveness.
 
 Pending Select All is part of terminal preparation rather than a successor transition. The exact
 completed index retains constant-size first and last object cursors, from which the candidate derives
@@ -611,6 +613,16 @@ Preparation computes residency against a read-only post-retirement projection. E
 the retirement set are treated as absent and their exact charges are subtracted before the new
 demand is classified. Coalescing is valid only onto a pending request that survives the same
 candidate; otherwise the demand uses a surviving resident page or reserves one new exact request.
+When a geometry object demand coalesces onto a surviving external request, or a superseded geometry
+job's exact response arrives while a newer job is active, that response first settles its own exact
+dispatch into object residency and releases it once. The current logical geometry job then consumes
+the admitted page through the existing resident-object path when its demand matches, without
+cloning or reinterpreting the response key. A superseded response never fails the current job;
+retry retains the external response only if this residency admission is rejected for surface
+capacity.
+When an index completes while its prepared target transition remains nonterminal, presentation
+overlap is derived from that transition's active scanner. Absence of a terminal target publication
+is not a capacity failure and does not retain the completed response for retry.
 Rapid target replacement prepares retirement and successor admission together, so it neither
 cancels the current target before successor admission nor rejects the successor merely because the
 superseded target still owns the single active slot.

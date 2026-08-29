@@ -93,7 +93,7 @@ impl PreparedTargetResponse {
                 target.presentation_overlap_bytes(pages)
             }
             PreparedTargetResponseState::CompleteIndex { target, .. } => {
-                target.terminal_target()?.presentation_overlap_bytes(pages)
+                target.presentation_overlap_bytes(pages)
             }
         }
     }

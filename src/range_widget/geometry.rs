@@ -1032,8 +1032,25 @@ impl RangeTextInput {
             .pending_geometry_object
             .as_ref()
             .ok_or(RangeTextInputError::Stale)?;
+        let pending_key = pending.request.key();
+        let coalesced = matches!(pending.wait, GeometryObjectWait::Coalesced(wait) if wait == key);
+        let detached_job = self.active_geometry != Some(pending.job);
+        if coalesced && (pending_key != key || detached_job) {
+            if key.purpose() != crate::ObjectPurpose::GeometryIndex
+                || !self.dispatched_object_pages.contains(&key)
+            {
+                return Err(RangeTextInputError::Stale);
+            }
+            return self.deliver_residency_geometry_object_page(
+                page,
+                pending.job,
+                pending_key,
+                detached_job,
+                cx,
+            );
+        }
         if key.purpose() != crate::ObjectPurpose::GeometryIndex
-            || pending.request.key() != key
+            || pending_key != key
             || self.active_geometry != Some(pending.job)
             || !self.dispatched_object_pages.contains(&key)
         {
@@ -1279,8 +1296,25 @@ impl RangeTextInput {
             .pending_geometry_object
             .as_ref()
             .ok_or(RangeTextInputError::Stale)?;
+        let pending_key = pending.request.key();
+        let coalesced = matches!(pending.wait, GeometryObjectWait::Coalesced(wait) if wait == key);
+        let detached_job = self.active_geometry != Some(pending.job);
+        if coalesced && (pending_key != key || detached_job) {
+            if key.purpose() != crate::ObjectPurpose::GeometryTarget
+                || !self.dispatched_object_pages.contains(&key)
+            {
+                return Err(RangeTextInputError::Stale);
+            }
+            return self.deliver_residency_geometry_object_page(
+                page,
+                pending.job,
+                pending_key,
+                detached_job,
+                cx,
+            );
+        }
         if key.purpose() != crate::ObjectPurpose::GeometryTarget
-            || pending.request.key() != key
+            || pending_key != key
             || self.active_geometry != Some(pending.job)
             || !self.dispatched_object_pages.contains(&key)
         {
@@ -1389,6 +1423,142 @@ impl RangeTextInput {
         };
         self.commit_nonterminal_response_publication(candidate, cx);
         self.service_geometry_until_external_boundary(window, cx)
+    }
+
+    fn deliver_residency_geometry_object_page(
+        &mut self,
+        page: crate::ObjectPage,
+        job: crate::GeometryJobKey,
+        pending_key: ObjectRequestKey,
+        detached_job: bool,
+        cx: &mut Context<Self>,
+    ) -> Result<(), RangeTextInputError> {
+        let response_key = page.key();
+        let proofs = match self
+            .residency
+            .prove_object_page_anchors(self.config.binding, &page)
+        {
+            Ok(proofs) => proofs,
+            Err(_) => {
+                self.reject_delivered_residency_geometry_object_page(
+                    job,
+                    pending_key,
+                    response_key,
+                    detached_job,
+                    cx,
+                );
+                return Err(RangeTextInputError::Geometry(
+                    crate::ExactGeometryError::SourceContract,
+                ));
+            }
+        };
+        let admission = match self.object_residency.prepare_admit(page, proofs) {
+            Ok(admission) => admission,
+            Err(crate::ObjectPageAdmissionError::Malformed(_)) => {
+                self.reject_delivered_residency_geometry_object_page(
+                    job,
+                    pending_key,
+                    response_key,
+                    detached_job,
+                    cx,
+                );
+                return Err(RangeTextInputError::Geometry(
+                    crate::ExactGeometryError::SourceContract,
+                ));
+            }
+            Err(
+                crate::ObjectPageAdmissionError::Stale(_)
+                | crate::ObjectPageAdmissionError::Cancelled(_)
+                | crate::ObjectPageAdmissionError::Unavailable(_)
+                | crate::ObjectPageAdmissionError::LimitExceeded(_),
+            ) => return Err(RangeTextInputError::Stale),
+        };
+        if self.requests.len() == self.requests.capacity() {
+            return Err(RangeTextInputError::SurfaceCapacity);
+        }
+        let charge = admission.page().retained_charge();
+        let additional = crate::RangeSurfaceCharge {
+            bytes: admission
+                .retained_bytes()
+                .checked_sub(charge.bytes())
+                .ok_or(RangeTextInputError::SurfaceCapacity)?,
+            items: admission
+                .retained_items()
+                .checked_sub(
+                    charge
+                        .allocated_items()
+                        .checked_add(1)
+                        .ok_or(RangeTextInputError::SurfaceCapacity)?,
+                )
+                .ok_or(RangeTextInputError::SurfaceCapacity)?,
+        };
+        let current = self.current_realization_ownership();
+        let peak = crate::RangeSurfaceCharge {
+            bytes: current
+                .owned_bytes
+                .checked_add(additional.bytes)
+                .ok_or(RangeTextInputError::SurfaceCapacity)?,
+            items: current
+                .owned_items
+                .checked_add(additional.items)
+                .ok_or(RangeTextInputError::SurfaceCapacity)?,
+        };
+        if peak.bytes > self.config.limits.max_surface_bytes
+            || peak.items > self.config.limits.max_surface_items
+        {
+            return Err(RangeTextInputError::SurfaceCapacity);
+        }
+        self.observe_surface_admission_peak(peak);
+        let page_id = admission.page().id();
+        self.object_residency.commit_prepared_admit(admission);
+        if detached_job {
+            self.superseded_geometry_object_responses_settled = self
+                .superseded_geometry_object_responses_settled
+                .saturating_add(1);
+        }
+        let matching_pending = self.pending_geometry_object.as_ref().is_some_and(|pending| {
+            pending.job == job
+                && matches!(pending.wait, GeometryObjectWait::Coalesced(wait) if wait == response_key)
+        });
+        if matching_pending {
+            if detached_job {
+                self.pending_geometry_object = None;
+            } else if let Some(pending) = self.pending_geometry_object.as_mut() {
+                pending.wait = GeometryObjectWait::Resident(page_id);
+            }
+        }
+        assert!(self.dispatched_object_pages.remove(&response_key));
+        self.commit_prepared_request(RangeTextInputRequest::ReleaseObjectPage(response_key));
+        self.observe_realization_ownership();
+        cx.notify();
+        Ok(())
+    }
+
+    fn reject_delivered_residency_geometry_object_page(
+        &mut self,
+        job: crate::GeometryJobKey,
+        pending_key: ObjectRequestKey,
+        response_key: ObjectRequestKey,
+        detached_job: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let _ = self
+            .object_residency
+            .settle(response_key, crate::ObjectPageFailure::Malformed);
+        if detached_job {
+            if self.pending_geometry_object.as_ref().is_some_and(|pending| {
+                pending.job == job
+                    && matches!(pending.wait, GeometryObjectWait::Coalesced(wait) if wait == response_key)
+            }) {
+                self.pending_geometry_object = None;
+            }
+        } else if let Ok(release) = self.geometry.fail_object_page(job, pending_key) {
+            self.release_geometry(&release, None, Some(pending_key), Some(cx));
+            self.active_geometry = None;
+        }
+        if self.dispatched_object_pages.remove(&response_key) {
+            self.commit_prepared_request(RangeTextInputRequest::ReleaseObjectPage(response_key));
+        }
     }
 
     pub(in crate::range_widget) fn deliver_geometry_page_inner(

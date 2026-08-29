@@ -70,6 +70,22 @@ impl PreparedGeometryTransition {
         }
     }
 
+    pub(crate) fn presentation_overlap_bytes<'a>(
+        &self,
+        pages: impl Iterator<Item = &'a crate::ObjectPage> + Clone,
+    ) -> Option<usize> {
+        match &self.state {
+            PreparedGeometryState::Index(active) | PreparedGeometryState::Target(active) => {
+                super::types::presentation_overlap_bytes(
+                    &active.scanner.object_presentations,
+                    pages,
+                )
+            }
+            PreparedGeometryState::Desired(_) => Some(0),
+            PreparedGeometryState::Complete(target) => target.presentation_overlap_bytes(pages),
+        }
+    }
+
     pub(crate) fn retained_bytes(&self) -> usize {
         let state = match &self.state {
             PreparedGeometryState::Index(active) | PreparedGeometryState::Target(active) => {

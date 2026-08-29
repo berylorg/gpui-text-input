@@ -126,8 +126,9 @@ Exact-geometry scan component capacity exceeded by an immutable response under u
 layout limits is likewise deterministic, not terminal-publication capacity: it closes that exact
 response and job through the same atomic failure boundary. Content-free diagnostics expose the last
 response-rejection class, rejection count, and exact-geometry failure stage without keys, offsets,
-payloads, or source content. Only explicit surface-publication capacity retains exact custody for
-retry, and every retained custody retry schedules realization liveness.
+payloads, or source content. A monotonic content-free count also reports successful settlement of
+superseded-job object responses. Only explicit surface-publication capacity retains exact custody
+for retry, and every retained custody retry schedules realization liveness.
 Pending Select All is resolved from the completed index's bounded exact document endpoints and is
 published inside that terminal surface, never by a second fallible transition.
 
@@ -398,9 +399,16 @@ response releases all remaining session custody without creating a second termin
 Overlapping text-page and object-page demand coalesces into fixed request windows. Revision changes
 cancel stale requests, and new demand waits or replaces obsolete demand when no request slot is
 available; the widget never queues one request per movement, edit, logical line, source page,
-object, or same-anchor gap. Rebind and unmount cancel every cancellable page, segmentation,
-clipboard, and geometry request, release resident presentation and staged local capacity, and mark
-late results obsolete. A pre-admission ordinary edit or historical-root selection is cancelled.
+object, or same-anchor gap. A geometry object response shared by a later logical geometry request,
+or arriving for a superseded job while a newer job is active, settles and releases its external
+request into bounded residency first. The current request consumes a matching resident payload
+without a second object-page copy; the old response never fails the newer job, and capacity
+rejection preserves the original response and dispatch for retry. A completed index with a
+nonterminal prepared target charges presentation aliases from that target's active scanner rather
+than treating the absent terminal publication as capacity exhaustion. Rebind and unmount cancel
+every cancellable page, segmentation, clipboard, and geometry request, release resident
+presentation and staged local capacity, and mark late results obsolete. A pre-admission ordinary
+edit or historical-root selection is cancelled.
 An already admitted operation still settles at the host boundary but cannot apply to the detached
 or replacement widget binding.
 
