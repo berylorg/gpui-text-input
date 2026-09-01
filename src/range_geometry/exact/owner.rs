@@ -158,6 +158,22 @@ impl ExactGeometryOwner {
         key: GeometryJobKey,
         id: PageRequestId,
     ) -> Result<PageRequest, ExactGeometryError> {
+        let expected = self.preview_page_request(key, id)?;
+        let active = self
+            .active
+            .as_deref_mut()
+            .ok_or(ExactGeometryError::ObsoleteJob(key))?;
+        active.pending = Some(Box::new(PendingInput::Text(expected.key())));
+        self.highest_request = Some(id);
+        self.observe_current();
+        Ok(expected)
+    }
+
+    pub(crate) fn preview_page_request(
+        &self,
+        key: GeometryJobKey,
+        id: PageRequestId,
+    ) -> Result<PageRequest, ExactGeometryError> {
         let binding = self.inputs()?.binding;
         let retained_item_capacity = self
             .limits
@@ -166,7 +182,7 @@ impl ExactGeometryOwner {
             .ok_or(ExactGeometryError::CapacityExceeded)?;
         let active = self
             .active
-            .as_deref_mut()
+            .as_deref()
             .ok_or(ExactGeometryError::ObsoleteJob(key))?;
         if active.key != key {
             return Err(ExactGeometryError::ObsoleteJob(key));
@@ -195,22 +211,42 @@ impl ExactGeometryOwner {
             self.limits.max_page_bytes,
         )
         .map_err(|_| ExactGeometryError::InvalidLimits)?;
-        active.pending = Some(Box::new(PendingInput::Text(page_key)));
-        if let Err(error) = accounting::ensure_active(active).and_then(|_| {
-            (accounting::active_counts(active).total_items() <= retained_item_capacity)
-                .then_some(())
-                .ok_or(ExactGeometryError::CapacityExceeded)
-        }) {
-            active.pending = None;
-            return Err(error);
+        let active_counts = accounting::active_counts(active);
+        if active_counts
+            .total_bytes()
+            .checked_add(std::mem::size_of::<PageRequestKey>())
+            .is_none_or(|bytes| bytes > active.retained_capacity)
+            || active_counts
+                .total_items()
+                .checked_add(1)
+                .is_none_or(|items| items > retained_item_capacity)
+        {
+            return Err(ExactGeometryError::CapacityExceeded);
         }
-        self.highest_request = Some(id);
-        self.observe_current();
         Ok(PageRequest::new(page_key))
     }
 
     pub fn request_object_page(
         &mut self,
+        key: GeometryJobKey,
+        id: ObjectRequestId,
+        max_objects: usize,
+        max_retained_bytes: usize,
+    ) -> Result<ObjectRequest, ExactGeometryError> {
+        let expected =
+            self.preview_object_page_request(key, id, max_objects, max_retained_bytes)?;
+        let active = self
+            .active
+            .as_deref_mut()
+            .ok_or(ExactGeometryError::ObsoleteJob(key))?;
+        active.pending = Some(Box::new(PendingInput::Object(expected.key())));
+        self.highest_object_request = Some(id);
+        self.observe_current();
+        Ok(expected)
+    }
+
+    pub(crate) fn preview_object_page_request(
+        &self,
         key: GeometryJobKey,
         id: ObjectRequestId,
         max_objects: usize,
@@ -227,7 +263,7 @@ impl ExactGeometryOwner {
             .ok_or(ExactGeometryError::CapacityExceeded)?;
         let active = self
             .active
-            .as_deref_mut()
+            .as_deref()
             .ok_or(ExactGeometryError::ObsoleteJob(key))?;
         if active.key != key {
             return Err(ExactGeometryError::ObsoleteJob(key));
@@ -267,17 +303,18 @@ impl ExactGeometryOwner {
             demand,
         )
         .map_err(|_| ExactGeometryError::SourceContract)?;
-        active.pending = Some(Box::new(PendingInput::Object(request_key)));
-        if let Err(error) = accounting::ensure_active(active).and_then(|_| {
-            (accounting::active_counts(active).total_items() <= retained_item_capacity)
-                .then_some(())
-                .ok_or(ExactGeometryError::CapacityExceeded)
-        }) {
-            active.pending = None;
-            return Err(error);
+        let active_counts = accounting::active_counts(active);
+        if active_counts
+            .total_bytes()
+            .checked_add(std::mem::size_of::<crate::ObjectRequestKey>())
+            .is_none_or(|bytes| bytes > active.retained_capacity)
+            || active_counts
+                .total_items()
+                .checked_add(1)
+                .is_none_or(|items| items > retained_item_capacity)
+        {
+            return Err(ExactGeometryError::CapacityExceeded);
         }
-        self.highest_object_request = Some(id);
-        self.observe_current();
         Ok(ObjectRequest::new(request_key))
     }
 

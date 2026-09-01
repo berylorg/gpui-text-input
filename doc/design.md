@@ -555,6 +555,109 @@ If that later deletion conflicts, is rejected, is cancelled, or fails, the copie
 may remain but that deletion transaction applies no change. The crate provides no cut path that
 deletes before or independently of successful copy.
 
+## Range-Backed Prepublication Realization
+
+The public range-backed API provides one non-mounted prepublication realization boundary. It
+accepts an exact compact restoration seed and prepares a coherent range-backed publication
+candidate without constructing, mounting, rendering, or hiding a `text-input` element.
+The session is app-neutral and has no slot, view, window contribution, focus handle, tab stop, key
+context, platform-input handler, pointer or wheel hitbox, scrollbar interaction route, event
+subscription, or widget notification path. It may use explicitly supplied GPUI text and layout
+resources, but it never enters element layout, prepaint, paint, focus, or event dispatch.
+
+Session creation freezes the seed's binding identity, source revision and logical extent, caret and
+directed selection source positions, logical vertical-scroll anchor and bounded object
+continuation, and optional opaque history-authority identity with exact undo and redo availability.
+The owner supplies the currently authoritative binding descriptor and the same bounded text-page,
+object-page, and presentation sources used by an ordinary range-backed widget. Creation rejects an
+unequal binding, revision, or extent before admitting work. Before readiness, the session obtains
+one fixed-size exact-current owner validation result that repeats the binding, revision, extent,
+history-authority identity, and availability. Mismatch, rejection, or obsolescence prevents
+candidate publication. An absent history authority is likewise an exact validated state and is
+never inferred from prior widget state. The session accepts no mutation, clipboard, IME,
+historical-root selection, selection-change, scroll-command, or activation input; all seed facts
+remain immutable while it realizes them.
+
+The owner also supplies one immutable realization environment. It contains the available inline
+and block allocation, viewport and bounded overscan target, scale factor, text style and shaping
+inputs, line metrics, presentation generation and inline-object metric inputs, every other layout-
+epoch input, retained-byte and semantic-item capacities, request-window capacities, and per-step
+work quantum. The session derives no geometry from a mounted element or hidden window. Changing any
+geometry-affecting environment fact makes the session and its result stale; the owner starts a new
+session rather than translating a candidate between environments.
+
+The environment is bound to the exact window-affine GPUI text system used for shaping and retains
+one owner-supplied bounded cleanup ledger. A session may advance only through that text system, and
+its candidate may be adopted only by an ordinary widget in the same window-affine environment.
+Environment identifiers alone do not substitute for this identity check.
+
+Progress is explicitly host-driven and asynchronous. One service step consumes at most the
+configured work quantum and returns a bounded status plus only the next admitted effects. Effects
+use the ordinary exact request keys and finite windows for text pages, object pages, segmentation
+continuations, geometry indexing, and block-target realization. The owner dispatches those effects,
+delivers each result through the session's exact key, and schedules another service step; the
+session does not spawn work, poll itself, depend on render callbacks, or busy-wait. Total service
+steps and total source bytes visited may grow with document or segment length, while each step,
+request, response, continuation, resident owner, and unpublished geometry owner remains within the
+configured finite capacities.
+
+Prepublication realization reuses the ordinary range-backed source validation, segmentation,
+streaming layout, geometry indexing, retained-memory accounting, and staged-publication
+preparation. It does not implement a second layout engine, renderer, surface format, or position
+policy. The session never concatenates the source, object collection, selected range, logical line,
+history, or requested viewport into a whole-value buffer and never asks the owner for a whole
+value. Source-zero-width objects retain their exact anchors, order cursors, gap witnesses,
+presentation generation, and bounded paging discipline.
+
+A ready result is one one-shot coherent publication candidate with its exact source key,
+presentation generation, layout epoch, realization environment identity, restoration facts,
+bounded resident inputs, prepared geometry, capacity state, and complete retained-capacity charge.
+Readiness applies the same coherence rules as ordinary mounted publication: caret, directed
+selection, scroll continuation, required viewport facts, inline-object gaps, and every exact
+geometry fact used by the candidate agree under one key. Bounded filler and a declared capacity-
+saturated state may cover lower-priority nominal viewport regions under the ordinary policy, but
+failure to realize the minimum exact caret, selection, and active scroll-anchor facts is a capacity
+outcome rather than a partial ready result.
+
+The candidate has no pixels and cannot paint, receive input, emit widget events, or become visible
+by itself. A fresh ordinary range-backed widget may consume it only when its source binding,
+revision, extent, history facts, presentation generation, layout-epoch inputs, realization
+environment, and configured capacities still match exactly. Consumption moves the candidate's
+bounded owners into the widget's ordinary staged-publication boundary without cloning or
+re-requesting them; that boundary performs the final atomic admission before the widget enables
+focus or input participation. A mismatch rejects and releases the candidate. After adoption,
+ordinary render, prepaint, paint, hit testing, scrolling, focus, event routing, and later
+realization are unchanged and read the same coherent surface used by every other range-backed
+publication.
+
+Every session and request carries a non-reused session generation in addition to its ordinary
+binding, revision, presentation, epoch, request, and job keys. Cancellation or disposal cancels
+all cancellable external effects, releases resident text and object pages, segmentation and
+geometry continuations, prepared fragments, request slots, and staged-publication capacity, and
+produces no candidate. A late result for a cancelled, replaced, completed, or stale session is
+obsolete and releases its payload without changing another session or mounted widget. Dropping or
+rejecting an unconsumed candidate releases all of its transferred-ready capacity.
+
+Before any request effect becomes observable, the session admits one exact cleanup record into the
+environment's configured finite ledger and charges that record and its reserved slot. Delivery,
+consumption, transfer, cancellation, and release update the same record; they never create an
+untracked interval. Destruction of a session or candidate performs only a synchronous, non-
+allocating, non-callback, non-panicking mark of its already registered records as cleanup-ready.
+It invokes no host code and cannot reenter the owner. The host drains those exact cancellation and
+release effects through the ordinary explicit service path with bounded work, and acknowledges each
+record before its slot can be reused. Ledger exhaustion is an ordinary capacity outcome before a
+request is exposed. Forgetting a Rust value does not authorize further progress or slot reuse; the
+owner must retain and drain the ledger for the lifetime of its environment.
+
+Malformed responses, exact-key collisions, source or history mismatch, arithmetic failure,
+deterministic geometry failure, and unsupported environment input terminate the session with a
+typed content-free failure and release its complete custody. Initial capacity denial leaves no
+session or allocation. A retryable exact-response admission denial preserves only that response's
+already bounded custody under the ordinary staged-publication rules and reports capacity-blocked
+without advancing; subsequent cancellation, terminal capacity failure, or disposal releases it.
+No failure, cancellation, capacity outcome, or stale completion publishes a partial candidate,
+retains unbounded work, revives detached widget state, or changes authoritative text or history.
+
 ## Range-Backed Atomic Interaction Publication
 
 The range-backed widget owns one bounded staged-publication boundary for layout, presentation,

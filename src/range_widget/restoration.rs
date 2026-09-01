@@ -20,6 +20,15 @@ pub(super) struct RestorationValidation {
     gap_proven: bool,
 }
 
+pub(super) enum RestorationValidationNext {
+    Text(ByteOffset),
+    Object {
+        position: SourcePosition,
+        cursor: Option<ObjectCursor>,
+    },
+    Complete,
+}
+
 impl RestorationValidation {
     pub fn new(seed: RangeRestorationSeed) -> Self {
         let positions = [
@@ -59,6 +68,14 @@ impl RestorationValidation {
         self.pending_object
     }
 
+    pub(super) fn begin_text(&mut self, key: PageRequestKey) {
+        self.pending_text = Some(key);
+    }
+
+    pub(super) fn begin_object(&mut self, key: ObjectRequestKey) {
+        self.pending_object = Some(key);
+    }
+
     #[cfg(test)]
     pub(super) fn complete_for_test(seed: RangeRestorationSeed) -> Self {
         let mut validation = Self::new(seed);
@@ -67,11 +84,113 @@ impl RestorationValidation {
         validation
     }
 
-    fn is_complete(&self) -> bool {
+    pub(super) fn is_complete(&self) -> bool {
         self.text_next == self.text_offsets.len()
             && self.object_next == self.object_positions.len()
             && self.pending_text.is_none()
             && self.pending_object.is_none()
+    }
+
+    pub(super) fn next(&self) -> RestorationValidationNext {
+        if self.text_next < self.text_offsets.len() {
+            return RestorationValidationNext::Text(self.text_offsets[self.text_next]);
+        }
+        if self.object_next < self.object_positions.len() {
+            return RestorationValidationNext::Object {
+                position: self.object_positions[self.object_next],
+                cursor: self.object_cursor,
+            };
+        }
+        RestorationValidationNext::Complete
+    }
+
+    pub(super) fn accept_text(
+        &mut self,
+        page: &crate::RangePage,
+    ) -> Result<(), RangeTextInputError> {
+        if self.pending_text != Some(page.key()) {
+            return Err(RangeTextInputError::Stale);
+        }
+        self.accept_text_boundary(page.candidate_is_boundary() == Some(true))?;
+        self.pending_text = None;
+        Ok(())
+    }
+
+    pub(super) fn accept_resident_text_boundary(
+        &mut self,
+        candidate_is_boundary: bool,
+    ) -> Result<(), RangeTextInputError> {
+        self.accept_text_boundary(candidate_is_boundary)
+    }
+
+    fn accept_text_boundary(
+        &mut self,
+        candidate_is_boundary: bool,
+    ) -> Result<(), RangeTextInputError> {
+        if !candidate_is_boundary {
+            return Err(RangeTextInputError::MalformedSeed);
+        }
+        self.text_next += 1;
+        Ok(())
+    }
+
+    pub(super) fn accept_object(&mut self, page: &ObjectPage) -> Result<(), RangeTextInputError> {
+        if self.pending_object != Some(page.key()) {
+            return Err(RangeTextInputError::Stale);
+        }
+        self.accept_object_contents(page)?;
+        self.pending_object = None;
+        Ok(())
+    }
+
+    pub(super) fn accept_resident_object(
+        &mut self,
+        page: &ObjectPage,
+    ) -> Result<(), RangeTextInputError> {
+        self.accept_object_contents(page)
+    }
+
+    fn accept_object_contents(&mut self, page: &ObjectPage) -> Result<(), RangeTextInputError> {
+        let position = self.object_positions[self.object_next];
+        for object in page.objects() {
+            self.object_seen = true;
+            let cursor = object.cursor();
+            let leading = self.prior_object.map_or_else(
+                || crate::InlineObjectGap::before(cursor.neighbor()),
+                |prior| {
+                    crate::InlineObjectGap::between(prior.neighbor(), cursor.neighbor())
+                        .expect("strict page order creates a valid gap")
+                },
+            );
+            self.gap_proven |= position.gap == leading;
+            self.prior_object = Some(cursor);
+        }
+        if page.complete() {
+            if let Some(last) = self.prior_object {
+                self.gap_proven |= position.gap == crate::InlineObjectGap::after(last.neighbor());
+            } else if position.gap == crate::InlineObjectGap::NoObjects {
+                self.gap_proven = true;
+            }
+            if !self.gap_proven
+                || (position.gap == crate::InlineObjectGap::NoObjects && self.object_seen)
+            {
+                return Err(RangeTextInputError::MalformedSeed);
+            }
+            self.object_next += 1;
+            self.object_cursor = None;
+            self.prior_object = None;
+            self.object_seen = false;
+            self.gap_proven = false;
+        } else {
+            let Some(cursor) = page.continuation() else {
+                return Err(RangeTextInputError::MalformedSeed);
+            };
+            if page.following() != ObjectPageEdgeFact::Continues(cursor) {
+                return Err(RangeTextInputError::MalformedSeed);
+            }
+            self.object_cursor = Some(cursor);
+        }
+        Ok(())
     }
 }
 
@@ -83,8 +202,7 @@ impl RangeTextInput {
         let Some(mut validation) = self.restoration.take() else {
             return Err(RangeTextInputError::Stale);
         };
-        if validation.text_next < validation.text_offsets.len() {
-            let candidate = validation.text_offsets[validation.text_next];
+        if let RestorationValidationNext::Text(candidate) = validation.next() {
             let id = PageRequestId::new(self.next_id());
             let key = PageRequestKey::validation(
                 id,
@@ -99,12 +217,11 @@ impl RangeTextInput {
             self.push_request(RangeTextInputRequest::Page(PageRequest::new(key)), cx)?;
             return Ok(());
         }
-        if validation.object_next < validation.object_positions.len() {
-            let position = validation.object_positions[validation.object_next];
+        if let RestorationValidationNext::Object { position, cursor } = validation.next() {
             let id = ObjectRequestId::new(self.next_id());
             let demand = ObjectDemandEnvelope::anchor(
                 position.byte_offset,
-                validation.object_cursor,
+                cursor,
                 ObjectDirection::Forward,
                 self.config.clipboard_limits.max_object_page_objects(),
                 self.config
@@ -147,13 +264,11 @@ impl RangeTextInput {
             cx.notify();
             return Err(RangeTextInputError::SurfaceCapacity);
         }
-        if page.candidate_is_boundary() != Some(true) {
+        if let Err(error) = validation.accept_text(&page) {
             self.restoration = None;
             cx.emit(RangeTextInputEvent::RestorationRejected);
-            return Err(RangeTextInputError::MalformedSeed);
+            return Err(error);
         }
-        validation.pending_text = None;
-        validation.text_next += 1;
         self.restoration = Some(validation);
         self.request_next_restoration_validation(cx)
     }
@@ -168,53 +283,11 @@ impl RangeTextInput {
             self.restoration = Some(validation);
             return Err(RangeTextInputError::Stale);
         }
-        let position = validation.object_positions[validation.object_next];
-        for object in page.objects() {
-            validation.object_seen = true;
-            let cursor = object.cursor();
-            let leading = validation.prior_object.map_or_else(
-                || crate::InlineObjectGap::before(cursor.neighbor()),
-                |prior| {
-                    crate::InlineObjectGap::between(prior.neighbor(), cursor.neighbor())
-                        .expect("strict page order creates a valid gap")
-                },
-            );
-            validation.gap_proven |= position.gap == leading;
-            validation.prior_object = Some(cursor);
+        if let Err(error) = validation.accept_object(&page) {
+            self.restoration = None;
+            cx.emit(RangeTextInputEvent::RestorationRejected);
+            return Err(error);
         }
-        if page.complete() {
-            if let Some(last) = validation.prior_object {
-                validation.gap_proven |=
-                    position.gap == crate::InlineObjectGap::after(last.neighbor());
-            } else if position.gap == crate::InlineObjectGap::NoObjects {
-                validation.gap_proven = true;
-            }
-            if !validation.gap_proven
-                || (position.gap == crate::InlineObjectGap::NoObjects && validation.object_seen)
-            {
-                self.restoration = None;
-                cx.emit(RangeTextInputEvent::RestorationRejected);
-                return Err(RangeTextInputError::MalformedSeed);
-            }
-            validation.object_next += 1;
-            validation.object_cursor = None;
-            validation.prior_object = None;
-            validation.object_seen = false;
-            validation.gap_proven = false;
-        } else {
-            let Some(cursor) = page.continuation() else {
-                self.restoration = None;
-                cx.emit(RangeTextInputEvent::RestorationRejected);
-                return Err(RangeTextInputError::MalformedSeed);
-            };
-            if page.following() != ObjectPageEdgeFact::Continues(cursor) {
-                self.restoration = None;
-                cx.emit(RangeTextInputEvent::RestorationRejected);
-                return Err(RangeTextInputError::MalformedSeed);
-            }
-            validation.object_cursor = Some(cursor);
-        }
-        validation.pending_object = None;
         self.restoration = Some(validation);
         self.request_next_restoration_validation(cx)
     }

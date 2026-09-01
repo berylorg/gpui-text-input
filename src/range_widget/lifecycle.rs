@@ -482,6 +482,7 @@ impl RangeTextInput {
             || seed.caret != seed.selection.head
             || seed.scroll.intra_anchor < Pixels::ZERO
             || seed.scroll.intra_anchor > self.config.limits.max_intra_anchor
+            || !f32::from(seed.scroll.intra_anchor).is_finite()
             || seed.selection.range().is_err()
         {
             cx.emit(RangeTextInputEvent::RestorationRejected);
@@ -516,6 +517,7 @@ impl RangeTextInput {
         self.active_geometry = None;
         self.surface_candidate = None;
         self.surface = None;
+        self.release_adopted_prepublication_custody();
         self.published_restoration = None;
         self.restoration = Some(super::restoration::RestorationValidation::new(seed));
         self.request_next_restoration_validation(cx)
@@ -613,6 +615,7 @@ impl RangeTextInput {
         self.pending_select_all = false;
         self.cancel_history_dispatch();
         self.surface = None;
+        self.release_adopted_prepublication_custody();
         self.pointer_anchor = None;
         self.scrollbar.model.set(None);
         let _ = self

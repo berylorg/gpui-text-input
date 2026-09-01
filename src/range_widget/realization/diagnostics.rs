@@ -3,6 +3,10 @@ use super::super::*;
 impl RangeTextInput {
     pub fn realization_diagnostics(&self) -> RangeRealizationDiagnostics {
         let surface = self.surface.as_ref();
+        let adopted_custody = self
+            .adopted_prepublication_custody
+            .as_ref()
+            .map_or(RangeSurfaceCharge::default(), |custody| custody.charge());
         RangeRealizationDiagnostics {
             max_surface_bytes: self.config.limits.max_surface_bytes,
             max_surface_items: self.config.limits.max_surface_items,
@@ -31,6 +35,8 @@ impl RangeTextInput {
                 surface.capacity_state()
             }),
             filler_count: surface.map_or(0, CoherentRangeSurface::filler_count),
+            adopted_custody_bytes: adopted_custody.bytes,
+            adopted_custody_items: adopted_custody.items,
             current: self.current_realization_ownership(),
             high_water: self.realization_high_water,
             surface_charge: surface
@@ -166,6 +172,10 @@ impl RangeTextInput {
             RangeSurfaceCharge::default(),
             super::PendingRebindIntent::charge,
         );
+        let adopted_prepublication_custody = self
+            .adopted_prepublication_custody
+            .as_ref()
+            .map_or(RangeSurfaceCharge::default(), |custody| custody.charge());
         let residency_owners = [
             self.residency.owner_storage_charge(),
             self.object_residency.owner_storage_charge(),
@@ -225,6 +235,7 @@ impl RangeTextInput {
             pending_rebind.bytes,
             dispatched_records.bytes,
             residency_owners.bytes,
+            adopted_prepublication_custody.bytes,
         ]
         .into_iter()
         .try_fold(0usize, usize::checked_add)
@@ -248,6 +259,7 @@ impl RangeTextInput {
             pending_rebind.items,
             dispatched_records.items,
             residency_owners.items,
+            adopted_prepublication_custody.items,
         ]
         .into_iter()
         .try_fold(0usize, usize::checked_add)

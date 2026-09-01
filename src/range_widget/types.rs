@@ -215,6 +215,8 @@ pub struct RangeRealizationDiagnostics {
     pub frame: RangeRealizationStep,
     pub capacity: RangeRealizationCapacityState,
     pub filler_count: usize,
+    pub adopted_custody_bytes: usize,
+    pub adopted_custody_items: usize,
     pub current: RangeRealizationOwnership,
     pub high_water: RangeRealizationOwnership,
     pub surface_charge: crate::RangeSurfaceCharge,

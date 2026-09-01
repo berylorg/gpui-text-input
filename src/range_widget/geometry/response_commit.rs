@@ -308,6 +308,7 @@ impl RangeTextInput {
         }
         self.surface_candidate = None;
         self.surface = Some(surface);
+        self.release_adopted_prepublication_custody();
         if let Some(seed) = state.restoration {
             self.restoration_seed = None;
             self.published_restoration = Some(seed);

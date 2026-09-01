@@ -19,6 +19,11 @@ inline-object realization, compact selection and caret source positions, composi
 pending ordinary-edit coordination, one fixed-size pending historical-selection intent, and atomic
 adoption of exact host results.
 
+The range-backed variant also exposes the package design's non-mounted prepublication realization
+boundary. That boundary prepares the same bounded coherent publication candidate used by an
+ordinary widget without creating a visible or hidden widget, focus target, input route, event
+source, or second rendering path.
+
 Hosts own validation, submission, persistence, labels, surrounding field chrome, and domain meaning of the text or atoms.
 
 # References
@@ -49,6 +54,14 @@ operation fragment collection. The historical slot retains only its direction, o
 exact base key, opaque history-authority identity, and captured positions. Request, job, and
 operation records carry exact keys; host results either carry the exact committed successor or
 prove a non-mutating terminal outcome.
+
+A prepublication realization session is a detached bounded work owner rather than widget anatomy.
+It holds one exact restoration seed, immutable owner-supplied viewport and layout environment,
+finite request and continuation windows, bounded resident inputs, one ordinary geometry/index
+pipeline, and at most one coherent publication candidate. It contains no root element, focus
+handle, scrollbar child, hitbox, event handler, painted surface, or authoritative source value.
+Its environment also owns a finite cleanup ledger bound to the exact window-affine text system.
+Every externally visible request has one pre-admitted exact ledger record before dispatch.
 
 A source position contains one proven UTF-8 byte offset and one constant-size inline-gap witness.
 The witness proves the adjacent object identities and order keys at that anchor, including the
@@ -91,7 +104,9 @@ index pending, geometry-index refining, geometry-index complete, geometry-index 
 index cancelled, block-target pending, block-target failed, block-target cancelled, oversize layout
 atom, overflowing, non-overflowing, scrollbar estimated, scrollbar exact, scrollbar visible,
 scrollbar animating, capacity-saturated, viewport-exceeds-rendering-capacity, bounded filler, and
-pointer selecting.
+pointer selecting. The detached prepublication boundary separately reports initializing,
+validating, waiting-for-response, advancing, capacity-blocked, ready, cancelled, stale, and failed
+lifecycle outcomes; these are API outcomes and never visible widget states by themselves.
 
 Pending work keeps the last coherent surface. Failure and cancellation settle only the named
 operation and expose an app-neutral outcome to the host. Obsolete responses are silently excluded
@@ -450,6 +465,30 @@ selection, viewport, and scroll position from newly admitted resident pages. It 
 invalid seed without clamping or translating it and never adopts resident state, in-flight work, or
 detached-settlement custody from the detached instance.
 
+Instead of mounting first, an owner may submit that exact seed to the non-mounted prepublication
+boundary defined by `doc/design.md`. The owner supplies the immutable viewport and layout
+environment, exact current binding descriptor, history validation, ordinary bounded sources, and
+all per-step work and retained-capacity limits. The owner repeatedly services the session, dispatches
+only its bounded text-page and object-page effects, delivers exact-key responses, and schedules
+later service after asynchronous input or capacity becomes available. Segmentation and geometry
+advance through the same bounded continuations and request windows as mounted realization; neither
+render callbacks nor a hidden disabled widget drive progress.
+
+Ready transfers one one-shot coherent candidate into a fresh ordinary range-backed widget. The
+widget atomically adopts it through the ordinary staged-publication boundary only while binding,
+revision, extent, history facts, presentation generation, layout inputs, viewport environment, and
+capacities and the window-affine text system still match. Focus, input routing, widget events, and
+visibility remain absent until that adoption succeeds. Cancellation, staleness, malformed input, capacity termination, failed
+validation, candidate rejection, and late responses release their exact detached custody and
+cannot change a mounted widget. The session emits no editing, activation, scroll, focus, or
+restoration event while detached.
+
+Session or candidate destruction marks its pre-registered cleanup records ready without allocation,
+host callback, reentrancy, or panic. The owner drains and acknowledges the resulting exact cancel
+and release effects through bounded ordinary service before ledger slots are reusable. A full
+ledger blocks new request admission; cleanup is never represented only by a discardable return
+value or caller convention.
+
 # Layout
 
 Single-line mode horizontally scrolls to keep the caret visible with reveal padding and vertically centers the shaped line in the current line height.
@@ -469,6 +508,14 @@ nearby content. Its resident page, object, presentation, and shaping work limits
 logical text and object counts grow. It never concatenates the source, selection, object
 collection, undo payload, or requested range into a whole-value buffer; nonresident layout
 advances through bounded source metadata and page requests.
+
+Prepublication realization receives those viewport, overscan, allocation, shaping, presentation,
+layout-epoch, and budget facts explicitly instead of reading them from element layout. It runs this
+same streaming layout and geometry pipeline without prepaint or paint and produces the same bounded
+coherent-surface candidate shape consumed by ordinary publication. It creates no offscreen pixels,
+alternate geometry cache, or whole-value preparation path. After candidate adoption, the mounted
+widget's layout, prepaint, paint, scrollbar, focus, hit-testing, and incremental realization rules
+are unchanged.
 
 When capacity cannot cover every nominally visible region, the widget coalesces the unrealized
 regions into bounded filler coverage and exposes `capacity-saturated` or

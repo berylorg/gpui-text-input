@@ -10,6 +10,7 @@ mod object_surface;
 mod page_delivery;
 mod platform;
 mod pointer;
+mod prepublication;
 mod realization;
 mod render;
 mod replacement;
@@ -21,6 +22,7 @@ mod terminal_tests;
 mod transition;
 mod types;
 
+pub use prepublication::*;
 pub use surface::{
     CoherentRangeSurface, RangeSurfaceCharge, RangeSurfaceFiller, RangeSurfaceHit,
     RealizedInlineObjectGeometry, RealizedInlineObjectPresentation, RealizedObjectGapGeometry,
@@ -63,6 +65,7 @@ pub struct RangeTextInput {
     )>,
     dispatched_clipboard: Option<DispatchedClipboard>,
     surface: Option<CoherentRangeSurface>,
+    adopted_prepublication_custody: Option<prepublication::AdoptedPrepublicationCustody>,
     last_surface_admission: Option<RangeSurfaceCharge>,
     last_realization_step: RangeRealizationStep,
     realization_frame_generation: u64,
@@ -137,6 +140,15 @@ enum PendingScroll {
     Page(ScrollDirection, Pixels),
 }
 
+pub(super) struct AdoptedPrepublicationOwners {
+    pub(super) geometry: ExactGeometryOwner,
+    pub(super) surface: CoherentRangeSurface,
+    pub(super) seed: RangeRestorationSeed,
+    pub(super) surface_charge: RangeSurfaceCharge,
+    pub(super) history: Option<RangeHistoryFrontier>,
+    pub(super) next_id: u64,
+}
+
 impl Focusable for RangeTextInput {
     fn focus_handle(&self, _: &gpui::App) -> FocusHandle {
         self.focus_handle.clone()
@@ -153,6 +165,16 @@ impl RangeTextInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<Self, RangeTextInputError> {
+        Self::new_internal(config, None, window, cx)
+    }
+
+    fn new_internal(
+        config: RangeTextInputConfig,
+        adopted: Option<AdoptedPrepublicationOwners>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<Self, RangeTextInputError> {
+        let adopting = adopted.is_some();
         let finite_metrics = [
             config.viewport_extent,
             config.overscan,
@@ -253,7 +275,11 @@ impl RangeTextInput {
             crate::object_residency::ObjectResidency::checked_initial_owner_storage_charge(
                 config.object_residency_limits,
             ),
-            Some(geometry_owner_charge),
+            Some(if adopting {
+                RangeSurfaceCharge::default()
+            } else {
+                geometry_owner_charge
+            }),
         ]
         .into_iter()
         .try_fold(RangeSurfaceCharge::default(), |total, charge| {
@@ -346,6 +372,61 @@ impl RangeTextInput {
         let on_visibility_update = Rc::new(move |_, _: &mut Window, cx: &mut gpui::App| {
             let _ = weak.update(cx, |_, cx| cx.notify());
         });
+        let (
+            geometry,
+            surface,
+            surface_charge,
+            desired,
+            published_restoration,
+            history_frontier,
+            next_id,
+        ) = if let Some(adopted) = adopted {
+            let mut desired = DesiredSurface::origin(
+                config.viewport_extent,
+                initial_realization_extent,
+                config.overscan,
+            );
+            desired.source_selection = Some(adopted.surface.selection());
+            desired.scroll = RangeScrollAnchor {
+                source: adopted.surface.scroll_source(),
+                intra_anchor: adopted.surface.scroll_intra_anchor(),
+            };
+            desired.target_block = adopted.surface.scroll_block();
+            desired.realization_anchor_block = adopted.surface.scroll_block();
+            desired.preserve_scroll_anchor = false;
+            desired.reveal_caret = false;
+            (
+                adopted.geometry,
+                Some(adopted.surface),
+                Some(adopted.surface_charge),
+                desired,
+                Some(adopted.seed),
+                adopted
+                    .history
+                    .unwrap_or_else(|| RangeHistoryFrontier::unavailable(config.binding)),
+                adopted.next_id.max(1),
+            )
+        } else {
+            (
+                ExactGeometryOwner::new(
+                    binding,
+                    config.presentation_generation,
+                    config.layout.clone(),
+                    config.style.clone(),
+                    config.geometry_limits,
+                )?,
+                None,
+                None,
+                DesiredSurface::origin(
+                    config.viewport_extent,
+                    initial_realization_extent,
+                    config.overscan,
+                ),
+                None,
+                RangeHistoryFrontier::unavailable(config.binding),
+                1,
+            )
+        };
         let mut this = Self {
             focus_handle: cx.focus_handle(),
             enabled: true,
@@ -356,13 +437,7 @@ impl RangeTextInput {
                 config.presentation_generation,
                 config.object_residency_limits,
             ),
-            geometry: ExactGeometryOwner::new(
-                binding,
-                config.presentation_generation,
-                config.layout.clone(),
-                config.style.clone(),
-                config.geometry_limits,
-            )?,
+            geometry,
             edits: RangeEditCoordinator::new(binding, config.mutation_limits),
             clipboard: RangeClipboardCoordinator::new_composite(
                 binding,
@@ -374,8 +449,9 @@ impl RangeTextInput {
             pending_clipboard_page: None,
             clipboard_cut_proofs: None,
             dispatched_clipboard: None,
-            surface: None,
-            last_surface_admission: None,
+            surface,
+            adopted_prepublication_custody: None,
+            last_surface_admission: surface_charge,
             last_realization_step: RangeRealizationStep {
                 spent: 0,
                 remaining: config.limits.max_realization_work_per_frame,
@@ -385,7 +461,7 @@ impl RangeTextInput {
             realization_frame_generation: 0,
             realization_continuation_scheduled: false,
             realization_high_water: RangeRealizationOwnership::default(),
-            surface_high_water: RangeSurfaceCharge::default(),
+            surface_high_water: surface_charge.unwrap_or_default(),
             deferred_geometry_response: None,
             response_custody: VecDeque::with_capacity(response_custody_capacity),
             active_response_processing: RangeSurfaceCharge::default(),
@@ -401,11 +477,7 @@ impl RangeTextInput {
             pending_rebind_intent: None,
             #[cfg(test)]
             last_widget_admission_components: std::cell::Cell::new(None),
-            desired: DesiredSurface::origin(
-                config.viewport_extent,
-                initial_realization_extent,
-                config.overscan,
-            ),
+            desired,
             requests,
             dispatched_pages: realization::DispatchedKeys::with_capacity(
                 config.residency_limits.max_pending_requests(),
@@ -426,10 +498,10 @@ impl RangeTextInput {
             platform: None,
             restoration: None,
             restoration_seed: None,
-            published_restoration: None,
+            published_restoration,
             replacement: None,
             pending_history: None,
-            history_frontier: RangeHistoryFrontier::unavailable(config.binding),
+            history_frontier,
             mutation_positions: None,
             adopted_positions: None,
             admitted_edit_proofs: Vec::new(),
@@ -437,7 +509,7 @@ impl RangeTextInput {
             pending_local_mutation: None,
             prepared_local_operation: None,
             platform_ready: None,
-            next_id: 1,
+            next_id,
             mounted: true,
             pointer_anchor: None,
             active_object: None,
@@ -455,18 +527,21 @@ impl RangeTextInput {
             focus_subscription: None,
             config,
         };
-        let initial = this.prepare_interaction_target_transition(
-            this.desired,
-            None,
-            transition::ActiveObjectTransition::Preserve,
-            true,
-        )?;
-        let progress = this.commit_widget_transition(initial, None);
-        if !matches!(
-            progress,
-            crate::ExactGeometryProgress::Scanning | crate::ExactGeometryProgress::TargetComplete
-        ) {
-            return Err(RangeTextInputError::Stale);
+        if !adopting {
+            let initial = this.prepare_interaction_target_transition(
+                this.desired,
+                None,
+                transition::ActiveObjectTransition::Preserve,
+                true,
+            )?;
+            let progress = this.commit_widget_transition(initial, None);
+            if !matches!(
+                progress,
+                crate::ExactGeometryProgress::Scanning
+                    | crate::ExactGeometryProgress::TargetComplete
+            ) {
+                return Err(RangeTextInputError::Stale);
+            }
         }
         this.observe_realization_ownership();
         let focus = this.focus_handle.clone();
@@ -477,6 +552,30 @@ impl RangeTextInput {
             cx.notify();
         }));
         Ok(this)
+    }
+
+    pub(super) fn from_prepublication_owners(
+        config: RangeTextInputConfig,
+        owners: AdoptedPrepublicationOwners,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<Self, RangeTextInputError> {
+        Self::new_internal(config, Some(owners), window, cx)
+    }
+
+    pub(in crate::range_widget) fn install_adopted_prepublication_custody(
+        &mut self,
+        custody: prepublication::AdoptedPrepublicationCustody,
+    ) {
+        debug_assert!(self.adopted_prepublication_custody.is_none());
+        self.adopted_prepublication_custody = Some(custody);
+        self.observe_realization_ownership();
+    }
+
+    pub(in crate::range_widget) fn release_adopted_prepublication_custody(&mut self) {
+        if let Some(mut custody) = self.adopted_prepublication_custody.take() {
+            custody.release();
+        }
     }
 
     pub fn surface(&self) -> Option<&CoherentRangeSurface> {
