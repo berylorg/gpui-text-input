@@ -410,6 +410,17 @@ unless it has the complete exact representation within that cap. Text-page or ob
 revision conflict, cancellation, rebind, unmount, or a representation exceeding the cap makes no
 document mutation.
 
+An already published coherent surface remains the sole clipboard command surface while a
+same-binding, same-revision nonterminal geometry target is pending. Copy and cut remain available
+when that published surface and its current composite selection otherwise admit the command. Begin
+captures only that published binding, revision, and selection; it does not read, adopt, or publish
+the target candidate's desired selection, geometry, residency, or interaction state. The pending
+target continues independently and may later publish or fail without requalifying the clipboard
+operation already bound to the prior surface. This availability does not make the target candidate
+interactive for caret placement, hit testing, object activation, or another geometry-dependent
+command. An absent coherent surface, a different binding or revision, or an unpublished selection
+remains ineligible.
+
 The range-backed clipboard boundary has one explicit provenance policy. `Omit` produces the
 ordinary capped plain-text write without provenance. `Stream` emits bounded provenance pages for
 selected source-zero-width objects while constructing that same one contiguous result; it does not
@@ -686,9 +697,11 @@ dispatched key without rollback or allocation.
 
 A malformed text-page, object-page, or residency-backed geometry delivery terminally settles the
 named request or job step and releases both the delivered payload and its reservation. It is not
-retryable under the same key. A well-formed exact-key delivery rejected only because candidate
-capacity or terminal publication capacity is unavailable consumes neither the dispatched key nor
-its reservation, changes no resident owner, and remains retryable with that exact key.
+retryable under the same key. A well-formed exact-key delivery rejected only because explicit
+terminal surface-publication capacity is unavailable consumes neither the dispatched key nor its
+reservation, changes no resident owner, and remains retryable with that exact key. Every other
+deterministic preparation or candidate-capacity failure atomically closes the exact response,
+dispatch, and geometry job while preserving the prior coherent publication and unrelated residency.
 
 Public selection, restoration, scroll, layout, presentation, and index transitions align or
 replace in-flight target geometry. A completed response that no longer aligns with its terminal
@@ -720,9 +733,11 @@ When a geometry object demand coalesces onto a surviving external request, or a 
 job's exact response arrives while a newer job is active, that response first settles its own exact
 dispatch into object residency and releases it once. The current logical geometry job then consumes
 the admitted page through the existing resident-object path when its demand matches, without
-cloning or reinterpreting the response key. A superseded response never fails the current job;
-retry retains the external response only if this residency admission is rejected for surface
-capacity.
+cloning or reinterpreting the response key. A superseded response never fails the current job; the
+combined candidate retains the external response and dispatch for exact retry only when it is
+rejected solely for explicit terminal surface-publication capacity. Residency-admission or any
+other candidate-capacity failure terminally settles the old exact response, dispatch, and any
+remaining old-job custody without residency admission or retry and without failing the newer job.
 When an index completes while its prepared target transition remains nonterminal, presentation
 overlap is derived from that transition's active scanner. Absence of a terminal target publication
 is not a capacity failure and does not retain the completed response for retry.

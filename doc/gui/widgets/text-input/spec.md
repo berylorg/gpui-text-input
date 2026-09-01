@@ -131,8 +131,11 @@ Host text-page and object-page delivery also prepares residency, geometry deltas
 removal, terminal target construction, and coherent-surface replacement before changing an owner.
 Malformed text-page, object-page, or residency-backed geometry delivery terminally settles the
 named request or job step and releases its payload and reservation; that key cannot be retried.
-A well-formed exact-key delivery rejected only by candidate or terminal-publication capacity leaves
-the complete pending and resident fingerprint unchanged and may be retried with that exact key.
+A well-formed exact-key delivery rejected only by explicit terminal surface-publication capacity
+leaves the complete pending and resident fingerprint unchanged and may be retried with that exact
+key. Every other deterministic preparation or candidate-capacity failure atomically closes the
+exact response, dispatch, and geometry job while preserving the prior coherent publication and
+unrelated residency.
 Public desired-state transitions align or replace in-flight target geometry. A terminal response
 that does not align with its surface candidate is therefore a deterministic invariant failure: it
 closes the named response and geometry work with a content-free error while preserving the prior
@@ -177,6 +180,16 @@ finite host-configured hard clipboard-byte cap applies to the complete contiguou
 If that representation cannot be completed within the cap, or either page source fails, conflicts,
 becomes obsolete, or is cancelled, the widget reports that outcome and makes no document mutation;
 its coherent caret, selection, and undo projection remains unchanged.
+
+While a same-binding, same-revision geometry target remains nonterminal, Copy and Cut use the last
+published coherent surface and its published composite selection and remain available whenever that
+surface otherwise admits the command. Clipboard begin captures only those published facts. It does
+not consume the target candidate's desired selection, geometry, residency, or interaction state,
+and it neither cancels nor publishes that target. Later target publication or failure does not
+rebind the already active clipboard operation. The unpublished target remains noninteractive for
+caret placement, hit testing, inline-object activation, and other geometry-dependent commands. No
+clipboard command is admitted from an absent coherent surface, a different binding or revision, or
+an unpublished selection.
 
 The range-backed host chooses either ordinary omitted provenance or the bounded provenance stream.
 When streaming is selected, the widget emits one current page at a time for selected zero-width
@@ -417,8 +430,11 @@ available; the widget never queues one request per movement, edit, logical line,
 object, or same-anchor gap. A geometry object response shared by a later logical geometry request,
 or arriving for a superseded job while a newer job is active, settles and releases its external
 request into bounded residency first. The current request consumes a matching resident payload
-without a second object-page copy; the old response never fails the newer job, and capacity
-rejection preserves the original response and dispatch for retry. A completed index with a
+without a second object-page copy; the old response never fails the newer job. The combined
+candidate preserves the original response and dispatch for retry only when rejected solely for
+explicit terminal surface-publication capacity. Residency-admission or any other candidate-capacity
+failure terminally settles the old exact response, dispatch, and any remaining old-job custody
+without residency admission or retry. A completed index with a
 nonterminal prepared target charges presentation aliases from that target's active scanner rather
 than treating the absent terminal publication as capacity exhaustion. Rebind and unmount cancel
 every cancellable page, segmentation, clipboard, and geometry request, release resident
