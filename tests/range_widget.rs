@@ -2041,6 +2041,62 @@ fn drive_pages_with_objects(
     });
 }
 
+fn drive_attached_inline_object_surface_requests(
+    input: &gpui::Entity<RangeTextInput>,
+    cx: &mut gpui::VisualTestContext,
+    source: &str,
+    facts: &[InlineObjectFact],
+) {
+    let mut observed_idle_cycles = 0;
+    let mut awaiting_idle_observation = false;
+    for _ in 0..64 {
+        match input.update(cx, |input, _| input.take_request()) {
+            Some(RangeTextInputRequest::Page(request)) => {
+                let page = page_for(source, request.key().id().get(), request);
+                cx.update(|window, app| {
+                    input.update(app, |input, cx| {
+                        input.deliver_page(page, window, cx).unwrap()
+                    })
+                });
+                observed_idle_cycles = 0;
+                awaiting_idle_observation = false;
+            }
+            Some(RangeTextInputRequest::ObjectPage(request)) => {
+                let page = restoration_object_page(request, facts, request.key().id().get());
+                cx.update(|window, app| {
+                    input.update(app, |input, cx| {
+                        input
+                            .deliver_object_page_in_window(page, window, cx)
+                            .unwrap()
+                    })
+                });
+                observed_idle_cycles = 0;
+                awaiting_idle_observation = false;
+            }
+            Some(RangeTextInputRequest::ReleasePage(_))
+            | Some(RangeTextInputRequest::CancelPage(_))
+            | Some(RangeTextInputRequest::ReleaseObjectPage(_))
+            | Some(RangeTextInputRequest::CancelObjectPage(_)) => {
+                observed_idle_cycles = 0;
+                awaiting_idle_observation = false;
+            }
+            None => {
+                if awaiting_idle_observation {
+                    observed_idle_cycles += 1;
+                    if observed_idle_cycles == 2 {
+                        return;
+                    }
+                }
+                cx.update(|window, app| window.draw(app).clear());
+                cx.run_until_parked();
+                awaiting_idle_observation = true;
+            }
+            Some(request) => panic!("unexpected attached surface request: {request:?}"),
+        }
+    }
+    panic!("attached surface request servicing exceeded its 64-step bound");
+}
+
 fn drive_pages_with_limited_objects(
     input: &gpui::Entity<RangeTextInput>,
     cx: &mut gpui::VisualTestContext,
@@ -6837,7 +6893,7 @@ fn exact_attached_inline_object_surface_owns_focus_loss_until_one_explicit_dismi
     input.read_with(cx, |input, _| assert!(!input.is_quiescent()));
 
     cx.update(|window, _| window.blur());
-    drive_pages_with_objects(&input, cx, source, &facts);
+    drive_attached_inline_object_surface_requests(&input, cx, source, &facts);
     input.read_with(cx, |input, _| {
         assert_eq!(input.active_inline_object(), Some(active));
         assert!(!input.is_quiescent());
@@ -6863,10 +6919,19 @@ fn exact_attached_inline_object_surface_owns_focus_loss_until_one_explicit_dismi
                 .unwrap();
         })
     });
+    drive_pages_with_objects(&input, cx, source, &facts);
     input.read_with(cx, |input, _| {
         assert_eq!(input.active_inline_object(), Some(active));
         assert!(input.is_quiescent());
     });
+
+    assert!(events.borrow().iter().all(|event| !matches!(
+        event,
+        RangeTextInputEvent::InlineObjectRealizationLost(loss)
+            if loss.anchor == active
+                && loss.reason
+                    == gpui_text_input::InlineObjectRealizationLossReason::FocusLost
+    )));
 
     let attachment = input
         .update(cx, |input, _| {
@@ -6874,7 +6939,14 @@ fn exact_attached_inline_object_surface_owns_focus_loss_until_one_explicit_dismi
         })
         .unwrap();
     cx.update(|window, _| window.blur());
-    drive_pages_with_objects(&input, cx, source, &facts);
+    drive_attached_inline_object_surface_requests(&input, cx, source, &facts);
+    assert!(events.borrow().iter().all(|event| !matches!(
+        event,
+        RangeTextInputEvent::InlineObjectRealizationLost(loss)
+            if loss.anchor == active
+                && loss.reason
+                    == gpui_text_input::InlineObjectRealizationLossReason::FocusLost
+    )));
     cx.update(|window, app| {
         input.update(app, |input, cx| {
             input
@@ -6887,6 +6959,7 @@ fn exact_attached_inline_object_surface_owns_focus_loss_until_one_explicit_dismi
                 .unwrap();
         })
     });
+    drive_pages_with_objects(&input, cx, source, &facts);
     input.read_with(cx, |input, _| {
         assert!(input.active_inline_object().is_none());
         assert!(input.is_quiescent());
