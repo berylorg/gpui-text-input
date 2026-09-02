@@ -1,7 +1,7 @@
 use gpui::{Context, Window};
 
 use super::response_custody::ResponseDeliveryProgress;
-use super::{RangeTextInput, RangeTextInputError, RangeTextInputRequest};
+use super::{RangeTextInput, RangeTextInputError, RangeTextInputRequest, SurfaceCandidateKind};
 use crate::{
     ObjectPage, ObjectPageFailure, ObjectRequestId, PageDemand, PageFailure, PagePurpose,
     PageRequestId, PageRequestKey, RangePage, SourceRange,
@@ -356,7 +356,30 @@ impl RangeTextInput {
             return Err(RangeTextInputError::ReadOnly);
         }
         let surface = self
-            .interactive_surface()
+            .surface
+            .as_ref()
+            .filter(|surface| {
+                let surface_geometry = surface.geometry_key();
+                let candidate_eligible = self.surface_candidate.as_ref().is_none_or(|candidate| {
+                    candidate.kind == SurfaceCandidateKind::IndexRefinement
+                        || (candidate.kind == SurfaceCandidateKind::Replacement
+                            && candidate.binding == self.config.binding
+                            && candidate.job.geometry() == surface_geometry
+                            && self.active_geometry == Some(candidate.job))
+                });
+                self.mounted
+                    && surface.binding() == self.config.binding
+                    && surface_geometry.binding() == self.config.binding.binding()
+                    && surface_geometry.revision() == self.config.binding.revision()
+                    && surface_geometry.presentation_generation()
+                        == self.config.presentation_generation
+                    && surface_geometry.epoch() == self.geometry.key().epoch()
+                    && self.pending_history.is_none()
+                    && self.pending_layout_intent.is_none()
+                    && self.pending_presentation_intent.is_none()
+                    && self.pending_rebind_intent.is_none()
+                    && candidate_eligible
+            })
             .ok_or(RangeTextInputError::Busy)?;
         let selection = surface
             .selection()
@@ -365,28 +388,7 @@ impl RangeTextInput {
         let directed = surface.selection();
         let predecessor =
             crate::MutationPositions::new(directed.head, directed.anchor, directed.head);
-        let mut proofs = Vec::with_capacity(2);
-        for position in [selection.start(), selection.end()] {
-            let proof = crate::range_edit::SourcePositionProof::from_surface_pages(
-                self.config.binding,
-                position,
-                surface.pages(),
-                surface.object_pages(),
-            )
-            .or_else(|_| {
-                self.admitted_edit_proofs
-                    .iter()
-                    .copied()
-                    .find(|proof| {
-                        proof.binding() == self.config.binding && proof.position() == position
-                    })
-                    .ok_or(crate::MutationError::InvalidObjectGapProof)
-            })?;
-            if !proofs.contains(&proof) {
-                proofs.push(proof);
-            }
-        }
-        self.begin_composite_clipboard_with_proofs(kind, selection, predecessor, proofs, cx)
+        self.begin_composite_clipboard_with_proofs(kind, selection, predecessor, Vec::new(), cx)
     }
 
     pub fn begin_composite_clipboard(
@@ -626,11 +628,39 @@ impl RangeTextInput {
         self.dispatched_clipboard = None;
         if let crate::ClipboardCompletion::Delete(deletion) = completion {
             let replacement = deletion.selection();
-            let (_, proofs) = self
+            let (_, mut proofs) = self
                 .clipboard_cut_proofs
                 .take()
                 .filter(|(proof_key, _)| *proof_key == key)
                 .ok_or(RangeTextInputError::Stale)?;
+            if proofs.is_empty() {
+                let surface = self
+                    .surface
+                    .as_ref()
+                    .filter(|surface| self.mounted && surface.binding() == self.config.binding)
+                    .ok_or(RangeTextInputError::Stale)?;
+                for position in [replacement.start(), replacement.end()] {
+                    let proof = crate::range_edit::SourcePositionProof::from_surface_pages(
+                        self.config.binding,
+                        position,
+                        surface.pages(),
+                        surface.object_pages(),
+                    )
+                    .or_else(|_| {
+                        self.admitted_edit_proofs
+                            .iter()
+                            .copied()
+                            .find(|proof| {
+                                proof.binding() == self.config.binding
+                                    && proof.position() == position
+                            })
+                            .ok_or(crate::MutationError::InvalidObjectGapProof)
+                    })?;
+                    if !proofs.contains(&proof) {
+                        proofs.push(proof);
+                    }
+                }
+            }
             let mutation =
                 deletion.proposal(crate::OperationId::new(self.next_id()), replacement)?;
             let removed = selected_object_neighbor(replacement)

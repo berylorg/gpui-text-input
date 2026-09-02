@@ -22,8 +22,8 @@ use gpui_text_input::{
     ObjectDemand, ObjectDemandEnvelope, ObjectDirection, ObjectPage, ObjectPageEdgeFact,
     ObjectPageId, ObjectPurpose, ObjectRequestId, ObjectResidency, ObjectResidencyLimits,
     PageDemand, PageDemandEnvelope, PageDirection, PageEdgeFact, PageFailure, PageId, PagePurpose,
-    PageRequestId, PlatformRangeResult, PresentationGeneration, RangeBinding, RangePage,
-    RangeResidency, RangeRestorationScrollAnchor, RangeRestorationSeed, RangeSelection,
+    PageRequestId, PlatformRangeResult, PresentationGeneration, RangeBinding, RangeHistoryFrontier,
+    RangePage, RangeResidency, RangeRestorationScrollAnchor, RangeRestorationSeed, RangeSelection,
     RangeSourceSelection, RangeSurfaceHit, RangeTextInput, RangeTextInputConfig,
     RangeTextInputEvent, RangeTextInputLimits, RangeTextInputRequest, ResidencyLimits,
     SegmentationLimits, SourcePosition, SourceRange, SourceRevision, StreamingGeometryStyle,
@@ -587,6 +587,7 @@ fn retained_prior_surface_is_paint_only_after_rebind(cx: &mut gpui::TestAppConte
                 input.begin_clipboard(gpui_text_input::ClipboardKind::Copy, cx),
                 Err(gpui_text_input::RangeTextInputError::Busy)
             ));
+            assert_eq!(input.clipboard_counts(), Default::default());
             assert!(matches!(
                 input.platform_text_for_range(0..1, cx),
                 Err(gpui_text_input::RangeTextInputError::Busy)
@@ -598,6 +599,120 @@ fn retained_prior_surface_is_paint_only_after_rebind(cx: &mut gpui::TestAppConte
     input.read_with(cx, |input, _| {
         assert_eq!(input.surface().unwrap().binding(), binding(replacement, 2));
     });
+}
+
+#[gpui::test]
+fn unpublished_surface_does_not_admit_normal_clipboard_custody(cx: &mut gpui::TestAppContext) {
+    let source = "unpublished";
+    let (input, cx) = cx
+        .add_window_view(|window, cx| RangeTextInput::new(config(source, 1), window, cx).unwrap());
+    input.update(cx, |input, cx| {
+        assert!(input.surface().is_none());
+        for kind in [
+            gpui_text_input::ClipboardKind::Copy,
+            gpui_text_input::ClipboardKind::Cut,
+        ] {
+            assert!(matches!(
+                input.begin_clipboard(kind, cx),
+                Err(gpui_text_input::RangeTextInputError::Busy)
+            ));
+        }
+        assert_eq!(input.clipboard_counts(), Default::default());
+    });
+    assert!(drive_pages(&input, cx, source).is_empty());
+}
+
+fn assert_normal_clipboard_blocked_without_custody(
+    input: &gpui::Entity<RangeTextInput>,
+    cx: &mut gpui::TestAppContext,
+) {
+    let before = input.read_with(cx, |input, _| {
+        let ownership = input.realization_diagnostics().current;
+        (
+            input.surface().map(|surface| surface.binding()),
+            input.surface().map(|surface| surface.selection()),
+            ownership.queued_requests,
+            ownership.response_custody_count,
+            ownership.response_custody_bytes,
+            ownership.response_custody_items,
+            ownership.clipboard_bytes,
+            ownership.clipboard_items,
+        )
+    });
+    input.update(cx, |input, cx| {
+        for kind in [
+            gpui_text_input::ClipboardKind::Copy,
+            gpui_text_input::ClipboardKind::Cut,
+        ] {
+            assert!(matches!(
+                input.begin_clipboard(kind, cx),
+                Err(gpui_text_input::RangeTextInputError::Busy)
+            ));
+        }
+        assert_eq!(input.clipboard_counts(), Default::default());
+    });
+    input.read_with(cx, |input, _| {
+        let ownership = input.realization_diagnostics().current;
+        assert_eq!(input.surface().map(|surface| surface.binding()), before.0);
+        assert_eq!(input.surface().map(|surface| surface.selection()), before.1);
+        assert_eq!(ownership.queued_requests, before.2);
+        assert_eq!(ownership.response_custody_count, before.3);
+        assert_eq!(ownership.response_custody_bytes, before.4);
+        assert_eq!(ownership.response_custody_items, before.5);
+        assert_eq!(ownership.clipboard_bytes, before.6);
+        assert_eq!(ownership.clipboard_items, before.7);
+        assert_eq!(input.clipboard_counts(), Default::default());
+    });
+}
+
+#[gpui::test]
+fn pending_history_does_not_admit_normal_clipboard_custody_or_deletion(
+    cx: &mut gpui::TestAppContext,
+) {
+    cx.update(ensure_text_input_bindings);
+    let source = "pending history";
+    let (input, cx) = cx.add_window_view(|window, cx| {
+        let input = RangeTextInput::new(config(source, 1), window, cx).unwrap();
+        input.focus(window);
+        input
+    });
+    assert!(drive_pages(&input, cx, source).is_empty());
+    cx.simulate_keystrokes("ctrl-a");
+    assert!(drive_pages(&input, cx, source).is_empty());
+    input.update(cx, |input, _| {
+        let prior = input.history_frontier();
+        input
+            .set_history_frontier(
+                prior,
+                RangeHistoryFrontier {
+                    binding: binding(source, 1),
+                    id: prior.id + 1,
+                    undo_available: true,
+                    redo_available: false,
+                },
+            )
+            .unwrap();
+    });
+    cx.simulate_keystrokes("ctrl-z");
+    assert!(matches!(
+        input.update(cx, |input, _| input.take_request()),
+        Some(RangeTextInputRequest::HistoryIntent(intent))
+            if intent.kind() == MutationKind::Undo
+    ));
+    input.update(cx, |input, cx| {
+        for kind in [
+            gpui_text_input::ClipboardKind::Copy,
+            gpui_text_input::ClipboardKind::Cut,
+        ] {
+            assert!(matches!(
+                input.begin_clipboard(kind, cx),
+                Err(gpui_text_input::RangeTextInputError::Busy)
+            ));
+        }
+        assert_eq!(input.clipboard_counts(), Default::default());
+        assert!(input.take_request().is_none());
+    });
+    cx.update(|window, app| input.update(app, |input, cx| input.dispose(window, cx)));
 }
 
 #[gpui::test]
@@ -4374,23 +4489,77 @@ fn disabled_render_omits_input_routes_while_prepaint_advances_realization(
     assert!(events.borrow().is_empty());
 }
 
-#[gpui::test]
-fn clipboard_reuses_concurrent_geometry_resident_page_without_stranding(
+fn begin_normal_clipboard_to_write(
+    input: &gpui::Entity<RangeTextInput>,
+    cx: &mut gpui::VisualTestContext,
+    source: &str,
+    facts: &[InlineObjectFact],
+    kind: gpui_text_input::ClipboardKind,
+) -> gpui_text_input::ClipboardWriteRequest {
+    input.update(cx, |input, cx| input.begin_clipboard(kind, cx).unwrap());
+    for _ in 0..256 {
+        match take_request_after_scheduled_frames(input, cx, "normal clipboard progress") {
+            RangeTextInputRequest::Page(request) => {
+                let page = page_for(source, request.key().id().get(), request);
+                cx.update(|window, app| {
+                    input.update(app, |input, cx| {
+                        input.deliver_page(page, window, cx).unwrap()
+                    })
+                });
+            }
+            RangeTextInputRequest::ObjectPage(request) => {
+                let page = restoration_object_page(request, facts, request.key().id().get());
+                cx.update(|window, app| {
+                    input.update(app, |input, cx| {
+                        input
+                            .deliver_object_page_in_window(page, window, cx)
+                            .unwrap()
+                    })
+                });
+            }
+            RangeTextInputRequest::ReleasePage(_) | RangeTextInputRequest::ReleaseObjectPage(_) => {
+            }
+            RangeTextInputRequest::ClipboardWrite(write) => return write,
+            other => panic!("unexpected normal clipboard request: {other:?}"),
+        }
+    }
+    panic!("normal clipboard did not reach its write")
+}
+
+fn normal_clipboard_uses_published_selection_and_preserves_pending_target(
+    kind: gpui_text_input::ClipboardKind,
     cx: &mut gpui::TestAppContext,
 ) {
     cx.update(ensure_text_input_bindings);
-    let source = "0123456789".repeat(12);
+    let source = format!("{}\n{}", "0".repeat(31), "1".repeat(88));
+    let mut configuration = config(&source, 1);
+    configuration.limits.max_realization_work_per_frame = 1;
     let (input, cx) = cx.add_window_view(|window, cx| {
-        let input = RangeTextInput::new(config(&source, 1), window, cx).unwrap();
+        let input = RangeTextInput::new(configuration, window, cx).unwrap();
         input.focus(window);
         input
     });
     assert!(drive_pages(&input, cx, &source).is_empty());
-    cx.simulate_keystrokes("ctrl-a");
+    cx.simulate_keystrokes("shift-end");
     assert!(drive_pages(&input, cx, &source).is_empty());
+    let published = RangeSourceSelection {
+        anchor: ordinary_position(0),
+        head: ordinary_position(32),
+    };
+    input.read_with(cx, |input, _| {
+        assert_eq!(input.surface().unwrap().selection(), published);
+    });
+    let resident_pages = input.read_with(cx, |input, _| {
+        input.realization_diagnostics().current.resident_pages
+    });
 
-    input.update(cx, |input, cx| {
-        input.request_absolute_scroll(px(0.), cx).unwrap()
+    let unpublished = RangeSourceSelection::caret(ordinary_position(96));
+    cx.update(|window, app| {
+        input.update(app, |input, cx| {
+            input
+                .rebind(binding(&source, 1), Some(unpublished), window, cx)
+                .unwrap()
+        })
     });
     let geometry = input
         .update(cx, |input, _| input.take_request())
@@ -4403,25 +4572,369 @@ fn clipboard_reuses_concurrent_geometry_resident_page_without_stranding(
             _ => None,
         })
         .expect("target page creates concurrent residency");
+    let held_target_demand = geometry.key().demand();
     let page = page_for(&source, 700, geometry);
+    let held_target_range = page.range();
+    let custody_before = input.read_with(cx, |input, _| input.realization_diagnostics());
+    assert_eq!(custody_before.current.response_custody_count, 0);
     cx.update(|window, app| {
         input.update(app, |input, cx| {
+            input.begin_clipboard(kind, cx).unwrap();
+            assert_ne!(input.surface().unwrap().selection(), unpublished);
+            let ownership = input.realization_diagnostics().current;
+            assert_eq!(
+                ownership.response_custody_count,
+                custody_before.current.response_custody_count
+            );
+            assert_eq!(
+                ownership.response_custody_bytes,
+                custody_before.current.response_custody_bytes
+            );
+            assert_eq!(
+                ownership.response_custody_items,
+                custody_before.current.response_custody_items
+            );
+            assert_eq!(ownership.dispatched_page_requests, 1);
+            assert_eq!(ownership.pending_page_requests, 1);
+            assert_eq!(ownership.resident_pages, resident_pages);
             input.deliver_page(page, window, cx).unwrap();
-            admit_ordinary_edit_positions(input, &source, 1, &[0, source.len() as u64]);
-            input
-                .begin_clipboard(gpui_text_input::ClipboardKind::Copy, cx)
-                .unwrap();
         })
     });
-    let requests = drive_pages(&input, cx, &source);
-    let write = requests
-        .iter()
-        .find_map(|request| match request {
-            RangeTextInputRequest::ClipboardWrite(write) => Some(write),
-            _ => None,
+    input.read_with(cx, |input, _| {
+        let ownership = input.realization_diagnostics().current;
+        assert_eq!(ownership.dispatched_page_requests, 0);
+        assert_eq!(ownership.resident_pages, resident_pages + 1);
+        assert_eq!(ownership.response_custody_count, 0);
+    });
+    let mut target_resident_pages = resident_pages + 1;
+    let mut clipboard_page_demands = Vec::new();
+    let mut observed_resident_clipboard_custody = false;
+    let mut write = None;
+    for _ in 0..512 {
+        let request =
+            take_request_after_scheduled_frames(&input, cx, "normal clipboard and target overlap");
+        match request {
+            RangeTextInputRequest::Page(request) => {
+                let purpose = request.key().purpose();
+                assert!(matches!(
+                    purpose,
+                    PagePurpose::Clipboard | PagePurpose::GeometryTarget
+                ));
+                if purpose == PagePurpose::Clipboard {
+                    assert!(!clipboard_page_demands.contains(&request.key().demand()));
+                    clipboard_page_demands.push(request.key().demand());
+                }
+                input.read_with(cx, |input, _| {
+                    let ownership = input.realization_diagnostics().current;
+                    assert_eq!(ownership.dispatched_page_requests, 1);
+                    assert_eq!(ownership.pending_page_requests, 1);
+                });
+                let page = page_for(&source, request.key().id().get(), request);
+                if purpose == PagePurpose::Clipboard {
+                    assert_ne!(page.range(), held_target_range);
+                    assert_eq!(page.range().intersection(held_target_range), None);
+                }
+                cx.update(|window, app| {
+                    input.update(app, |input, cx| {
+                        input.deliver_page(page, window, cx).unwrap()
+                    })
+                });
+                if purpose == PagePurpose::Clipboard {
+                    input.read_with(cx, |input, _| {
+                        let ownership = input.realization_diagnostics().current;
+                        assert_eq!(ownership.dispatched_page_requests, 0);
+                        assert_eq!(ownership.resident_pages, resident_pages);
+                        assert_eq!(ownership.response_custody_count, 0);
+                    });
+                } else {
+                    target_resident_pages = input.read_with(cx, |input, _| {
+                        input.realization_diagnostics().current.resident_pages
+                    });
+                    assert!(target_resident_pages > resident_pages);
+                }
+            }
+            RangeTextInputRequest::ObjectPage(request) => {
+                let purpose = request.key().purpose();
+                assert!(matches!(
+                    purpose,
+                    ObjectPurpose::Clipboard | ObjectPurpose::GeometryTarget
+                ));
+                let page = restoration_object_page(request, &[], request.key().id().get());
+                cx.update(|window, app| {
+                    input.update(app, |input, cx| {
+                        input
+                            .deliver_object_page_in_window(page, window, cx)
+                            .unwrap();
+                        if purpose == ObjectPurpose::Clipboard {
+                            let ownership = input.realization_diagnostics().current;
+                            assert_eq!(ownership.dispatched_page_requests, 0);
+                            assert_eq!(ownership.resident_pages, target_resident_pages);
+                            assert_eq!(ownership.pending_object_requests, 1);
+                            assert_eq!(ownership.dispatched_object_requests, 1);
+                            assert_eq!(ownership.active_geometry_jobs, 1);
+                            assert_eq!(ownership.response_custody_count, 1);
+                            assert_eq!(ownership.response_custody_bytes, 5_184);
+                            assert_eq!(ownership.response_custody_items, 12);
+                            observed_resident_clipboard_custody = true;
+                        }
+                    })
+                });
+            }
+            RangeTextInputRequest::ReleasePage(_) | RangeTextInputRequest::ReleaseObjectPage(_) => {
+            }
+            RangeTextInputRequest::ClipboardWrite(request) => {
+                input.read_with(cx, |input, _| {
+                    let ownership = input.realization_diagnostics().current;
+                    assert_eq!(
+                        ownership.dispatched_page_requests + ownership.dispatched_object_requests,
+                        1
+                    );
+                    assert_eq!(
+                        ownership.pending_page_requests + ownership.pending_object_requests,
+                        1
+                    );
+                    assert_eq!(ownership.resident_pages, target_resident_pages);
+                    assert_eq!(ownership.active_geometry_jobs, 1);
+                });
+                write = Some(request);
+                break;
+            }
+            other => panic!("unexpected overlap request: {other:?}"),
+        }
+    }
+    assert_eq!(clipboard_page_demands.len(), 0);
+    assert!(!clipboard_page_demands.contains(&held_target_demand));
+    assert!(observed_resident_clipboard_custody);
+    let write = write.expect("resident first page advances clipboard to completion");
+    assert_eq!(write.text(), &source[..32]);
+    input.update(cx, |input, cx| {
+        assert_eq!(
+            input
+                .settle_clipboard_write(write.key(), ClipboardWriteOutcome::Failed, cx)
+                .unwrap(),
+            gpui_text_input::ClipboardCompletion::WriteFailed
+        );
+        assert_eq!(input.clipboard_counts(), Default::default());
+    });
+    assert!(drive_pages(&input, cx, &source).is_empty());
+    input.read_with(cx, |input, _| {
+        let ownership = input.realization_diagnostics().current;
+        assert_eq!(input.surface().unwrap().selection(), unpublished);
+        assert_eq!(input.clipboard_counts(), Default::default());
+        assert_eq!(ownership.response_custody_count, 0);
+        assert_eq!(
+            ownership.response_custody_bytes,
+            custody_before.current.response_custody_bytes
+        );
+        assert_eq!(
+            ownership.response_custody_items,
+            custody_before.current.response_custody_items
+        );
+        assert!(input.is_quiescent());
+    });
+}
+
+#[gpui::test]
+fn normal_copy_and_cut_use_published_selection_and_preserve_pending_target(
+    cx: &mut gpui::TestAppContext,
+) {
+    for kind in [
+        gpui_text_input::ClipboardKind::Copy,
+        gpui_text_input::ClipboardKind::Cut,
+    ] {
+        normal_clipboard_uses_published_selection_and_preserves_pending_target(kind, cx);
+    }
+}
+
+#[gpui::test]
+fn normal_cut_defers_deletion_until_written_and_cleans_up_failure(cx: &mut gpui::TestAppContext) {
+    cx.update(ensure_text_input_bindings);
+    let source = "0123456789".repeat(12);
+    let (failed, cx) = cx.add_window_view(|window, cx| {
+        let input = RangeTextInput::new(config(&source, 1), window, cx).unwrap();
+        input.focus(window);
+        input
+    });
+    assert!(drive_pages(&failed, cx, &source).is_empty());
+    cx.simulate_keystrokes("ctrl-a");
+    assert!(drive_pages(&failed, cx, &source).is_empty());
+    let failed_write = begin_normal_clipboard_to_write(
+        &failed,
+        cx,
+        &source,
+        &[],
+        gpui_text_input::ClipboardKind::Cut,
+    );
+    assert_eq!(failed_write.text(), source);
+    assert!(failed.update(cx, |input, _| input.take_request()).is_none());
+    failed.update(cx, |input, cx| {
+        assert_eq!(
+            input
+                .settle_clipboard_write(failed_write.key(), ClipboardWriteOutcome::Failed, cx,)
+                .unwrap(),
+            gpui_text_input::ClipboardCompletion::WriteFailed
+        );
+        assert_eq!(input.clipboard_counts(), Default::default());
+    });
+    assert!(drive_pages(&failed, cx, &source).is_empty());
+
+    let (written, cx) = cx.add_window_view(|window, cx| {
+        let input = RangeTextInput::new(config(&source, 1), window, cx).unwrap();
+        input.focus(window);
+        input
+    });
+    assert!(drive_pages(&written, cx, &source).is_empty());
+    let selected = RangeSourceSelection {
+        anchor: ordinary_position(96),
+        head: ordinary_position(106),
+    };
+    cx.update(|window, app| {
+        written.update(app, |input, cx| {
+            input
+                .rebind(binding(&source, 1), Some(selected), window, cx)
+                .unwrap()
         })
-        .expect("resident first page advances clipboard to completion");
+    });
+    assert!(drive_pages(&written, cx, &source).is_empty());
+    let written_request = begin_normal_clipboard_to_write(
+        &written,
+        cx,
+        &source,
+        &[],
+        gpui_text_input::ClipboardKind::Cut,
+    );
+    assert_eq!(written_request.text(), &source[96..106]);
+    assert!(
+        written
+            .update(cx, |input, _| input.take_request())
+            .is_none()
+    );
+    written.update(cx, |input, cx| {
+        assert!(matches!(
+            input
+                .settle_clipboard_write(written_request.key(), ClipboardWriteOutcome::Written, cx,)
+                .unwrap(),
+            gpui_text_input::ClipboardCompletion::Delete(_)
+        ));
+        assert_eq!(input.clipboard_counts(), Default::default());
+    });
+    assert!(matches!(
+        written.update(cx, |input, _| input.take_request()),
+        Some(RangeTextInputRequest::MutationBegin(_))
+    ));
+    cx.update(|window, app| written.update(app, |input, cx| input.dispose(window, cx)));
+}
+
+#[gpui::test]
+fn normal_cut_post_write_proof_failure_deletes_nothing_and_releases_clipboard(
+    cx: &mut gpui::TestAppContext,
+) {
+    cx.update(ensure_text_input_bindings);
+    let source = "0123456789".repeat(12);
+    let (input, cx) = cx.add_window_view(|window, cx| {
+        let input = RangeTextInput::new(config(&source, 1), window, cx).unwrap();
+        input.focus(window);
+        input
+    });
+    assert!(drive_pages(&input, cx, &source).is_empty());
+    cx.simulate_keystrokes("ctrl-a");
+    assert!(drive_pages(&input, cx, &source).is_empty());
+    let write = begin_normal_clipboard_to_write(
+        &input,
+        cx,
+        &source,
+        &[],
+        gpui_text_input::ClipboardKind::Cut,
+    );
     assert_eq!(write.text(), source);
+    assert!(input.update(cx, |input, _| input.take_request()).is_none());
+    input.update(cx, |input, cx| {
+        let result = input.settle_clipboard_write(write.key(), ClipboardWriteOutcome::Written, cx);
+        assert!(
+            matches!(
+                result,
+                Err(gpui_text_input::RangeTextInputError::Mutation(_))
+            ),
+            "unexpected proof-failure settlement: {result:?}"
+        );
+        assert_eq!(input.clipboard_counts(), Default::default());
+        assert!(input.take_request().is_none());
+    });
+    assert!(drive_pages(&input, cx, &source).is_empty());
+}
+
+#[gpui::test]
+fn normal_cut_post_write_edit_admission_failure_does_not_queue_deletion(
+    cx: &mut gpui::TestAppContext,
+) {
+    cx.update(ensure_text_input_bindings);
+    let source = "0123456789".repeat(12);
+    let selected = RangeSourceSelection {
+        anchor: ordinary_position(96),
+        head: ordinary_position(106),
+    };
+    let (input, cx) = cx.add_window_view(|window, cx| {
+        let input = RangeTextInput::new(config(&source, 1), window, cx).unwrap();
+        input.focus(window);
+        input
+    });
+    assert!(drive_pages(&input, cx, &source).is_empty());
+    cx.update(|window, app| {
+        input.update(app, |input, cx| {
+            input
+                .rebind(binding(&source, 1), Some(selected), window, cx)
+                .unwrap()
+        })
+    });
+    assert!(drive_pages(&input, cx, &source).is_empty());
+    let write = begin_normal_clipboard_to_write(
+        &input,
+        cx,
+        &source,
+        &[],
+        gpui_text_input::ClipboardKind::Cut,
+    );
+    let base_positions = [selected.anchor, selected.head];
+    let (text, objects) = admitted_sources(&source, 1, &base_positions);
+    input.update(cx, |input, cx| {
+        let operation = input.lease_host_operation().unwrap();
+        let current = selected.head;
+        let begin = MutationBeginRequest::new(
+            MutationProposal::new(
+                MutationKey::new(
+                    binding(&source, 1).binding(),
+                    binding(&source, 1).revision(),
+                    operation.operation(),
+                ),
+                MutationKind::Edit,
+                MutationPositions::collapsed(current),
+                SourceRange::new(current, current).unwrap(),
+                0,
+            ),
+            MutationCursor::new(0),
+            MutationCursor::new(0),
+        );
+        input
+            .begin_host_mutation(operation, begin, &base_positions, &text, &objects, cx)
+            .unwrap();
+        assert!(matches!(
+            input.take_request(),
+            Some(RangeTextInputRequest::MutationBegin(request)) if request == begin
+        ));
+    });
+    input.update(cx, |input, cx| {
+        let result = input.settle_clipboard_write(write.key(), ClipboardWriteOutcome::Written, cx);
+        assert!(
+            matches!(
+                result,
+                Err(gpui_text_input::RangeTextInputError::Mutation(_))
+            ),
+            "unexpected edit-admission settlement: {result:?}"
+        );
+        assert_eq!(input.clipboard_counts(), Default::default());
+        assert!(input.take_request().is_none());
+    });
+    cx.update(|window, app| input.update(app, |input, cx| input.dispose(window, cx)));
 }
 
 #[gpui::test]
@@ -4560,6 +5073,10 @@ fn presentation_only_generation_preserves_epoch_and_layout_replacement_advances_
             .unwrap();
         assert_eq!(input.surface().unwrap().geometry_key(), initial);
     });
+    input.read_with(cx, |input, _| {
+        assert_eq!(input.realization_diagnostics().current.candidates, 1);
+    });
+    assert_normal_clipboard_blocked_without_custody(&input, cx);
     assert!(drive_pages(&input, cx, source).is_empty());
     let presentation = input.read_with(cx, |input, _| {
         let key = input.surface().unwrap().geometry_key();
@@ -4575,6 +5092,10 @@ fn presentation_only_generation_preserves_epoch_and_layout_replacement_advances_
         input.set_layout(layout, style, cx).unwrap();
         assert_eq!(input.surface().unwrap().geometry_key(), presentation);
     });
+    input.read_with(cx, |input, _| {
+        assert_eq!(input.realization_diagnostics().current.candidates, 1);
+    });
+    assert_normal_clipboard_blocked_without_custody(&input, cx);
     assert!(drive_pages(&input, cx, source).is_empty());
     input.read_with(cx, |input, _| {
         let key = input.surface().unwrap().geometry_key();
@@ -6795,6 +7316,7 @@ fn rejected_layout_replacements_preserve_active_coherent_surface_without_loss(
             1
         );
     });
+    assert_normal_clipboard_blocked_without_custody(&input, cx);
     assert_eq!(events.borrow().len(), event_count);
     assert!(
         events
@@ -6954,6 +7476,7 @@ fn rejected_presentation_replacement_preserves_active_coherent_surface_without_l
             1
         );
     });
+    assert_normal_clipboard_blocked_without_custody(&input, cx);
     assert!(
         events
             .borrow()
@@ -6963,7 +7486,7 @@ fn rejected_presentation_replacement_preserves_active_coherent_surface_without_l
 }
 
 #[gpui::test]
-fn rejected_true_rebind_preserves_active_coherent_surface_without_loss(
+fn deferred_true_rebind_preserves_surface_and_blocks_normal_clipboard(
     cx: &mut gpui::TestAppContext,
 ) {
     cx.update(ensure_text_input_bindings);
@@ -6996,15 +7519,20 @@ fn rejected_true_rebind_preserves_active_coherent_surface_without_loss(
         )
     });
 
-    assert!(matches!(
-        cx.update(|window, app| input.update(app, |input, cx| input.rebind(
-            binding(source, 2),
-            None,
-            window,
-            cx
-        ))),
-        Err(gpui_text_input::RangeTextInputError::Busy)
-    ));
+    let rebind = cx.update(|window, app| {
+        input.update(app, |input, cx| {
+            input.rebind(binding(source, 2), None, window, cx)
+        })
+    });
+    assert!(
+        matches!(
+            rebind,
+            Err(gpui_text_input::RangeTextInputError::Geometry(
+                gpui_text_input::ExactGeometryError::CapacityExceeded
+            ))
+        ),
+        "unexpected deferred rebind result: {rebind:?}"
+    );
     input.read_with(cx, |input, _| {
         let surface = input.surface().unwrap();
         assert_eq!(input.active_inline_object(), Some(active));
@@ -7019,6 +7547,19 @@ fn rejected_true_rebind_preserves_active_coherent_surface_without_loss(
                 .pending_rebind_intents,
             1
         );
+    });
+    input.update(cx, |input, cx| {
+        for kind in [
+            gpui_text_input::ClipboardKind::Copy,
+            gpui_text_input::ClipboardKind::Cut,
+        ] {
+            assert!(matches!(
+                input.begin_clipboard(kind, cx),
+                Err(gpui_text_input::RangeTextInputError::Busy)
+            ));
+        }
+        assert_eq!(input.clipboard_counts(), Default::default());
+        assert!(input.take_request().is_none());
     });
     assert!(
         events
