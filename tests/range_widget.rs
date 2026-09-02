@@ -5155,10 +5155,45 @@ fn malformed_exact_geometry_index_text_page_terminates_and_can_restart(
     let style = configuration.style.clone();
     let (input, cx) =
         cx.add_window_view(|window, cx| RangeTextInput::new(configuration, window, cx).unwrap());
-    let RangeTextInputRequest::Page(request) =
-        input.update(cx, |input, _| input.take_request()).unwrap()
-    else {
-        panic!("initial geometry-index text request")
+    let target = loop {
+        match take_request_after_scheduled_frames(&input, cx, "initial geometry-target text") {
+            RangeTextInputRequest::Page(request) => break request,
+            other => panic!("unexpected initial geometry-target text request: {other:?}"),
+        }
+    };
+    assert_eq!(target.key().purpose(), PagePurpose::GeometryTarget);
+    let page = page_for(source, 94_000, target);
+    cx.update(|window, app| {
+        input.update(app, |input, cx| {
+            input.deliver_page(page, window, cx).unwrap()
+        })
+    });
+    let (request, prior) = loop {
+        match take_request_after_scheduled_frames(&input, cx, "geometry-index text after target") {
+            RangeTextInputRequest::ObjectPage(request)
+                if request.key().purpose() == ObjectPurpose::GeometryTarget =>
+            {
+                let page = restoration_object_page(request, &[], 94_001);
+                cx.update(|window, app| {
+                    input.update(app, |input, cx| {
+                        input
+                            .deliver_object_page_in_window(page, window, cx)
+                            .unwrap()
+                    })
+                });
+            }
+            RangeTextInputRequest::Page(request)
+                if request.key().purpose() == PagePurpose::GeometryIndex =>
+            {
+                break (
+                    request,
+                    input.read_with(cx, |input, _| input.surface().unwrap().geometry_key()),
+                );
+            }
+            RangeTextInputRequest::ReleasePage(_) | RangeTextInputRequest::ReleaseObjectPage(_) => {
+            }
+            other => panic!("unexpected geometry-index text request after target: {other:?}"),
+        }
     };
     assert_eq!(request.key().purpose(), PagePurpose::GeometryIndex);
     let malformed = malformed_geometry_text_page(94_000, request, source.len());
@@ -5184,7 +5219,7 @@ fn malformed_exact_geometry_index_text_page_terminates_and_can_restart(
     }
     assert_eq!(releases, 1);
     input.read_with(cx, |input, _| {
-        assert!(input.surface().is_none());
+        assert_eq!(input.surface().unwrap().geometry_key(), prior);
         assert!(input.is_quiescent());
     });
 
@@ -5325,13 +5360,41 @@ fn malformed_geometry_index_text_residency_conflict_terminates_and_can_restart(
         cx.add_window_view(|window, cx| RangeTextInput::new(configuration, window, cx).unwrap());
     let resident_atom = AtomId::new(950);
     assert!(drive_pages(&input, cx, &source).is_empty());
-    let prior = input.read_with(cx, |input, _| input.surface().unwrap().geometry_key());
     input.update(cx, |input, cx| {
         input.set_layout(layout.clone(), style.clone(), cx).unwrap()
     });
-    let request = loop {
-        match input.update(cx, |input, _| input.take_request()).unwrap() {
-            RangeTextInputRequest::Page(request) => break request,
+    let (request, prior) = loop {
+        match take_request_after_scheduled_frames(&input, cx, "geometry-index text conflict") {
+            RangeTextInputRequest::Page(request)
+                if request.key().purpose() == PagePurpose::GeometryTarget =>
+            {
+                let page = page_for(&source, 98_000, request);
+                cx.update(|window, app| {
+                    input.update(app, |input, cx| {
+                        input.deliver_page(page, window, cx).unwrap()
+                    })
+                });
+            }
+            RangeTextInputRequest::ObjectPage(request)
+                if request.key().purpose() == ObjectPurpose::GeometryTarget =>
+            {
+                let page = restoration_object_page(request, &[], 98_001);
+                cx.update(|window, app| {
+                    input.update(app, |input, cx| {
+                        input
+                            .deliver_object_page_in_window(page, window, cx)
+                            .unwrap()
+                    })
+                });
+            }
+            RangeTextInputRequest::Page(request)
+                if request.key().purpose() == PagePurpose::GeometryIndex =>
+            {
+                break (
+                    request,
+                    input.read_with(cx, |input, _| input.surface().unwrap().geometry_key()),
+                );
+            }
             RangeTextInputRequest::ReleasePage(_) | RangeTextInputRequest::ReleaseObjectPage(_) => {
             }
             other => panic!("unexpected index text-conflict request: {other:?}"),
@@ -5551,8 +5614,10 @@ fn malformed_exact_geometry_index_object_page_terminates_and_can_restart(
         cx.add_window_view(|window, cx| RangeTextInput::new(configuration, window, cx).unwrap());
 
     let request = loop {
-        match input.update(cx, |input, _| input.take_request()).unwrap() {
-            RangeTextInputRequest::Page(request) => {
+        match take_request_after_scheduled_frames(&input, cx, "geometry-index object") {
+            RangeTextInputRequest::Page(request)
+                if request.key().purpose() == PagePurpose::GeometryTarget =>
+            {
                 let page = page_for(source, 95_000, request);
                 cx.update(|window, app| {
                     input.update(app, |input, cx| {
@@ -5560,8 +5625,35 @@ fn malformed_exact_geometry_index_object_page_terminates_and_can_restart(
                     })
                 });
             }
-            RangeTextInputRequest::ObjectPage(request) => break request,
-            RangeTextInputRequest::ReleasePage(_) => {}
+            RangeTextInputRequest::ObjectPage(request)
+                if request.key().purpose() == ObjectPurpose::GeometryTarget =>
+            {
+                let page = restoration_object_page(request, &[], 95_001);
+                cx.update(|window, app| {
+                    input.update(app, |input, cx| {
+                        input
+                            .deliver_object_page_in_window(page, window, cx)
+                            .unwrap()
+                    })
+                });
+            }
+            RangeTextInputRequest::Page(request)
+                if request.key().purpose() == PagePurpose::GeometryIndex =>
+            {
+                let page = page_for(source, 95_002, request);
+                cx.update(|window, app| {
+                    input.update(app, |input, cx| {
+                        input.deliver_page(page, window, cx).unwrap()
+                    })
+                });
+            }
+            RangeTextInputRequest::ObjectPage(request)
+                if request.key().purpose() == ObjectPurpose::GeometryIndex =>
+            {
+                break request;
+            }
+            RangeTextInputRequest::ReleasePage(_) | RangeTextInputRequest::ReleaseObjectPage(_) => {
+            }
             other => panic!("unexpected index request: {other:?}"),
         }
     };
@@ -5852,7 +5944,7 @@ fn malformed_geometry_object_residency_conflict(cx: &mut gpui::TestAppContext, t
             input.set_layout(layout.clone(), style.clone(), cx).unwrap()
         });
     }
-    let prior = input.read_with(cx, |input, _| input.surface().unwrap().geometry_key());
+    let mut prior = input.read_with(cx, |input, _| input.surface().unwrap().geometry_key());
     let text_purpose = if target {
         PagePurpose::GeometryTarget
     } else {
@@ -5864,8 +5956,40 @@ fn malformed_geometry_object_residency_conflict(cx: &mut gpui::TestAppContext, t
         ObjectPurpose::GeometryIndex
     };
     let first_text = loop {
-        match input.update(cx, |input, _| input.take_request()).unwrap() {
-            RangeTextInputRequest::Page(request) => break request,
+        let request = if target {
+            input.update(cx, |input, _| input.take_request()).unwrap()
+        } else {
+            take_request_after_scheduled_frames(&input, cx, "first object-conflict text")
+        };
+        match request {
+            RangeTextInputRequest::Page(request)
+                if !target && request.key().purpose() == PagePurpose::GeometryTarget =>
+            {
+                let page = page_for(&source, 98_200, request);
+                cx.update(|window, app| {
+                    input.update(app, |input, cx| {
+                        input.deliver_page(page, window, cx).unwrap()
+                    })
+                });
+            }
+            RangeTextInputRequest::ObjectPage(request)
+                if !target && request.key().purpose() == ObjectPurpose::GeometryTarget =>
+            {
+                let page = restoration_object_page(request, &[], 98_201);
+                cx.update(|window, app| {
+                    input.update(app, |input, cx| {
+                        input
+                            .deliver_object_page_in_window(page, window, cx)
+                            .unwrap()
+                    })
+                });
+            }
+            RangeTextInputRequest::Page(request) => {
+                if !target {
+                    prior = input.read_with(cx, |input, _| input.surface().unwrap().geometry_key());
+                }
+                break request;
+            }
             RangeTextInputRequest::ReleasePage(_) | RangeTextInputRequest::ReleaseObjectPage(_) => {
             }
             other => panic!("unexpected first object-conflict text request: {other:?}"),
