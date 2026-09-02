@@ -34,6 +34,8 @@ pub struct ObjectResidency {
     resident_presentation_bytes: usize,
     pending_bytes: usize,
     pending_objects: usize,
+    #[cfg(test)]
+    force_next_admission_limit: std::cell::Cell<bool>,
 }
 
 #[derive(Debug)]
@@ -317,7 +319,14 @@ impl ObjectResidency {
             resident_presentation_bytes: 0,
             pending_bytes: 0,
             pending_objects: 0,
+            #[cfg(test)]
+            force_next_admission_limit: std::cell::Cell::new(false),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn force_next_admission_limit(&self) {
+        self.force_next_admission_limit.set(true);
     }
 
     /// Returns the exact current text-source binding.
@@ -625,6 +634,12 @@ impl ObjectResidency {
         let key = page.key();
         if !self.is_current(key) {
             return Err(ObjectPageAdmissionError::Stale(key));
+        }
+        #[cfg(test)]
+        if self.force_next_admission_limit.replace(false) {
+            return Err(ObjectPageAdmissionError::LimitExceeded(
+                ObjectResidencyLimitKind::ResidentBytes,
+            ));
         }
         let Some(pending_index) = self.pending.iter().position(|pending| *pending == key) else {
             return if self.cancelled.contains(&key) {

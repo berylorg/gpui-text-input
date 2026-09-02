@@ -1,5 +1,23 @@
 use super::*;
 
+#[derive(Debug)]
+pub(super) enum ResponseDeliveryProgress {
+    Progressed,
+    AcceptedTerminal(RangeTextInputError),
+    Rejected(RangeTextInputError),
+    RetryableTerminalSurfaceCapacity,
+}
+
+#[derive(Debug)]
+pub(super) enum ResponseCustodyProgress {
+    Idle,
+    Progressed,
+    AcceptedTerminal,
+    Rejected(RangeTextInputError),
+    RetryableTerminalSurfaceCapacity,
+    RetryableClipboardPreparationCapacity,
+}
+
 #[derive(Clone, Debug)]
 pub(super) enum RangeResponseCustody {
     Page(crate::RangePage),
@@ -88,64 +106,6 @@ impl RangeResponseCustody {
         }
     }
 
-    fn remains_dispatched(&self, input: &RangeTextInput) -> bool {
-        match self {
-            Self::Page(page) => input.dispatched_pages.contains(&page.key()),
-            Self::PageNoAliases(page) => input.dispatched_pages.contains(&page.key()),
-            Self::ResidentPage(page) => input.range_continuation_waits_on(page.key()),
-            Self::AliasFanout(fanout) => {
-                fanout.matched || fanout.cursor < input.pending_page_aliases.len()
-            }
-            Self::Object(page) => input.dispatched_object_pages.contains(&page.key()),
-        }
-    }
-
-    fn geometry_alignment_is_current(&self, input: &RangeTextInput) -> bool {
-        match self {
-            Self::Object(page)
-                if matches!(
-                    page.key().purpose(),
-                    crate::ObjectPurpose::GeometryIndex | crate::ObjectPurpose::GeometryTarget
-                ) =>
-            {
-                let key = page.key();
-                let Some(pending) = input.pending_geometry_object.as_ref() else {
-                    return false;
-                };
-                input.dispatched_object_pages.contains(&key)
-                    && pending.request.key() == key
-                    && input.active_geometry == Some(pending.job)
-                    && matches!(pending.wait, geometry::GeometryObjectWait::Coalesced(wait) if wait == key)
-                    && (!matches!(key.purpose(), crate::ObjectPurpose::GeometryTarget)
-                        || input
-                            .surface_candidate
-                            .as_ref()
-                            .is_some_and(|candidate| candidate.job == pending.job))
-            }
-            Self::Page(page) | Self::PageNoAliases(page)
-                if matches!(
-                    page.key().purpose(),
-                    crate::PagePurpose::GeometryIndex | crate::PagePurpose::GeometryTarget
-                ) =>
-            {
-                let key = page.key();
-                let Some(pending) = input.pending_geometry_page.as_ref() else {
-                    return false;
-                };
-                input.dispatched_pages.contains(&key)
-                    && pending.request.key() == key
-                    && input.active_geometry == Some(pending.job)
-                    && matches!(pending.wait, geometry::GeometryPageWait::Coalesced(wait) if wait == key)
-                    && (!matches!(key.purpose(), crate::PagePurpose::GeometryTarget)
-                        || input
-                            .surface_candidate
-                            .as_ref()
-                            .is_some_and(|candidate| candidate.job == pending.job))
-            }
-            _ => true,
-        }
-    }
-
     fn transient_charge(&self) -> Result<RangeSurfaceCharge, RangeTextInputError> {
         let incremental = self.incremental_charge()?;
         let processing = self.processing_charge()?;
@@ -165,7 +125,7 @@ impl RangeResponseCustody {
 impl RangeTextInput {
     fn record_response_rejection(
         &mut self,
-        response: &RangeResponseCustody,
+        _response: &RangeResponseCustody,
         error: &RangeTextInputError,
     ) {
         use crate::ExactGeometryError;
@@ -173,9 +133,6 @@ impl RangeTextInput {
         self.last_response_rejection_stage =
             self.pending_response_exact_geometry_failure_stage.take();
         self.last_response_rejection = Some(match error {
-            RangeTextInputError::Stale if !response.geometry_alignment_is_current(self) => {
-                RangeResponseRejectionClass::AlignmentKeyJobStale
-            }
             RangeTextInputError::Stale => RangeResponseRejectionClass::ResidencyStale,
             RangeTextInputError::SurfaceCapacity => RangeResponseRejectionClass::ResidencyCapacity,
             RangeTextInputError::Geometry(ExactGeometryError::CapacityExceeded) => {
@@ -465,31 +422,75 @@ impl RangeTextInput {
         Ok(())
     }
 
+    fn finish_response_delivery(
+        &mut self,
+        response: RangeResponseCustody,
+        progress: ResponseDeliveryProgress,
+        cx: &mut gpui::Context<Self>,
+    ) -> ResponseCustodyProgress {
+        let progress = match progress {
+            ResponseDeliveryProgress::Progressed => ResponseCustodyProgress::Progressed,
+            ResponseDeliveryProgress::AcceptedTerminal(error) => {
+                self.record_response_rejection(&response, &error);
+                ResponseCustodyProgress::AcceptedTerminal
+            }
+            ResponseDeliveryProgress::Rejected(error) => {
+                self.record_response_rejection(&response, &error);
+                ResponseCustodyProgress::Rejected(error)
+            }
+            ResponseDeliveryProgress::RetryableTerminalSurfaceCapacity => {
+                match &response {
+                    RangeResponseCustody::Page(page)
+                    | RangeResponseCustody::PageNoAliases(page) => {
+                        debug_assert!(self.dispatched_pages.contains(&page.key()));
+                    }
+                    RangeResponseCustody::Object(page) => {
+                        debug_assert!(self.dispatched_object_pages.contains(&page.key()));
+                    }
+                    RangeResponseCustody::ResidentPage(_)
+                    | RangeResponseCustody::AliasFanout(_) => {
+                        unreachable!("only a delivered geometry response is retryable")
+                    }
+                }
+                self.response_custody.push_front(response);
+                self.schedule_realization_continuation(cx);
+                self.observe_realization_ownership();
+                return ResponseCustodyProgress::RetryableTerminalSurfaceCapacity;
+            }
+        };
+        if !self.response_custody.is_empty() {
+            self.schedule_realization_continuation(cx);
+        }
+        self.observe_realization_ownership();
+        progress
+    }
+
     pub(super) fn service_response_custody(
         &mut self,
         window: &mut gpui::Window,
         cx: &mut gpui::Context<Self>,
-    ) -> Result<bool, RangeTextInputError> {
+    ) -> ResponseCustodyProgress {
         if self.response_custody.is_empty() {
             if self.clipboard.has_prepared_work() {
                 if !self.try_spend_realization_credit(cx) {
-                    return Ok(false);
+                    return ResponseCustodyProgress::Idle;
                 }
                 let result = self.resume_clipboard_prepared(cx);
                 if let Err(error) = result {
                     self.refund_realization_credit();
                     if matches!(error, RangeTextInputError::SurfaceCapacity) {
                         self.schedule_realization_continuation(cx);
+                        return ResponseCustodyProgress::RetryableClipboardPreparationCapacity;
                     }
-                    return Err(error);
+                    return ResponseCustodyProgress::Rejected(error);
                 }
                 self.observe_realization_ownership();
-                return Ok(true);
+                return ResponseCustodyProgress::Progressed;
             }
-            return Ok(false);
+            return ResponseCustodyProgress::Idle;
         }
         if !self.try_spend_realization_credit(cx) {
-            return Ok(false);
+            return ResponseCustodyProgress::Idle;
         }
         let Some(response) = self.response_custody.pop_front() else {
             unreachable!("response custody was checked nonempty")
@@ -537,15 +538,24 @@ impl RangeTextInput {
                     self.active_response_processing = RangeSurfaceCharge::default();
                     self.record_response_rejection(&response, &error);
                     self.refund_realization_credit();
-                    if response.remains_dispatched(self) {
-                        let has_tail = !self.response_custody.is_empty();
-                        self.response_custody.push_back(response);
-                        self.observe_realization_ownership();
-                        if has_tail || matches!(error, RangeTextInputError::SurfaceCapacity) {
-                            self.schedule_realization_continuation(cx);
+                    if matches!(error, RangeTextInputError::SurfaceCapacity) {
+                        match &response {
+                            RangeResponseCustody::Page(page)
+                            | RangeResponseCustody::PageNoAliases(page)
+                            | RangeResponseCustody::ResidentPage(page) => {
+                                debug_assert!(self.dispatched_pages.contains(&page.key()));
+                            }
+                            RangeResponseCustody::Object(page) => {
+                                debug_assert!(self.dispatched_object_pages.contains(&page.key()));
+                            }
+                            RangeResponseCustody::AliasFanout(_) => unreachable!(),
                         }
+                        self.response_custody.push_front(response);
+                        self.observe_realization_ownership();
+                        self.schedule_realization_continuation(cx);
+                        return ResponseCustodyProgress::RetryableClipboardPreparationCapacity;
                     }
-                    return Err(error);
+                    return ResponseCustodyProgress::Rejected(error);
                 }
             };
             let result = match response {
@@ -566,14 +576,15 @@ impl RangeTextInput {
                     && matches!(error, RangeTextInputError::SurfaceCapacity)
                 {
                     self.schedule_realization_continuation(cx);
+                    return ResponseCustodyProgress::RetryableClipboardPreparationCapacity;
                 }
-                return Err(error);
+                return ResponseCustodyProgress::AcceptedTerminal;
             }
             if !self.response_custody.is_empty() {
                 self.schedule_realization_continuation(cx);
             }
             self.observe_realization_ownership();
-            return Ok(true);
+            return ResponseCustodyProgress::Progressed;
         }
         let retry = response.clone();
         self.active_response_processing = retry
@@ -596,57 +607,45 @@ impl RangeTextInput {
             }
         };
         self.active_response_processing = RangeSurfaceCharge::default();
-        if let Err(error) = result {
-            self.record_response_rejection(&retry, &error);
+        let progress = match result {
+            Ok(progress) => progress,
+            Err(error) => ResponseDeliveryProgress::Rejected(error),
+        };
+        if matches!(progress, ResponseDeliveryProgress::Rejected(_)) {
             self.refund_realization_credit();
-            let retained = retry.remains_dispatched(self);
-            if retained {
-                let has_tail = !self.response_custody.is_empty();
-                self.response_custody.push_back(retry);
-                self.observe_realization_ownership();
-                if has_tail || matches!(error, RangeTextInputError::SurfaceCapacity) {
-                    self.schedule_realization_continuation(cx);
-                }
-            } else if !self.response_custody.is_empty() {
-                self.schedule_realization_continuation(cx);
-            }
-            return Err(error);
         }
-        if !self.response_custody.is_empty() {
-            self.schedule_realization_continuation(cx);
-        }
-        self.observe_realization_ownership();
-        Ok(true)
+        self.finish_response_delivery(retry, progress, cx)
     }
 
     pub(super) fn service_object_response_custody(
         &mut self,
         cx: &mut gpui::Context<Self>,
-    ) -> Result<bool, RangeTextInputError> {
+    ) -> ResponseCustodyProgress {
         if self.response_custody.is_empty() && self.clipboard.has_prepared_work() {
             if !self.try_spend_realization_credit(cx) {
-                return Ok(false);
+                return ResponseCustodyProgress::Idle;
             }
             let result = self.resume_clipboard_prepared(cx);
             if let Err(error) = result {
                 self.refund_realization_credit();
                 if matches!(error, RangeTextInputError::SurfaceCapacity) {
                     self.schedule_realization_continuation(cx);
+                    return ResponseCustodyProgress::RetryableClipboardPreparationCapacity;
                 }
-                return Err(error);
+                return ResponseCustodyProgress::Rejected(error);
             }
             self.observe_realization_ownership();
-            return Ok(true);
+            return ResponseCustodyProgress::Progressed;
         }
         if !matches!(self.response_custody.front(), Some(RangeResponseCustody::Object(page)) if !matches!(page.key().purpose(), crate::ObjectPurpose::GeometryIndex | crate::ObjectPurpose::GeometryTarget))
         {
             if self.response_custody.len() > 1 {
                 self.schedule_realization_continuation(cx);
             }
-            return Ok(false);
+            return ResponseCustodyProgress::Idle;
         }
         if !self.try_spend_realization_credit(cx) {
-            return Ok(false);
+            return ResponseCustodyProgress::Idle;
         }
         let response = self
             .response_custody
@@ -677,15 +676,16 @@ impl RangeTextInput {
                     self.active_response_processing = RangeSurfaceCharge::default();
                     self.record_response_rejection(&retry, &error);
                     self.refund_realization_credit();
-                    if retry.remains_dispatched(self) {
-                        let has_tail = !self.response_custody.is_empty();
-                        self.response_custody.push_back(retry);
+                    if matches!(error, RangeTextInputError::SurfaceCapacity) {
+                        debug_assert!(
+                            matches!(&retry, RangeResponseCustody::Object(page) if self.dispatched_object_pages.contains(&page.key()))
+                        );
+                        self.response_custody.push_front(retry);
                         self.observe_realization_ownership();
-                        if has_tail || matches!(error, RangeTextInputError::SurfaceCapacity) {
-                            self.schedule_realization_continuation(cx);
-                        }
+                        self.schedule_realization_continuation(cx);
+                        return ResponseCustodyProgress::RetryableClipboardPreparationCapacity;
                     }
-                    return Err(error);
+                    return ResponseCustodyProgress::Rejected(error);
                 }
             };
             let result = self.commit_prepared_clipboard_object_page(page, step, cx);
@@ -696,14 +696,15 @@ impl RangeTextInput {
                     && matches!(error, RangeTextInputError::SurfaceCapacity)
                 {
                     self.schedule_realization_continuation(cx);
+                    return ResponseCustodyProgress::RetryableClipboardPreparationCapacity;
                 }
-                return Err(error);
+                return ResponseCustodyProgress::AcceptedTerminal;
             }
             if !self.response_custody.is_empty() {
                 self.schedule_realization_continuation(cx);
             }
             self.observe_realization_ownership();
-            return Ok(true);
+            return ResponseCustodyProgress::Progressed;
         }
         let retry = response.clone();
         let RangeResponseCustody::Object(page) = response else {
@@ -715,26 +716,13 @@ impl RangeTextInput {
         self.observe_realization_ownership();
         let result = self.deliver_custodied_object_page(page, None, cx);
         self.active_response_processing = RangeSurfaceCharge::default();
-        if let Err(error) = result {
-            self.record_response_rejection(&retry, &error);
+        let progress = match result {
+            Ok(progress) => progress,
+            Err(error) => ResponseDeliveryProgress::Rejected(error),
+        };
+        if matches!(progress, ResponseDeliveryProgress::Rejected(_)) {
             self.refund_realization_credit();
-            let retained = retry.remains_dispatched(self);
-            if retained {
-                let has_tail = !self.response_custody.is_empty();
-                self.response_custody.push_back(retry);
-                self.observe_realization_ownership();
-                if has_tail || matches!(error, RangeTextInputError::SurfaceCapacity) {
-                    self.schedule_realization_continuation(cx);
-                }
-            } else if !self.response_custody.is_empty() {
-                self.schedule_realization_continuation(cx);
-            }
-            return Err(error);
         }
-        if !self.response_custody.is_empty() {
-            self.schedule_realization_continuation(cx);
-        }
-        self.observe_realization_ownership();
-        Ok(true)
+        self.finish_response_delivery(retry, progress, cx)
     }
 }

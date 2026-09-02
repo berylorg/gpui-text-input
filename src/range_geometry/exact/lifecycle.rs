@@ -1,6 +1,6 @@
 use gpui::StreamingLayoutBinding;
 
-use crate::{PageRequestKey, RangeBinding};
+use crate::RangeBinding;
 
 use super::*;
 
@@ -11,20 +11,23 @@ pub(crate) struct PreparedTerminalGeometryFailure {
 }
 
 impl ExactGeometryOwner {
-    pub(crate) fn prepare_terminal_page_failure(
+    pub(crate) fn prepare_terminal_failure_for_active_input(
         &self,
         key: GeometryJobKey,
-        page: PageRequestKey,
     ) -> Result<PreparedTerminalGeometryFailure, ExactGeometryError> {
-        self.prepare_terminal_failure(key, PendingInput::Text(page))
-    }
-
-    pub(crate) fn prepare_terminal_object_failure(
-        &self,
-        key: GeometryJobKey,
-        page: crate::ObjectRequestKey,
-    ) -> Result<PreparedTerminalGeometryFailure, ExactGeometryError> {
-        self.prepare_terminal_failure(key, PendingInput::Object(page))
+        let active = self
+            .active
+            .as_deref()
+            .ok_or(ExactGeometryError::ObsoleteJob(key))?;
+        if active.key != key {
+            return Err(ExactGeometryError::ObsoleteJob(key));
+        }
+        let pending = active
+            .pending
+            .as_deref()
+            .copied()
+            .ok_or_else(|| ExactGeometryError::ObsoleteJob(key))?;
+        self.prepare_terminal_failure(key, pending)
     }
 
     fn prepare_terminal_failure(

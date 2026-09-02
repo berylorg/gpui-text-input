@@ -25,6 +25,8 @@ pub struct RangeResidency {
     highest_request: Option<PageRequestId>,
     resident_bytes: usize,
     pending_bytes: u64,
+    #[cfg(test)]
+    force_next_admission_limit: std::cell::Cell<bool>,
 }
 
 #[derive(Debug)]
@@ -149,6 +151,13 @@ pub(crate) struct PreparedRangePageAdmission {
     retained_items: usize,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PreparedRangePageSettlement {
+    key: PageRequestKey,
+    pending_index: usize,
+    failure: PageFailure,
+}
+
 impl PreparedRangePageAdmission {
     pub(crate) const fn page(&self) -> &RangePage {
         &self.page
@@ -260,7 +269,14 @@ impl RangeResidency {
             highest_request: None,
             resident_bytes: 0,
             pending_bytes: 0,
+            #[cfg(test)]
+            force_next_admission_limit: std::cell::Cell::new(false),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn force_next_admission_limit(&self) {
+        self.force_next_admission_limit.set(true);
     }
 
     /// Returns the exact current binding, revision, and logical extent.
@@ -682,6 +698,12 @@ impl RangeResidency {
     ) -> Result<PreparedRangePageAdmission, PageAdmissionError> {
         let key = page.key();
         self.check_current(key)?;
+        #[cfg(test)]
+        if self.force_next_admission_limit.replace(false) {
+            return Err(PageAdmissionError::LimitExceeded(
+                ResidencyLimitKind::ResidentBytes,
+            ));
+        }
         let Some(pending_index) = self.pending.iter().position(|pending| *pending == key) else {
             if self.cancelled.contains(&key) {
                 return Err(PageAdmissionError::Cancelled(key));
@@ -866,21 +888,48 @@ impl RangeResidency {
 
     /// Settles an exact request as cancelled or unavailable and releases it.
     pub fn settle(&mut self, key: PageRequestKey, failure: PageFailure) -> PageSettlement {
+        let prepared = match self.prepare_settle(key, failure) {
+            Ok(prepared) => prepared,
+            Err(settlement) => return settlement,
+        };
+        self.commit_prepared_settle(prepared)
+    }
+
+    pub(crate) fn prepare_settle(
+        &self,
+        key: PageRequestKey,
+        failure: PageFailure,
+    ) -> Result<PreparedRangePageSettlement, PageSettlement> {
         if !self.is_current(key) {
-            return PageSettlement::Stale;
+            return Err(PageSettlement::Stale);
         }
-        let Some(index) = self.pending.iter().position(|pending| *pending == key) else {
-            return if self.cancelled.contains(&key) {
+        let Some(pending_index) = self.pending.iter().position(|pending| *pending == key) else {
+            return Err(if self.cancelled.contains(&key) {
                 PageSettlement::AlreadyCancelled
             } else {
                 PageSettlement::Unavailable
-            };
+            });
         };
-        self.remove_pending(index);
-        if failure == PageFailure::Cancelled {
-            self.remember_cancelled(key);
+        Ok(PreparedRangePageSettlement {
+            key,
+            pending_index,
+            failure,
+        })
+    }
+
+    pub(crate) fn commit_prepared_settle(
+        &mut self,
+        prepared: PreparedRangePageSettlement,
+    ) -> PageSettlement {
+        debug_assert_eq!(
+            self.pending.get(prepared.pending_index),
+            Some(&prepared.key)
+        );
+        self.remove_pending(prepared.pending_index);
+        if prepared.failure == PageFailure::Cancelled {
+            self.remember_cancelled(prepared.key);
         }
-        PageSettlement::Settled(failure)
+        PageSettlement::Settled(prepared.failure)
     }
 
     /// Cancels one exact pending request and releases its capacity.

@@ -1,5 +1,6 @@
 use gpui::{Context, Window};
 
+use super::response_custody::ResponseDeliveryProgress;
 use super::{RangeTextInput, RangeTextInputError, RangeTextInputRequest};
 use crate::{
     ObjectPage, ObjectPageFailure, ObjectRequestId, PageDemand, PageFailure, PagePurpose,
@@ -450,13 +451,13 @@ impl RangeTextInput {
         page: ObjectPage,
         cx: &mut Context<Self>,
     ) -> Result<(), RangeTextInputError> {
-        let key = page.key();
         if matches!(
-            key.purpose(),
+            page.key().purpose(),
             crate::ObjectPurpose::GeometryIndex | crate::ObjectPurpose::GeometryTarget
         ) {
             return Err(RangeTextInputError::ObjectResponseRejected(page));
         }
+        let key = page.key();
         if !self.dispatched_object_pages.contains(&key) {
             return Err(RangeTextInputError::ObjectResponseRejected(page));
         }
@@ -471,9 +472,12 @@ impl RangeTextInput {
                 | super::response_custody::RangeResponseCustody::AliasFanout(_) => unreachable!(),
             })?;
         match self.service_object_response_custody(cx) {
-            Ok(_) => Ok(()),
-            Err(_) if self.dispatched_object_pages.contains(&key) => Ok(()),
-            Err(error) => Err(error),
+            super::response_custody::ResponseCustodyProgress::Idle
+            | super::response_custody::ResponseCustodyProgress::Progressed
+            | super::response_custody::ResponseCustodyProgress::AcceptedTerminal
+            | super::response_custody::ResponseCustodyProgress::RetryableTerminalSurfaceCapacity
+            | super::response_custody::ResponseCustodyProgress::RetryableClipboardPreparationCapacity => Ok(()),
+            super::response_custody::ResponseCustodyProgress::Rejected(error) => Err(error),
         }
     }
 
@@ -482,13 +486,17 @@ impl RangeTextInput {
         page: ObjectPage,
         window: Option<&mut Window>,
         cx: &mut Context<Self>,
-    ) -> Result<(), RangeTextInputError> {
+    ) -> Result<ResponseDeliveryProgress, RangeTextInputError> {
         let key = page.key();
         if matches!(
             key.purpose(),
             crate::ObjectPurpose::GeometryIndex | crate::ObjectPurpose::GeometryTarget
         ) {
-            let window = window.ok_or(RangeTextInputError::Busy)?;
+            let Some(window) = window else {
+                return Ok(ResponseDeliveryProgress::Rejected(
+                    RangeTextInputError::Busy,
+                ));
+            };
             return match key.purpose() {
                 crate::ObjectPurpose::GeometryTarget => {
                     self.deliver_geometry_target_object_page_inner(page, true, window, cx)
@@ -501,7 +509,9 @@ impl RangeTextInput {
         }
         if !self.dispatched_object_pages.contains(&key) {
             self.commit_prepared_request(RangeTextInputRequest::ReleaseObjectPage(key));
-            return Err(RangeTextInputError::Stale);
+            return Ok(ResponseDeliveryProgress::Rejected(
+                RangeTextInputError::Stale,
+            ));
         }
         let purpose = key.purpose();
         let result = match purpose {
@@ -525,7 +535,10 @@ impl RangeTextInput {
         if self.clipboard.pending_object_page() != Some(key) {
             self.dispatched_object_pages.remove(&key);
         }
-        result
+        Ok(match result {
+            Ok(()) => ResponseDeliveryProgress::Progressed,
+            Err(error) => ResponseDeliveryProgress::Rejected(error),
+        })
     }
 
     pub(super) fn commit_prepared_clipboard_object_page(
@@ -561,10 +574,10 @@ impl RangeTextInput {
                 | super::response_custody::RangeResponseCustody::ResidentPage(_)
                 | super::response_custody::RangeResponseCustody::AliasFanout(_) => unreachable!(),
             })?;
-        if let Err(error) = self.service_response_custody(window, cx) {
-            if self.response_custody.is_empty() {
-                return Err(error);
-            }
+        if let super::response_custody::ResponseCustodyProgress::Rejected(error) =
+            self.service_response_custody(window, cx)
+        {
+            return Err(error);
         }
         self.service_geometry_until_external_boundary(window, cx)
     }

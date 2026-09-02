@@ -22,11 +22,11 @@ use super::geometry::{GeometryObjectWait, GeometryPageWait};
 use super::transition::WidgetAdmissionComponents;
 use super::*;
 use crate::{
-    AtomFact, AtomId, BindingId, ByteOffset, ByteRange, ClipboardLimits, ExactGeometryLimits,
-    InlineObjectFact, InlineObjectId, InlineObjectOrder, InlineObjectPresentation, LogicalExtent,
-    MutationLimits, ObjectDemand, ObjectDemandEnvelope, ObjectDirection, ObjectPage,
-    ObjectPageEdgeFact, ObjectPageId, ObjectPurpose, ObjectRequestId, ObjectResidencyLimits,
-    PageDemand, PageDemandEnvelope, PageDirection, PageEdgeFact, PageId, PagePurpose, PageRequest,
+    BindingId, ByteOffset, ByteRange, ClipboardLimits, ExactGeometryLimits, InlineObjectFact,
+    InlineObjectId, InlineObjectOrder, InlineObjectPresentation, LogicalExtent, MutationLimits,
+    ObjectDemand, ObjectDemandEnvelope, ObjectDirection, ObjectPage, ObjectPageEdgeFact,
+    ObjectPageId, ObjectPurpose, ObjectRequestId, ObjectResidencyLimits, PageDemand,
+    PageDemandEnvelope, PageDirection, PageEdgeFact, PageId, PagePurpose, PageRequest,
     PageRequestId, PresentationGeneration, RangeBinding, RangePage, RangeResidency,
     RangeSourceSelection, RangeTextInputConfig, RangeTextInputEvent, RangeTextInputLimits,
     RangeTextInputRequest, ResidencyLimits, SegmentationLimits, SourcePosition, SourceRevision,
@@ -34,6 +34,21 @@ use crate::{
 };
 
 const SOURCE: &str = "resident payload";
+
+fn custody_progressed(progress: super::response_custody::ResponseCustodyProgress) -> bool {
+    matches!(
+        progress,
+        super::response_custody::ResponseCustodyProgress::Progressed
+            | super::response_custody::ResponseCustodyProgress::AcceptedTerminal
+    )
+}
+
+fn custody_idle(progress: super::response_custody::ResponseCustodyProgress) -> bool {
+    matches!(
+        progress,
+        super::response_custody::ResponseCustodyProgress::Idle
+    )
+}
 
 fn binding() -> RangeBinding {
     RangeBinding::new(
@@ -1701,141 +1716,6 @@ fn synchronous_terminal_object_exact_fit_and_one_under_retain_resident_response_
     }
 }
 
-#[gpui::test]
-fn geometry_index_text_response_rejection_preserves_identical_key_for_nonterminal_retry(
-    cx: &mut gpui::TestAppContext,
-) {
-    let (input, cx) = cx.add_window_view(|window, cx| {
-        RangeTextInput::new(config(2 * 1024 * 1024, 32_768), window, cx).unwrap()
-    });
-    let RangeTextInputRequest::Page(request) =
-        input.update(cx, |input, _| input.take_request()).unwrap()
-    else {
-        panic!("initial geometry-index text request")
-    };
-    assert_eq!(request.key().purpose(), PagePurpose::GeometryIndex);
-    let key = request.key();
-    let before = input.read_with(cx, |input, _| fingerprint(input));
-    input.update(cx, |input, _| input.config.limits.max_surface_bytes = 1);
-    let rejected = cx.update(|window, app| {
-        input.update(app, |input, cx| {
-            input.deliver_page(page_for(request, 1), window, cx)
-        })
-    });
-    assert!(matches!(
-        rejected,
-        Err(RangeTextInputError::PageResponseCapacity(_))
-    ));
-    input.read_with(cx, |input, _| {
-        assert_eq!(fingerprint(input), before);
-        assert!(input.dispatched_pages.contains(&key));
-    });
-
-    input.update(cx, |input, _| {
-        input.config.limits.max_surface_bytes = 2 * 1024 * 1024
-    });
-    cx.update(|window, app| {
-        input.update(app, |input, cx| {
-            input
-                .deliver_page(page_for(request, 1), window, cx)
-                .unwrap()
-        })
-    });
-    input.read_with(cx, |input, _| {
-        assert_ne!(fingerprint(input), before);
-        assert!(!input.dispatched_pages.contains(&key));
-        assert!(input.pending_geometry_object.is_some());
-    });
-}
-
-#[gpui::test]
-fn geometry_index_object_response_rejection_preserves_identical_key_for_terminal_retry(
-    cx: &mut gpui::TestAppContext,
-) {
-    let (input, cx) = cx.add_window_view(|window, cx| {
-        RangeTextInput::new(config(2 * 1024 * 1024, 32_768), window, cx).unwrap()
-    });
-    let RangeTextInputRequest::Page(text_request) =
-        input.update(cx, |input, _| input.take_request()).unwrap()
-    else {
-        panic!("initial geometry-index text request")
-    };
-    let atom_range = ByteRange::from_u64(0, 1).unwrap();
-    let text_page = RangePage::new(
-        PageId::new(1),
-        text_request.key(),
-        ByteRange::from_u64(0, SOURCE.len() as u64).unwrap(),
-        SOURCE.to_owned(),
-        vec![AtomFact::new(
-            AtomId::new(1),
-            atom_range,
-            atom_range,
-            "resident-object-fallback",
-        )],
-        PageEdgeFact::DocumentBoundary,
-        PageEdgeFact::DocumentBoundary,
-        true,
-    )
-    .unwrap();
-    cx.update(|window, app| {
-        input.update(app, |input, cx| {
-            input.deliver_page(text_page, window, cx).unwrap()
-        })
-    });
-    let request = loop {
-        match input.update(cx, |input, _| input.take_request()).unwrap() {
-            RangeTextInputRequest::ObjectPage(request) => break request,
-            RangeTextInputRequest::ReleasePage(_) => {}
-            other => panic!("unexpected geometry-index request: {other:?}"),
-        }
-    };
-    assert_eq!(request.key().purpose(), ObjectPurpose::GeometryIndex);
-    let key = request.key();
-    let page = || {
-        ObjectPage::new(
-            ObjectPageId::new(2),
-            key,
-            vec![],
-            ObjectPageEdgeFact::EnvelopeBoundary,
-            ObjectPageEdgeFact::EnvelopeBoundary,
-            true,
-            None,
-        )
-        .unwrap()
-    };
-    let before = input.read_with(cx, |input, _| fingerprint(input));
-    input.update(cx, |input, _| input.config.limits.max_surface_bytes = 1);
-    let rejected = cx.update(|window, app| {
-        input.update(app, |input, cx| {
-            input.deliver_object_page_in_window(page(), window, cx)
-        })
-    });
-    assert!(matches!(
-        rejected,
-        Err(RangeTextInputError::ObjectResponseCapacity(_))
-    ));
-    input.read_with(cx, |input, _| {
-        assert_eq!(fingerprint(input), before);
-        assert!(input.dispatched_object_pages.contains(&key));
-    });
-
-    input.update(cx, |input, _| {
-        input.config.limits.max_surface_bytes = 2 * 1024 * 1024
-    });
-    cx.update(|window, app| {
-        input.update(app, |input, cx| {
-            input
-                .deliver_object_page_in_window(page(), window, cx)
-                .unwrap()
-        })
-    });
-    input.read_with(cx, |input, _| {
-        assert_ne!(fingerprint(input), before);
-        assert!(!input.dispatched_object_pages.contains(&key));
-        assert!(input.geometry.index().is_some());
-    });
-}
-
 fn empty_terminal_object_response(key: crate::ObjectRequestKey) -> ObjectPage {
     ObjectPage::new(
         ObjectPageId::new(42),
@@ -1888,6 +1768,48 @@ fn stage_terminal_target_object_response(
             }
             other => panic!("unexpected target request: {other:?}"),
         }
+    }
+}
+
+fn staged_alias_fanout(
+    input: &gpui::Entity<RangeTextInput>,
+    cx: &mut gpui::VisualTestContext,
+    first_id: u64,
+    aliases: usize,
+) -> super::response_custody::AliasFanout {
+    let source = crate::PageRequestKey::adjacent(
+        PageRequestId::new(first_id),
+        BindingId::new(71),
+        SourceRevision::new(1),
+        PagePurpose::Caret,
+        ByteOffset::new(0),
+        PageDirection::Forward,
+        SOURCE.len() as u64,
+    )
+    .unwrap();
+    let page = page_for(PageRequest::new(source), first_id);
+    input.update(cx, |input, _| {
+        assert!(input.dispatched_pages.insert(source));
+        for offset in 1..=aliases {
+            let request = crate::PageRequestKey::adjacent(
+                PageRequestId::new(first_id + offset as u64),
+                BindingId::new(71),
+                SourceRevision::new(1),
+                PagePurpose::Caret,
+                ByteOffset::new(0),
+                PageDirection::Forward,
+                SOURCE.len() as u64,
+            )
+            .unwrap();
+            input
+                .pending_page_aliases
+                .push(page_delivery::PendingPageAlias { request, source });
+        }
+    });
+    super::response_custody::AliasFanout {
+        page,
+        cursor: 0,
+        matched: false,
     }
 }
 
@@ -2001,7 +1923,9 @@ fn asynchronous_terminal_object_exact_fit_and_one_under_retain_custody_for_retry
             });
             cx.update(|window, app| {
                 input.update(app, |input, cx| {
-                    assert!(input.service_response_custody(window, cx).unwrap());
+                    assert!(custody_progressed(
+                        input.service_response_custody(window, cx)
+                    ));
                 })
             });
             input.read_with(cx, |input, _| {

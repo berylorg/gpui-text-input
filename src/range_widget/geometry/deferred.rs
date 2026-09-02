@@ -1,5 +1,6 @@
 use std::mem::size_of;
 
+use super::super::response_custody::ResponseDeliveryProgress;
 use super::*;
 
 #[derive(Clone)]
@@ -42,14 +43,6 @@ impl DeferredGeometryResponse {
             Self::IndexObject(page) | Self::TargetObject(page) => Some(page.key()),
             Self::IndexPage(_) | Self::TargetPage(_) => None,
         }
-    }
-
-    fn remains_dispatched(&self, input: &RangeTextInput) -> bool {
-        self.page_key()
-            .is_some_and(|key| input.dispatched_pages.contains(&key))
-            || self
-                .object_key()
-                .is_some_and(|key| input.dispatched_object_pages.contains(&key))
     }
 }
 
@@ -208,13 +201,13 @@ impl RangeTextInput {
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Result<bool, RangeTextInputError> {
+    ) -> ResponseDeliveryProgress {
         let Some(response) = self.deferred_geometry_response.take() else {
-            return Ok(false);
+            return ResponseDeliveryProgress::Progressed;
         };
         if !self.try_spend_realization_credit(cx) {
             self.deferred_geometry_response = Some(response);
-            return Ok(false);
+            return ResponseDeliveryProgress::Progressed;
         }
         let retry = response.clone();
         let result = match response {
@@ -231,16 +224,39 @@ impl RangeTextInput {
                 self.deliver_geometry_target_object_page_inner(page, true, window, cx)
             }
         };
-        if let Err(error) = result {
-            self.refund_realization_credit();
-            if retry.remains_dispatched(self) {
+        let progress = match result {
+            Ok(progress) => progress,
+            Err(error) => ResponseDeliveryProgress::Rejected(error),
+        };
+        match progress {
+            ResponseDeliveryProgress::RetryableTerminalSurfaceCapacity => {
+                match &retry {
+                    DeferredGeometryResponse::IndexPage(page)
+                    | DeferredGeometryResponse::TargetPage(page) => {
+                        debug_assert!(self.dispatched_pages.contains(&page.key()));
+                    }
+                    DeferredGeometryResponse::IndexObject(page)
+                    | DeferredGeometryResponse::TargetObject(page) => {
+                        debug_assert!(self.dispatched_object_pages.contains(&page.key()));
+                    }
+                }
                 self.deferred_geometry_response = Some(retry);
                 self.schedule_realization_continuation(cx);
                 self.observe_realization_ownership();
+                ResponseDeliveryProgress::RetryableTerminalSurfaceCapacity
             }
-            return Err(error);
+            ResponseDeliveryProgress::Rejected(error) => {
+                self.refund_realization_credit();
+                ResponseDeliveryProgress::Rejected(error)
+            }
+            ResponseDeliveryProgress::AcceptedTerminal(error) => {
+                self.observe_realization_ownership();
+                ResponseDeliveryProgress::AcceptedTerminal(error)
+            }
+            ResponseDeliveryProgress::Progressed => {
+                self.observe_realization_ownership();
+                ResponseDeliveryProgress::Progressed
+            }
         }
-        self.observe_realization_ownership();
-        Ok(true)
     }
 }

@@ -152,14 +152,17 @@ fn ordinary_eight_kib_geometry_target_capacity_failure_closes_exact_custody(
                         input.deliver_object_page_in_window(page, window, cx)
                     })
                 });
-                match result {
-                    Err(RangeTextInputError::Geometry(crate::ExactGeometryError::Layout(
-                        gpui::StreamingLayoutError::CapacityExceeded(_),
-                    ))) => {
-                        terminal = Some((key, prior));
-                        break;
-                    }
-                    other => other.unwrap(),
+                result.unwrap();
+                let accepted_terminal = input.read_with(cx, |input, _| {
+                    input.active_geometry.is_none()
+                        && input.realization_diagnostics().last_response_rejection
+                            == Some(
+                                RangeResponseRejectionClass::ExactGeometryLayoutCapacityExceeded,
+                            )
+                });
+                if accepted_terminal {
+                    terminal = Some((key, prior));
+                    break;
                 }
             }
             Some(RangeTextInputRequest::ReleasePage(_))
@@ -294,7 +297,7 @@ fn scheduled_frames_drain_mixed_text_object_and_alias_custody_tail(cx: &mut gpui
                     ),
                 )
                 .unwrap();
-            assert!(!input.service_response_custody(window, cx).unwrap());
+            assert!(custody_idle(input.service_response_custody(window, cx)));
             assert_eq!(input.response_custody.len(), 3);
             assert!(input.realization_continuation_scheduled);
             let frame_before = input.realization_frame_generation;
@@ -326,206 +329,6 @@ fn scheduled_frames_drain_mixed_text_object_and_alias_custody_tail(cx: &mut gpui
 }
 
 #[gpui::test]
-fn retained_failure_rotates_behind_tail_without_spinning_when_alone(cx: &mut gpui::TestAppContext) {
-    let (input, cx) = cx.add_window_view(|window, cx| {
-        let mut configuration = config(2 * 1024 * 1024, 32_768);
-        configuration.limits.max_realization_work_per_frame = 1;
-        RangeTextInput::new(configuration, window, cx).unwrap()
-    });
-    drive_initial_surface(&input, cx);
-    cx.update(|window, app| {
-        input.update(app, |input, cx| {
-            let retry = stale_text_page(input, 610_050);
-            let retry_key = retry.key();
-            let tail = stale_object_page(input, 610_051);
-            input
-                .admit_response_custody(super::super::response_custody::RangeResponseCustody::Page(
-                    retry,
-                ))
-                .unwrap();
-            input
-                .admit_response_custody(
-                    super::super::response_custody::RangeResponseCustody::Object(tail),
-                )
-                .unwrap();
-
-            input.begin_realization_frame();
-            assert!(matches!(
-                input.service_response_custody(window, cx),
-                Err(RangeTextInputError::Stale)
-            ));
-            assert!(matches!(
-                input.response_custody.front(),
-                Some(super::super::response_custody::RangeResponseCustody::Object(_))
-            ));
-            assert!(input.realization_continuation_scheduled);
-
-            input.begin_realization_frame();
-            assert!(matches!(
-                input.service_response_custody(window, cx),
-                Err(RangeTextInputError::Stale)
-            ));
-            assert_eq!(input.response_custody.len(), 1);
-            assert!(input.realization_continuation_scheduled);
-
-            input.begin_realization_frame();
-            assert!(matches!(
-                input.service_response_custody(window, cx),
-                Err(RangeTextInputError::Stale)
-            ));
-            assert_eq!(input.response_custody.len(), 1);
-            assert!(!input.realization_continuation_scheduled);
-
-            let PageDemand::Requested(request) = input
-                .residency
-                .demand(retry_key.id(), retry_key.purpose(), retry_key.demand())
-                .unwrap()
-            else {
-                panic!("external state change must make the retained response admissible")
-            };
-            assert_eq!(request.key(), retry_key);
-            input.schedule_realization_continuation(cx);
-            input.begin_realization_frame();
-            assert!(input.service_response_custody(window, cx).unwrap());
-            assert!(input.response_custody.is_empty());
-            assert_eq!(input.dispatched_pages.len(), 0);
-            assert_eq!(input.dispatched_object_pages.len(), 0);
-            drain_release_requests(input);
-        })
-    });
-}
-
-#[gpui::test]
-fn public_text_arrival_wakes_a_sleeping_retained_text_head(cx: &mut gpui::TestAppContext) {
-    let (input, cx) = cx.add_window_view(|window, cx| {
-        let mut configuration = config(2 * 1024 * 1024, 32_768);
-        configuration.limits.max_realization_work_per_frame = 1;
-        RangeTextInput::new(configuration, window, cx).unwrap()
-    });
-    drive_initial_surface(&input, cx);
-    cx.update(|window, app| {
-        input.update(app, |input, cx| {
-            input.begin_realization_frame();
-            let sleeping = stale_text_page(input, 610_070);
-            let sleeping_key = sleeping.key();
-            input.deliver_page(sleeping, window, cx).unwrap();
-            assert_eq!(input.response_custody.len(), 1);
-            assert!(!input.realization_continuation_scheduled);
-
-            let arrival = requested_text_page(input, 610_071);
-            let arrival_key = arrival.key();
-            input.deliver_page(arrival, window, cx).unwrap();
-            assert_eq!(input.response_custody.len(), 2);
-            assert!(matches!(
-                input.response_custody.front(),
-                Some(super::super::response_custody::RangeResponseCustody::Page(page))
-                    if page.key() == arrival_key
-            ));
-            assert!(matches!(
-                input.response_custody.back(),
-                Some(super::super::response_custody::RangeResponseCustody::Page(page))
-                    if page.key() == sleeping_key
-            ));
-            assert!(input.realization_continuation_scheduled);
-
-            let _ = input.dispose(window, cx);
-            assert!(input.response_custody.is_empty());
-            assert!(!input.realization_continuation_scheduled);
-        })
-    });
-    cx.run_until_parked();
-}
-
-#[gpui::test]
-fn public_windowless_object_arrival_wakes_a_non_object_head(cx: &mut gpui::TestAppContext) {
-    let (input, cx) = cx.add_window_view(|window, cx| {
-        let mut configuration = config(2 * 1024 * 1024, 32_768);
-        configuration.limits.max_realization_work_per_frame = 1;
-        RangeTextInput::new(configuration, window, cx).unwrap()
-    });
-    drive_initial_surface(&input, cx);
-    let sleeping_key = cx.update(|window, app| {
-        input.update(app, |input, cx| {
-            input.begin_realization_frame();
-            let sleeping = stale_text_page(input, 610_080);
-            let key = sleeping.key();
-            input.deliver_page(sleeping, window, cx).unwrap();
-            assert!(!input.realization_continuation_scheduled);
-            key
-        })
-    });
-    input.update(cx, |input, cx| {
-        let object = stale_object_page(input, 610_081);
-        let object_key = object.key();
-        input.deliver_object_page(object, cx).unwrap();
-        assert_eq!(input.response_custody.len(), 2);
-        assert!(matches!(
-            input.response_custody.front(),
-            Some(super::super::response_custody::RangeResponseCustody::Page(page))
-                if page.key() == sleeping_key
-        ));
-        assert!(matches!(
-            input.response_custody.back(),
-            Some(super::super::response_custody::RangeResponseCustody::Object(page))
-                if page.key() == object_key
-        ));
-        assert!(input.realization_continuation_scheduled);
-    });
-    cx.update(|window, app| {
-        input.update(app, |input, cx| {
-            let _ = input.dispose(window, cx);
-            assert!(input.response_custody.is_empty());
-            assert!(!input.realization_continuation_scheduled);
-        })
-    });
-    cx.run_until_parked();
-}
-
-#[gpui::test]
-fn public_windowed_object_arrival_wakes_a_sleeping_text_head(cx: &mut gpui::TestAppContext) {
-    let (input, cx) = cx.add_window_view(|window, cx| {
-        let mut configuration = config(2 * 1024 * 1024, 32_768);
-        configuration.limits.max_realization_work_per_frame = 1;
-        RangeTextInput::new(configuration, window, cx).unwrap()
-    });
-    drive_initial_surface(&input, cx);
-    cx.update(|window, app| {
-        input.update(app, |input, cx| {
-            input.begin_realization_frame();
-            let sleeping = stale_text_page(input, 610_090);
-            let sleeping_key = sleeping.key();
-            input.deliver_page(sleeping, window, cx).unwrap();
-            assert_eq!(input.response_custody.len(), 1);
-            assert!(!input.realization_continuation_scheduled);
-
-            let arrival = stale_object_page(input, 610_091);
-            let arrival_key = arrival.key();
-            assert!(matches!(
-                input.deliver_object_page_in_window(arrival, window, cx),
-                Ok(()) | Err(RangeTextInputError::Stale)
-            ));
-            assert_eq!(input.response_custody.len(), 2);
-            assert!(matches!(
-                input.response_custody.front(),
-                Some(super::super::response_custody::RangeResponseCustody::Object(page))
-                    if page.key() == arrival_key
-            ));
-            assert!(matches!(
-                input.response_custody.back(),
-                Some(super::super::response_custody::RangeResponseCustody::Page(page))
-                    if page.key() == sleeping_key
-            ));
-            assert!(input.realization_continuation_scheduled);
-
-            let _ = input.dispose(window, cx);
-            assert!(input.response_custody.is_empty());
-            assert!(!input.realization_continuation_scheduled);
-        })
-    });
-    cx.run_until_parked();
-}
-
-#[gpui::test]
 fn windowless_object_custody_schedules_each_terminal_tail_unit(cx: &mut gpui::TestAppContext) {
     let (input, cx) = cx.add_window_view(|window, cx| {
         let mut configuration = config(2 * 1024 * 1024, 32_768);
@@ -549,7 +352,9 @@ fn windowless_object_custody_schedules_each_terminal_tail_unit(cx: &mut gpui::Te
         input.begin_realization_frame();
         assert!(matches!(
             input.service_object_response_custody(cx),
-            Err(RangeTextInputError::Stale)
+            super::super::response_custody::ResponseCustodyProgress::Rejected(
+                RangeTextInputError::Stale
+            )
         ));
         assert_eq!(input.response_custody.len(), 1);
         assert!(input.realization_continuation_scheduled);
@@ -557,7 +362,9 @@ fn windowless_object_custody_schedules_each_terminal_tail_unit(cx: &mut gpui::Te
         input.begin_realization_frame();
         assert!(matches!(
             input.service_object_response_custody(cx),
-            Err(RangeTextInputError::Stale)
+            super::super::response_custody::ResponseCustodyProgress::Rejected(
+                RangeTextInputError::Stale
+            )
         ));
         assert!(input.response_custody.is_empty());
         assert!(!input.realization_continuation_scheduled);
@@ -596,7 +403,9 @@ fn disposal_obsoletes_a_scheduled_mixed_custody_tail(cx: &mut gpui::TestAppConte
                 )
                 .unwrap();
             input.begin_realization_frame();
-            assert!(input.service_response_custody(window, cx).unwrap());
+            assert!(custody_progressed(
+                input.service_response_custody(window, cx)
+            ));
             assert_eq!(input.response_custody.len(), 2);
             assert!(input.realization_continuation_scheduled);
             let _ = input.dispose(window, cx);

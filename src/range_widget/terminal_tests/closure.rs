@@ -47,7 +47,7 @@ fn terminal_surface_capacity_retries_exact_custody_without_fallback(cx: &mut gpu
             input.begin_realization_frame();
             assert!(matches!(
                 input.service_response_custody(window, cx),
-                Err(RangeTextInputError::SurfaceCapacity)
+                super::super::response_custody::ResponseCustodyProgress::RetryableTerminalSurfaceCapacity
             ));
             assert_eq!(format!("{:?}", fingerprint(input)), before);
             assert_eq!(input.response_custody.len(), 1);
@@ -58,7 +58,7 @@ fn terminal_surface_capacity_retries_exact_custody_without_fallback(cx: &mut gpu
             input.config.limits.max_surface_bytes = 2 * 1024 * 1024;
             input.config.limits.max_surface_items = 32_768;
             input.begin_realization_frame();
-            assert!(input.service_response_custody(window, cx).unwrap());
+            assert!(custody_progressed(input.service_response_custody(window, cx)));
             assert!(input.response_custody.is_empty());
             assert!(!input.dispatched_object_pages.contains(&key));
             assert!(input.surface.is_some());
@@ -67,211 +67,108 @@ fn terminal_surface_capacity_retries_exact_custody_without_fallback(cx: &mut gpu
 }
 
 #[gpui::test]
-fn page_alias_capacity_waits_peak_and_disposal_are_exact(cx: &mut gpui::TestAppContext) {
+fn page_alias_capacity_before_first_match_closes_source_and_all_aliases(
+    cx: &mut gpui::TestAppContext,
+) {
     let (input, cx) = cx.add_window_view(|window, cx| {
         RangeTextInput::new(config(2 * 1024 * 1024, 32_768), window, cx).unwrap()
     });
     drive_initial_surface(&input, cx);
-    let first_key = adjacent_key(200_000, PagePurpose::PlatformRange, SOURCE.len() as u64);
-    let mut delivered = Vec::new();
-    cx.update(|window, app| {
+    let fanout = staged_alias_fanout(&input, cx, 230_000, 2);
+    let source = fanout.page.key();
+    cx.update(|_window, app| {
         input.update(app, |input, cx| {
-            let envelope = PageDemandEnvelope::Adjacent {
-                anchor: ByteOffset::new(0),
-                direction: PageDirection::Forward,
-                max_payload_bytes: SOURCE.len() as u64,
-            };
-            let first = input
-                .residency
-                .demand(first_key.id(), first_key.purpose(), envelope)
-                .unwrap();
-            assert!(matches!(first, PageDemand::Requested(_)));
-            input
-                .accept_page_demand(PageRequest::new(first_key), first, cx)
-                .unwrap();
-            assert!(matches!(
-                input.take_request(),
-                Some(RangeTextInputRequest::Page(request)) if request.key() == first_key
-            ));
-
-            for (id, purpose) in [
-                (200_001, PagePurpose::PlatformRange),
-                (200_002, PagePurpose::PlatformRange),
-            ] {
-                let key = adjacent_key(id, purpose, SOURCE.len() as u64);
-                let demand = input
-                    .residency
-                    .demand(key.id(), key.purpose(), envelope)
-                    .unwrap();
-                assert!(matches!(demand, PageDemand::Coalesced(source) if source == first_key));
-                input
-                    .accept_page_demand(PageRequest::new(key), demand, cx)
-                    .unwrap();
-            }
-            let diagnostics = input.realization_diagnostics();
-            assert_eq!(diagnostics.current.page_alias_waits, 2);
-            assert_eq!(diagnostics.current.pending_page_requests, 1);
-            assert_eq!(diagnostics.current.dispatched_page_requests, 1);
-            assert_eq!(
-                diagnostics.current.page_alias_storage_bytes,
-                input.pending_page_aliases.capacity()
-                    * std::mem::size_of::<super::super::page_delivery::PendingPageAlias>()
-            );
-            assert_eq!(
-                diagnostics.current.page_alias_storage_items,
-                input.pending_page_aliases.capacity()
-            );
-
-            let third_key = adjacent_key(200_003, PagePurpose::PlatformRange, SOURCE.len() as u64);
-            let replacement_charge = RangeSurfaceCharge {
-                bytes: 3 * std::mem::size_of::<super::super::page_delivery::PendingPageAlias>(),
-                items: 3,
-            };
-            let current = input.current_realization_ownership();
-            let exact = RangeSurfaceCharge {
-                bytes: current.owned_bytes + replacement_charge.bytes,
-                items: current.owned_items + replacement_charge.items,
-            };
-            input.config.limits.max_surface_bytes = exact.bytes - 1;
-            let before = input.pending_page_aliases.len();
-            assert!(matches!(
-                input.accept_page_demand(
-                    PageRequest::new(third_key),
-                    PageDemand::Coalesced(first_key),
-                    cx
-                ),
-                Err(RangeTextInputError::SurfaceCapacity)
-            ));
-            assert_eq!(input.pending_page_aliases.len(), before);
-            input.config.limits.max_surface_bytes = exact.bytes;
-            input.config.limits.max_surface_items = exact.items;
-            input
-                .accept_page_demand(
-                    PageRequest::new(third_key),
-                    PageDemand::Coalesced(first_key),
-                    cx,
-                )
-                .unwrap();
-            let diagnostics = input.realization_diagnostics();
-            assert_eq!(diagnostics.current.page_alias_waits, 3);
-            assert!(diagnostics.high_water.owned_bytes >= exact.bytes);
-            assert!(
-                diagnostics.high_water.page_alias_storage_bytes
-                    >= diagnostics.current.page_alias_storage_bytes
-            );
-
-            let page = page_for(PageRequest::new(first_key), 200_000);
-            input.config.limits.max_surface_bytes = 2 * 1024 * 1024;
-            input.config.limits.max_surface_items = 32_768;
-            input.config.limits.max_realization_work_per_frame = 1;
-            input
-                .admit_response_custody(
-                    super::super::response_custody::RangeResponseCustody::AliasFanout(
-                        super::super::response_custody::AliasFanout {
-                            page,
-                            cursor: 0,
-                            matched: false,
-                        },
+            while input.response_custody.len() < input.response_custody.capacity() {
+                input.response_custody.push_back(
+                    super::super::response_custody::RangeResponseCustody::PageNoAliases(
+                        fanout.page.clone(),
                     ),
+                );
+            }
+            let unrelated = input.response_custody.len();
+            let progress = input.advance_page_alias(fanout, cx).unwrap();
+            assert!(matches!(
+                progress,
+                super::super::response_custody::ResponseDeliveryProgress::AcceptedTerminal(
+                    RangeTextInputError::SurfaceCapacity
                 )
-                .unwrap();
-            assert!(matches!(
-                input.response_custody.front(),
-                Some(super::super::response_custody::RangeResponseCustody::AliasFanout(fanout))
-                    if fanout.page.key() == first_key
             ));
-            assert!(
+            assert_eq!(input.response_custody.len(), unrelated);
+            assert!(!input
+                .pending_page_aliases
+                .iter()
+                .any(|alias| alias.source == source));
+            assert!(!input.dispatched_pages.contains(&source));
+            assert_eq!(
                 input
-                    .pending_page_aliases
+                    .requests
                     .iter()
-                    .any(|alias| alias.source == first_key)
+                    .filter(|request| matches!(request, RangeTextInputRequest::ReleasePage(key) if *key == source))
+                    .count(),
+                1
             );
-            let current = input.current_realization_ownership();
-            let retained = input
-                .response_custody
-                .front()
-                .and_then(|response| response.page())
-                .unwrap()
-                .retained_charge();
-            let exact_service = RangeSurfaceCharge {
-                bytes: current.owned_bytes
-                    + retained.bytes()
-                    + (retained.bytes() - std::mem::size_of::<RangePage>())
-                    + retained.bytes(),
-                items: current.owned_items
-                    + retained.items()
-                    + retained.items().saturating_sub(1)
-                    + retained.items(),
-            };
-            input.config.limits.max_surface_bytes = exact_service.bytes - 1;
-            input.config.limits.max_surface_items = exact_service.items;
-            input.begin_realization_frame();
-            assert!(matches!(
-                input.service_response_custody(window, cx),
-                Err(RangeTextInputError::SurfaceCapacity)
-            ));
-            assert_eq!(input.realization_diagnostics().frame.spent, 0);
-            assert_eq!(input.pending_page_aliases.len(), 3);
-            assert_eq!(input.response_custody.len(), 1);
+        })
+    });
+}
 
-            input.config.limits.max_surface_bytes = exact_service.bytes;
-            input.begin_realization_frame();
-            assert!(input.service_response_custody(window, cx).unwrap());
-            assert_eq!(input.realization_diagnostics().frame.spent, 1);
-            assert_eq!(input.pending_page_aliases.len(), 2);
-            assert_eq!(input.response_custody.len(), 2);
-            assert!(input.realization_diagnostics().high_water.owned_bytes >= exact_service.bytes);
-            input.config.limits.max_surface_bytes = 2 * 1024 * 1024;
-            input.config.limits.max_surface_items = 32_768;
-            let response = input.response_custody.pop_front().unwrap();
-            let super::super::response_custody::RangeResponseCustody::ResidentPage(page) = response
+#[gpui::test]
+fn page_alias_capacity_after_partial_progress_preserves_neighbor_without_second_release(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (input, cx) = cx.add_window_view(|window, cx| {
+        RangeTextInput::new(config(2 * 1024 * 1024, 32_768), window, cx).unwrap()
+    });
+    drive_initial_surface(&input, cx);
+    let fanout = staged_alias_fanout(&input, cx, 240_000, 2);
+    let source = fanout.page.key();
+    cx.update(|_window, app| {
+        input.update(app, |input, cx| {
+            assert!(matches!(
+                input.advance_page_alias(fanout, cx).unwrap(),
+                super::super::response_custody::ResponseDeliveryProgress::Progressed
+            ));
+            let index = input
+                .response_custody
+                .iter()
+                .position(|response| matches!(response, super::super::response_custody::RangeResponseCustody::AliasFanout(_)))
+                .unwrap();
+            let super::super::response_custody::RangeResponseCustody::AliasFanout(fanout) =
+                input.response_custody.remove(index).unwrap()
             else {
                 unreachable!()
             };
-            delivered.push(page.key());
-            input.obsolete_realization_continuation();
-            while !input.pending_page_aliases.is_empty() {
-                let before = input.pending_page_aliases.len();
-                input.begin_realization_frame();
-                assert!(
-                    input
-                        .service_response_custody(window, cx)
-                        .unwrap_or_else(|error| panic!("alias waits {before}: {error:?}"))
-                );
-                assert_eq!(input.realization_diagnostics().frame.spent, 1);
-                assert_eq!(input.pending_page_aliases.len(), before - 1);
-                let response = input.response_custody.pop_front().unwrap();
-                let super::super::response_custody::RangeResponseCustody::ResidentPage(page) =
-                    response
-                else {
-                    panic!("one alias clone must precede the compact fan-out continuation")
-                };
-                delivered.push(page.key());
-                assert_eq!(
-                    input
-                        .response_custody
-                        .iter()
-                        .filter(|response| matches!(
-                            response,
-                            super::super::response_custody::RangeResponseCustody::AliasFanout(_)
-                        ))
-                        .count(),
-                    usize::from(before > 1)
+            assert!(fanout.matched);
+            let neighbor = input.response_custody.len();
+            while input.response_custody.len() < input.response_custody.capacity() {
+                input.response_custody.push_back(
+                    super::super::response_custody::RangeResponseCustody::PageNoAliases(
+                        fanout.page.clone(),
+                    ),
                 );
             }
-            input.obsolete_realization_continuation();
-        })
-    });
-    assert_eq!(delivered.len(), 3);
-    assert!(delivered.iter().all(|key| key != &first_key));
-    cx.update(|window, app| {
-        input.update(app, |input, cx| {
-            let _ = input.dispose(window, cx);
-            let diagnostics = input.realization_diagnostics();
-            assert_eq!(diagnostics.current.page_alias_waits, 0);
-            assert_eq!(diagnostics.current.page_alias_storage_bytes, 0);
-            assert_eq!(diagnostics.current.page_alias_storage_items, 0);
-            assert_eq!(diagnostics.current.pending_page_requests, 0);
+            let tail = input.response_custody.len();
+            let progress = input.advance_page_alias(fanout, cx).unwrap();
+            assert!(matches!(
+                progress,
+                super::super::response_custody::ResponseDeliveryProgress::AcceptedTerminal(
+                    RangeTextInputError::SurfaceCapacity
+                )
+            ));
+            assert!(neighbor > 0);
+            assert_eq!(input.response_custody.len(), tail);
+            assert!(!input
+                .pending_page_aliases
+                .iter()
+                .any(|alias| alias.source == source));
+            assert!(!input.dispatched_pages.contains(&source));
+            assert_eq!(
+                input
+                    .requests
+                    .iter()
+                    .filter(|request| matches!(request, RangeTextInputRequest::ReleasePage(key) if *key == source))
+                    .count(),
+                1
+            );
         })
     });
 }

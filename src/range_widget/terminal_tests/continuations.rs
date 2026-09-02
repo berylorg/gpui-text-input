@@ -89,7 +89,9 @@ fn service_one_resident_advance(
         input.update(app, |input, cx| {
             assert!(!input.response_custody.is_empty());
             input.begin_realization_frame();
-            assert!(input.service_response_custody(window, cx).unwrap());
+            assert!(custody_progressed(
+                input.service_response_custody(window, cx)
+            ));
             let diagnostics = input.realization_diagnostics();
             assert_eq!(diagnostics.frame.spent, 1);
             assert_eq!(diagnostics.frame.remaining, 0);
@@ -307,6 +309,273 @@ fn resident_clipboard_collection_advances_one_page_per_frame(cx: &mut gpui::Test
     };
     assert_eq!(write.text(), source);
     dispose_resident_chain(&input, cx);
+}
+
+#[gpui::test]
+fn direct_clipboard_object_and_text_prepare_one_under_retry_then_commit_once(
+    cx: &mut gpui::TestAppContext,
+) {
+    let source = continuation_source();
+    let configuration = continuation_config(&source);
+    let (input, cx) =
+        cx.add_window_view(|window, cx| RangeTextInput::new(configuration, window, cx).unwrap());
+    drive_surface_for_source(&input, cx, &source);
+    let start = SourcePosition::new(ByteOffset::new(0), crate::InlineObjectGap::no_objects());
+    let end = SourcePosition::new(
+        ByteOffset::new(source.len() as u64),
+        crate::InlineObjectGap::no_objects(),
+    );
+    let (_, text, objects) = admitted_successor_sources(&source, 1, &[start, end]);
+    input.update(cx, |input, cx| {
+        input
+            .begin_composite_clipboard(
+                crate::ClipboardKind::Copy,
+                crate::SourceRange::new(start, end).unwrap(),
+                crate::MutationPositions::new(end, start, end),
+                &text,
+                &objects,
+                cx,
+            )
+            .unwrap();
+    });
+    let object_request = loop {
+        match input.update(cx, |input, _| input.take_request()).unwrap() {
+            RangeTextInputRequest::ObjectPage(request) => break request,
+            RangeTextInputRequest::ReleasePage(_) | RangeTextInputRequest::ReleaseObjectPage(_) => {
+            }
+            request => panic!("unexpected clipboard object setup request: {request:?}"),
+        }
+    };
+    let object_key = object_request.key();
+    let object_page = ObjectPage::new(
+        ObjectPageId::new(410_000),
+        object_key,
+        vec![],
+        ObjectPageEdgeFact::EnvelopeBoundary,
+        ObjectPageEdgeFact::EnvelopeBoundary,
+        true,
+        None,
+    )
+    .unwrap();
+    let object_exact = input.update(cx, |input, _| {
+        input
+            .admit_response_custody(
+                super::super::response_custody::RangeResponseCustody::Object(object_page.clone()),
+            )
+            .unwrap();
+        let step = input.clipboard.prepare_object_page(&object_page).unwrap();
+        let current = input.current_realization_ownership();
+        let old = input.clipboard.ownership_charge();
+        let retained = object_page.retained_charge();
+        let processing_items = retained.allocated_items().checked_add(1).unwrap();
+        let service_current = RangeSurfaceCharge {
+            bytes: current
+                .owned_bytes
+                .checked_sub(retained.bytes() - std::mem::size_of::<ObjectPage>())
+                .and_then(|value| value.checked_add(retained.bytes()))
+                .unwrap(),
+            items: current
+                .owned_items
+                .checked_sub(retained.allocated_items())
+                .and_then(|value| value.checked_add(processing_items))
+                .unwrap(),
+        };
+        let transfer = if step.transfers_response() {
+            RangeSurfaceCharge {
+                bytes: retained.bytes(),
+                items: processing_items,
+            }
+        } else {
+            RangeSurfaceCharge::default()
+        };
+        let projected = RangeSurfaceCharge {
+            bytes: service_current
+                .bytes
+                .checked_sub(old.bytes())
+                .and_then(|value| value.checked_sub(transfer.bytes))
+                .and_then(|value| value.checked_add(step.peak_ownership().bytes()))
+                .unwrap(),
+            items: service_current
+                .items
+                .checked_sub(old.items())
+                .and_then(|value| value.checked_sub(transfer.items))
+                .and_then(|value| value.checked_add(step.peak_ownership().items()))
+                .unwrap(),
+        };
+        RangeSurfaceCharge {
+            bytes: service_current.bytes.max(projected.bytes),
+            items: service_current.items.max(projected.items),
+        }
+    });
+    cx.update(|window, app| {
+        input.update(app, |input, cx| {
+            input.config.limits.max_surface_bytes = object_exact.bytes - 1;
+            input.config.limits.max_surface_items = object_exact.items;
+            input.begin_realization_frame();
+            assert!(matches!(
+                input.service_response_custody(window, cx),
+                super::super::response_custody::ResponseCustodyProgress::RetryableClipboardPreparationCapacity
+            ));
+            assert!(input.dispatched_object_pages.contains(&object_key));
+            assert!(matches!(
+                input.response_custody.front(),
+                Some(super::super::response_custody::RangeResponseCustody::Object(page)) if page.key() == object_key
+            ));
+            assert!(input.realization_continuation_scheduled);
+            input.config.limits.max_surface_bytes = object_exact.bytes;
+            input.begin_realization_frame();
+            assert!(matches!(
+                input.service_response_custody(window, cx),
+                super::super::response_custody::ResponseCustodyProgress::Progressed
+                    | super::super::response_custody::ResponseCustodyProgress::RetryableClipboardPreparationCapacity
+            ));
+            assert!(!input.dispatched_object_pages.contains(&object_key));
+            assert_eq!(
+                input
+                    .requests
+                    .iter()
+                    .filter(|request| matches!(request, RangeTextInputRequest::ReleaseObjectPage(key) if *key == object_key))
+                    .count(),
+                1
+            );
+        })
+    });
+    let text_request = loop {
+        match input.update(cx, |input, _| input.take_request()) {
+            Some(RangeTextInputRequest::Page(request))
+                if request.key().purpose() == PagePurpose::Clipboard =>
+            {
+                break request;
+            }
+            Some(RangeTextInputRequest::ReleasePage(_))
+            | Some(RangeTextInputRequest::ReleaseObjectPage(_)) => {}
+            Some(request) => panic!("unexpected clipboard text setup request: {request:?}"),
+            None => cx.update(|window, app| {
+                input.update(app, |input, cx| {
+                    input.config.limits.max_surface_bytes = 8 * 1024 * 1024;
+                    input.config.limits.max_surface_items = 65_536;
+                    input.begin_realization_frame();
+                    assert!(!matches!(
+                        input.service_response_custody(window, cx),
+                        super::super::response_custody::ResponseCustodyProgress::Rejected(_)
+                    ));
+                })
+            }),
+        }
+    };
+    let text_key = text_request.key();
+    let text_page = page_for_source(text_request, 410_001, &source);
+    let text_exact = input.update(cx, |input, _| {
+        input.config.limits.max_surface_bytes = 8 * 1024 * 1024;
+        input.config.limits.max_surface_items = 65_536;
+        input
+            .admit_response_custody(
+                super::super::response_custody::RangeResponseCustody::PageNoAliases(
+                    text_page.clone(),
+                ),
+            )
+            .unwrap();
+        let index = input
+            .response_custody
+            .iter()
+            .position(|response| {
+                matches!(
+                    response,
+                    super::super::response_custody::RangeResponseCustody::PageNoAliases(page)
+                        if page.key() == text_key
+                )
+            })
+            .unwrap();
+        let response = input.response_custody.remove(index).unwrap();
+        input.response_custody.push_front(response);
+        let step = input.clipboard.prepare_text_page(&text_page).unwrap();
+        let current = input.current_realization_ownership();
+        let old = input.clipboard.ownership_charge();
+        let retained = text_page.retained_charge();
+        let service_current = RangeSurfaceCharge {
+            bytes: current
+                .owned_bytes
+                .checked_sub(retained.bytes() - std::mem::size_of::<RangePage>())
+                .and_then(|value| value.checked_add(retained.bytes()))
+                .unwrap(),
+            items: current
+                .owned_items
+                .checked_sub(retained.items().saturating_sub(1))
+                .and_then(|value| value.checked_add(retained.items()))
+                .unwrap(),
+        };
+        let transfer = if step.transfers_response() {
+            RangeSurfaceCharge {
+                bytes: retained.bytes(),
+                items: retained.items(),
+            }
+        } else {
+            RangeSurfaceCharge::default()
+        };
+        let projected = RangeSurfaceCharge {
+            bytes: service_current
+                .bytes
+                .checked_sub(old.bytes())
+                .and_then(|value| value.checked_sub(transfer.bytes))
+                .and_then(|value| value.checked_add(step.peak_ownership().bytes()))
+                .unwrap(),
+            items: service_current
+                .items
+                .checked_sub(old.items())
+                .and_then(|value| value.checked_sub(transfer.items))
+                .and_then(|value| value.checked_add(step.peak_ownership().items()))
+                .unwrap(),
+        };
+        RangeSurfaceCharge {
+            bytes: service_current.bytes.max(projected.bytes),
+            items: service_current.items.max(projected.items),
+        }
+    });
+    cx.update(|window, app| {
+        input.update(app, |input, cx| {
+            input.config.limits.max_surface_bytes = text_exact.bytes - 1;
+            input.config.limits.max_surface_items = text_exact.items;
+            input.begin_realization_frame();
+            assert!(matches!(
+                input.service_response_custody(window, cx),
+                super::super::response_custody::ResponseCustodyProgress::RetryableClipboardPreparationCapacity
+            ));
+            assert!(input.dispatched_pages.contains(&text_key));
+            assert!(matches!(
+                input.response_custody.front(),
+                Some(super::super::response_custody::RangeResponseCustody::PageNoAliases(page)) if page.key() == text_key
+            ));
+            assert!(input.realization_continuation_scheduled);
+            input.config.limits.max_surface_bytes = text_exact.bytes;
+            input.begin_realization_frame();
+            assert!(matches!(
+                input.service_response_custody(window, cx),
+                super::super::response_custody::ResponseCustodyProgress::Progressed
+                    | super::super::response_custody::ResponseCustodyProgress::RetryableClipboardPreparationCapacity
+            ));
+            input.config.limits.max_surface_bytes = 8 * 1024 * 1024;
+            input.config.limits.max_surface_items = 65_536;
+            for _ in 0..64 {
+                if !input.dispatched_pages.contains(&text_key) {
+                    break;
+                }
+                input.begin_realization_frame();
+                assert!(!matches!(
+                    input.service_response_custody(window, cx),
+                    super::super::response_custody::ResponseCustodyProgress::Rejected(_)
+                ));
+            }
+            assert!(!input.dispatched_pages.contains(&text_key));
+            assert_eq!(
+                input
+                    .requests
+                    .iter()
+                    .filter(|request| matches!(request, RangeTextInputRequest::ReleasePage(key) if *key == text_key))
+                    .count(),
+                1
+            );
+        })
+    });
 }
 
 #[gpui::test]
