@@ -581,14 +581,30 @@ impl RangeTextInput {
         if self.clipboard_waits_on(key) {
             return self.fail_coalesced_clipboard_page(key, failure, cx);
         }
-        if self.geometry_waits_on(key) {
-            cx.notify();
-            return Ok(());
-        }
         if let Some(job) = self.active_geometry {
-            if let Ok(release) = self.geometry.fail_page(job, key) {
-                self.release_geometry(&release, Some(key), None, Some(cx));
+            let coalesced_wait = self.geometry_waits_on(key)
+                && self
+                    .pending_geometry_page
+                    .as_ref()
+                    .is_some_and(|pending| pending.job == job);
+            let release = if coalesced_wait {
+                Some(
+                    self.geometry
+                        .cancel(job)
+                        .map_err(RangeTextInputError::Geometry)?,
+                )
+            } else {
+                self.geometry.fail_page(job, key).ok()
+            };
+            if let Some(release) = release {
+                self.release_geometry(
+                    &release,
+                    release.pages.contains(&key).then_some(key),
+                    None,
+                    Some(cx),
+                );
                 self.active_geometry = None;
+                self.pending_index_intent = false;
                 self.reject_restoration_geometry(cx)?;
                 return Ok(());
             }

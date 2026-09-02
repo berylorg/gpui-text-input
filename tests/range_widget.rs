@@ -2648,6 +2648,79 @@ fn post_validation_restoration_geometry_failure_rejects_once_and_can_retry(
 }
 
 #[gpui::test]
+fn post_validation_restoration_geometry_failure_rejects_once_and_retries_validation(
+    cx: &mut gpui::TestAppContext,
+) {
+    let source = "restore geometry retry admission";
+    let (input, cx) = cx
+        .add_window_view(|window, cx| RangeTextInput::new(config(source, 1), window, cx).unwrap());
+    assert!(drive_pages(&input, cx, source).is_empty());
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let captured = events.clone();
+    cx.cx.update(|cx| {
+        cx.subscribe(&input, move |_, event: &RangeTextInputEvent, _| {
+            captured.borrow_mut().push(event.clone());
+        })
+        .detach();
+    });
+    let seed = restoration_seed(source, 1, ordinary_position(0));
+    let index = validate_restoration_to_first_geometry_page(&input, cx, source, seed);
+    assert_eq!(index.key().purpose(), PagePurpose::GeometryIndex);
+    let target = input
+        .update(cx, |input, _| input.take_request())
+        .expect("restoration geometry target request");
+    let RangeTextInputRequest::Page(target) = target else {
+        panic!("restoration retry setup must dispatch a geometry target page")
+    };
+    assert_eq!(target.key().purpose(), PagePurpose::GeometryTarget);
+    input.update(cx, |input, cx| {
+        assert!(matches!(
+            input.fail_page(index.key(), PageFailure::Unavailable, cx),
+            Err(gpui_text_input::RangeTextInputError::Stale)
+        ));
+    });
+    input.update(cx, |input, cx| {
+        input
+            .fail_page(target.key(), PageFailure::Unavailable, cx)
+            .unwrap()
+    });
+    assert!(drive_pages(&input, cx, source).is_empty());
+    input.read_with(cx, |input, _| {
+        assert!(input.surface().is_none());
+        assert!(input.is_quiescent());
+    });
+    assert_eq!(
+        events
+            .borrow()
+            .iter()
+            .filter(|event| matches!(event, RangeTextInputEvent::RestorationRejected))
+            .count(),
+        1
+    );
+
+    input.update(cx, |input, cx| input.import_restoration(seed, cx).unwrap());
+    let request = input
+        .update(cx, |input, _| input.take_request())
+        .expect("fresh restoration validation request");
+    let RangeTextInputRequest::Page(request) = request else {
+        panic!("fresh restoration retry must dispatch a text page")
+    };
+    assert_eq!(request.key().purpose(), PagePurpose::Restoration);
+    assert!(matches!(
+        request.key().demand(),
+        PageDemandEnvelope::Validation { .. }
+    ));
+    assert_eq!(
+        events
+            .borrow()
+            .iter()
+            .filter(|event| matches!(event, RangeTextInputEvent::RestorationRejected))
+            .count(),
+        1
+    );
+}
+
+#[gpui::test]
 fn post_validation_select_all_rejects_restoration_once_and_runs_ordinary_target(
     cx: &mut gpui::TestAppContext,
 ) {
