@@ -7489,83 +7489,373 @@ fn boundary_overlapping_object_pages_realize_wrapped_adjacent_objects_once(
         object_fact_with_width_and_activation(221, 32, 10, object_width, true),
         object_fact_with_width_and_activation(222, 32, 20, object_width, true),
     ];
-    drive_pages_with_objects(&input, cx, &source, &facts);
-    cx.simulate_keystrokes("end");
-    drive_pages_with_objects(&input, cx, &source, &facts);
-
-    input.read_with(cx, |input, _| {
-        let surface = input.surface().unwrap();
-        let realized = surface.realized_objects();
-        assert_eq!(
-            realized.iter().map(|object| object.id()).collect::<Vec<_>>(),
-            vec![InlineObjectId::new(221), InlineObjectId::new(222)]
-        );
-        let retained_occurrences = surface
-            .object_pages()
+    macro_rules! drive_and_capture_object_pages {
+        ($observed:ident) => {{
+            let mut observed_quiescent = false;
+            for _ in 0..512 {
+                let request = input.update(cx, |input, _| input.take_request());
+                let had_request = request.is_some();
+                match request {
+                    Some(RangeTextInputRequest::Page(request)) => {
+                        observed_quiescent = false;
+                        let page = page_for(&source, request.key().id().get(), request);
+                        cx.update(|window, app| {
+                            input.update(app, |input, cx| {
+                                input.deliver_page(page, window, cx).unwrap()
+                            })
+                        });
+                    }
+                    Some(RangeTextInputRequest::ObjectPage(request)) => {
+                        observed_quiescent = false;
+                        let page = restoration_object_page(
+                            request,
+                            &facts,
+                            request.key().id().get(),
+                        );
+                        $observed.push((
+                            page.key(),
+                            page.objects()
+                                .iter()
+                                .map(InlineObjectFact::cursor)
+                                .collect::<Vec<_>>(),
+                            page.complete(),
+                            page.continuation(),
+                        ));
+                        cx.update(|window, app| {
+                            input.update(app, |input, cx| {
+                                input
+                                    .deliver_object_page_in_window(page, window, cx)
+                                    .unwrap()
+                            })
+                        });
+                    }
+                    Some(RangeTextInputRequest::ReleasePage(_))
+                    | Some(RangeTextInputRequest::CancelPage(_))
+                    | Some(RangeTextInputRequest::ReleaseObjectPage(_))
+                    | Some(RangeTextInputRequest::CancelObjectPage(_)) => {
+                        observed_quiescent = false;
+                    }
+                    None => {
+                        let quiescent = input.read_with(cx, |input, _| input.is_quiescent());
+                        if quiescent && observed_quiescent {
+                            break;
+                        }
+                        observed_quiescent = quiescent;
+                    }
+                    Some(request) => panic!("unexpected object geometry request: {request:?}"),
+                }
+                if !had_request {
+                    cx.update(|window, app| window.draw(app).clear());
+                    cx.run_until_parked();
+                }
+            }
+        }};
+    }
+    let snapshot_pages = |pages: &[ObjectPage]| {
+        pages
             .iter()
-            .flat_map(|page| page.objects())
-            .filter(|object| {
-                matches!(object.id(), id if id == InlineObjectId::new(221) || id == InlineObjectId::new(222))
+            .map(|page| {
+                (
+                    page.key(),
+                    page.objects()
+                        .iter()
+                        .map(InlineObjectFact::cursor)
+                        .collect::<Vec<_>>(),
+                    page.complete(),
+                    page.continuation(),
+                )
             })
-            .count();
-        let retained = surface.object_pages();
-        assert_eq!(retained.len(), 2);
-        let first = &retained[0];
-        let second = &retained[1];
-        let ObjectDemandEnvelope::Range {
-            range: first_range,
-            cursor: first_cursor,
-            ..
-        } = first.key().demand()
-        else {
-            panic!("first retained object page uses a range envelope")
-        };
-        assert_eq!(
-            first_range,
-            ByteRange::from_u64(0, 32).unwrap()
-        );
-        assert_eq!(first_cursor, None);
-        assert_eq!(
-            first
-                .objects()
-                .iter()
-                .map(|object| object.id())
-                .collect::<Vec<_>>(),
-            vec![InlineObjectId::new(221), InlineObjectId::new(222)]
-        );
-        let ObjectDemandEnvelope::Range {
-            range: second_range,
-            cursor: second_cursor,
-            ..
-        } = second.key().demand()
-        else {
-            panic!("second retained object page uses a range envelope")
-        };
-        assert_eq!(second_range, ByteRange::from_u64(32, 40).unwrap());
-        let cursor = second_cursor.unwrap();
-        assert_eq!(cursor.anchor(), ByteOffset::new(32));
-        assert_eq!(cursor.order(), InlineObjectOrder::new(20));
-        assert_eq!(cursor.id(), InlineObjectId::new(222));
-        assert!(second.objects().is_empty());
-        assert_eq!(first_range.end(), second_range.start());
-        assert_eq!(retained_occurrences, 2);
+            .collect::<Vec<_>>()
+    };
 
-        let shared = SourcePosition::new(
-            ByteOffset::new(32),
-            InlineObjectGap::between(object_neighbor(221, 10), object_neighbor(222, 20)).unwrap(),
-        );
-        assert_eq!(realized[0].trailing(), shared);
-        assert_eq!(realized[1].leading(), shared);
-        assert!(realized[1].bounds().origin.y > realized[0].bounds().origin.y);
-        let gaps = surface
+    let mut initial_deliveries = Vec::new();
+    drive_and_capture_object_pages!(initial_deliveries);
+    let pre_target_pages =
+        input.read_with(cx, |input, _| snapshot_pages(input.surface().unwrap().object_pages()));
+
+    cx.simulate_keystrokes("end");
+    let mut terminal_deliveries = Vec::new();
+    drive_and_capture_object_pages!(terminal_deliveries);
+
+    let shared = SourcePosition::new(
+        ByteOffset::new(32),
+        InlineObjectGap::between(object_neighbor(221, 10), object_neighbor(222, 20)).unwrap(),
+    );
+    let (
+        terminal_quiescent,
+        committed_pages,
+        fragment_cursors,
+        presentation_cursors,
+        realized_cursors,
+        realized_wraps,
+        shared_gap_count,
+        shared_gap_matches_second_leading,
+    ) = input.read_with(cx, |input, _| {
+        let surface = input.surface().unwrap();
+        let fragments = surface
+            .fragments()
+            .iter()
+            .filter_map(|fragment| match fragment {
+                StreamingLayoutFragment::InlineObject(fragment) => Some((
+                    ByteOffset::new(fragment.leading.byte_offset),
+                    InlineObjectOrder::from(fragment.order),
+                    InlineObjectId::from(fragment.id),
+                )),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let presentations = surface
+            .realized_presentations(surface.publication_key())
+            .unwrap()
+            .map(|presentation| {
+                let geometry = presentation.geometry();
+                (geometry.leading().byte_offset, geometry.order(), geometry.id())
+            })
+            .collect::<Vec<_>>();
+        let realized = surface.realized_objects();
+        let realized_cursors = realized
+            .iter()
+            .map(|geometry| {
+                (
+                    geometry.leading().byte_offset,
+                    geometry.order(),
+                    geometry.id(),
+                    geometry.leading(),
+                    geometry.trailing(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let realized_wraps = realized
+            .first()
+            .zip(realized.get(1))
+            .map(|(first, second)| second.bounds().origin.y > first.bounds().origin.y);
+        let shared_gaps = surface
             .realized_object_gaps()
             .iter()
             .filter(|gap| gap.position() == shared)
-            .copied()
             .collect::<Vec<_>>();
-        assert_eq!(gaps.len(), 1);
-        assert_eq!(gaps[0].caret_bounds(), realized[1].leading_caret_bounds());
+        let shared_gap_matches_second_leading = shared_gaps.first().zip(realized.get(1)).map(
+            |(gap, second)| gap.caret_bounds() == second.leading_caret_bounds(),
+        );
+        (
+            input.is_quiescent(),
+            snapshot_pages(surface.object_pages()),
+            fragments,
+            presentations,
+            realized_cursors,
+            realized_wraps,
+            shared_gaps.len(),
+            shared_gap_matches_second_leading,
+        )
     });
+
+    let page_facts = |pages: &[(
+        gpui_text_input::ObjectRequestKey,
+        Vec<gpui_text_input::ObjectCursor>,
+        bool,
+        Option<gpui_text_input::ObjectCursor>,
+    )]| {
+        pages
+            .iter()
+            .map(|(key, objects, complete, continuation)| {
+                (key.demand(), objects.clone(), *complete, *continuation)
+            })
+            .collect::<Vec<_>>()
+    };
+    let object_cursor = |id, order| {
+        (
+            ByteOffset::new(32),
+            InlineObjectOrder::new(order),
+            InlineObjectId::new(id),
+        )
+    };
+    let expected_object_cursors = vec![object_cursor(221, 10), object_cursor(222, 20)];
+    let object_occurrences = |pages: &[(
+        gpui_text_input::ObjectRequestKey,
+        Vec<gpui_text_input::ObjectCursor>,
+        bool,
+        Option<gpui_text_input::ObjectCursor>,
+    )]| {
+        pages
+            .iter()
+            .flat_map(|(_, objects, _, _)| objects)
+            .filter(|cursor| {
+                cursor.id() == InlineObjectId::new(221)
+                    || cursor.id() == InlineObjectId::new(222)
+            })
+            .count()
+    };
+
+    assert!(terminal_quiescent);
+    assert_eq!(pre_target_pages.len(), 3);
+    assert!(pre_target_pages.iter().all(|retained| {
+        initial_deliveries
+            .iter()
+            .filter(|delivered| delivered.0 == retained.0)
+            .count()
+            == 1
+    }));
+    assert_eq!(
+        pre_target_pages
+            .iter()
+            .map(|page| page.0.purpose())
+            .collect::<Vec<_>>(),
+        vec![
+            ObjectPurpose::GeometryIndex,
+            ObjectPurpose::GeometryTarget,
+            ObjectPurpose::GeometryTarget,
+        ],
+    );
+    assert!(pre_target_pages.iter().enumerate().all(|(index, page)| {
+        pre_target_pages[index + 1..]
+            .iter()
+            .all(|other| page.0.id() != other.0.id())
+    }));
+    assert_eq!(
+        page_facts(&pre_target_pages),
+        vec![
+            (
+                ObjectDemandEnvelope::range(
+                    ByteRange::from_u64(32, 40).unwrap(),
+                    Some(facts[1].cursor()),
+                    ObjectDirection::Forward,
+                    32,
+                    128 * 1024,
+                )
+                .unwrap(),
+                Vec::new(),
+                true,
+                None,
+            ),
+            (
+                ObjectDemandEnvelope::range(
+                    ByteRange::from_u64(0, 32).unwrap(),
+                    None,
+                    ObjectDirection::Forward,
+                    32,
+                    128 * 1024,
+                )
+                .unwrap(),
+                vec![facts[0].cursor(), facts[1].cursor()],
+                true,
+                None,
+            ),
+            (
+                ObjectDemandEnvelope::range(
+                    ByteRange::from_u64(32, 40).unwrap(),
+                    Some(facts[1].cursor()),
+                    ObjectDirection::Forward,
+                    32,
+                    128 * 1024,
+                )
+                .unwrap(),
+                Vec::new(),
+                true,
+                None,
+            ),
+        ],
+        "pre-target retained page keys or cursor facts diverged",
+    );
+    assert_eq!(
+        page_facts(&terminal_deliveries),
+        vec![(
+            ObjectDemandEnvelope::range(
+                ByteRange::from_u64(32, 40).unwrap(),
+                Some(facts[1].cursor()),
+                ObjectDirection::Forward,
+                32,
+                128 * 1024,
+            )
+            .unwrap(),
+            Vec::new(),
+            true,
+            None,
+        )],
+        "End target did not resume after (32, 20, 222) with one empty adjacent page",
+    );
+    assert_eq!(
+        terminal_deliveries[0].0.purpose(),
+        ObjectPurpose::GeometryTarget,
+    );
+    assert_eq!(
+        committed_pages, terminal_deliveries,
+        "committed custody did not independently replace the prior pages with the exact terminal response",
+    );
+    assert_eq!(
+        (
+            object_occurrences(&pre_target_pages),
+            object_occurrences(&terminal_deliveries),
+            object_occurrences(&committed_pages),
+        ),
+        (2, 0, 0),
+        "object retention duplicated before the checkpoint-resume loss",
+    );
+    assert_eq!(
+        fragment_cursors,
+        expected_object_cursors,
+        "checkpoint resume admitted no inline-object fragments before target publication",
+    );
+    assert_eq!(presentation_cursors, expected_object_cursors);
+    assert_eq!(
+        realized_cursors,
+        vec![
+            (
+                ByteOffset::new(32),
+                InlineObjectOrder::new(10),
+                InlineObjectId::new(221),
+                SourcePosition::new(
+                    ByteOffset::new(32),
+                    InlineObjectGap::before(object_neighbor(221, 10)),
+                ),
+                shared,
+            ),
+            (
+                ByteOffset::new(32),
+                InlineObjectOrder::new(20),
+                InlineObjectId::new(222),
+                shared,
+                SourcePosition::new(
+                    ByteOffset::new(32),
+                    InlineObjectGap::after(object_neighbor(222, 20)),
+                ),
+            ),
+        ],
+    );
+    assert_eq!(realized_wraps, Some(true));
+    assert_eq!(shared_gap_count, 1);
+    assert_eq!(shared_gap_matches_second_leading, Some(true));
+    assert_eq!(
+        page_facts(&committed_pages),
+        vec![
+            (
+                ObjectDemandEnvelope::range(
+                    ByteRange::from_u64(0, 32).unwrap(),
+                    None,
+                    ObjectDirection::Forward,
+                    32,
+                    128 * 1024,
+                )
+                .unwrap(),
+                vec![facts[0].cursor(), facts[1].cursor()],
+                true,
+                None,
+            ),
+            (
+                ObjectDemandEnvelope::range(
+                    ByteRange::from_u64(32, 40).unwrap(),
+                    Some(facts[1].cursor()),
+                    ObjectDirection::Forward,
+                    32,
+                    128 * 1024,
+                )
+                .unwrap(),
+                Vec::new(),
+                true,
+                None,
+            ),
+        ],
+        "committed page replacement independently omitted the object-bearing page",
+    );
 }
 
 #[gpui::test]
