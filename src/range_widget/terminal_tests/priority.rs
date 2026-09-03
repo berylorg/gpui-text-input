@@ -179,6 +179,61 @@ fn active_interaction_and_scroll_anchor_are_runtime_realization_targets(
 }
 
 #[gpui::test]
+fn preserved_scroll_does_not_override_active_interaction_index_successor_anchor(
+    cx: &mut gpui::TestAppContext,
+) {
+    let source = (0..160)
+        .map(|line| format!("priority-{line:03}\n"))
+        .collect::<String>();
+    let anchor = ByteOffset::new((source.len() / 2) as u64);
+    let object =
+        crate::InlineObjectNeighbor::new(InlineObjectId::new(52), InlineObjectOrder::new(8));
+    let mut configuration = config(2 * 1024 * 1024, 32_768);
+    configuration.binding = RangeBinding::new(
+        BindingId::new(89),
+        SourceRevision::new(1),
+        LogicalExtent::new(source.len() as u64, 160),
+    );
+    let (input, cx) = cx
+        .add_window_view(move |window, cx| RangeTextInput::new(configuration, window, cx).unwrap());
+    drive_surface_for_source(&input, cx, &source);
+    let retained_scroll =
+        input.read_with(cx, |input, _| input.surface().unwrap().scroll_position());
+
+    input.update(cx, |input, cx| {
+        let interaction_anchor = SourcePosition::new(anchor, crate::InlineObjectGap::after(object));
+        let mut desired = input.desired;
+        desired.source_selection = Some(RangeSourceSelection {
+            anchor: SourcePosition::new(anchor, crate::InlineObjectGap::before(object)),
+            head: interaction_anchor,
+        });
+        desired.reveal_caret = false;
+        desired.inline_object_interaction = Some(DesiredInlineObjectInteraction::Set {
+            object_id: object.id(),
+            order: object.order(),
+            activation_eligible: true,
+            origin: None,
+        });
+        input.desired = desired;
+
+        let candidate = input
+            .prepare_presentation_transition(PresentationGeneration::new(2), None)
+            .unwrap();
+        input.commit_widget_transition(candidate, Some(cx));
+        assert!(input.desired.preserve_scroll_anchor);
+        assert_eq!(
+            input.desired.priority(),
+            RangeRealizationPriority::ActiveInteraction
+        );
+        assert_ne!(interaction_anchor, retained_scroll);
+        assert_eq!(
+            input.index_response_successor().unwrap().anchor,
+            Some(interaction_anchor)
+        );
+    });
+}
+
+#[gpui::test]
 fn equal_stable_ids_count_distinct_surface_and_residency_allocations_exactly(
     cx: &mut gpui::TestAppContext,
 ) {

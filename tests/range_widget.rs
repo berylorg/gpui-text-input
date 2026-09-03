@@ -9616,7 +9616,7 @@ fn pointer_activation_and_realization_loss_use_only_the_current_exact_surface(
 }
 
 #[gpui::test]
-fn rejected_generation_transition_keeps_retained_surface_inert_for_pointer_activation(
+fn accepted_generation_transition_publishes_current_surface_for_pointer_activation(
     cx: &mut gpui::TestAppContext,
 ) {
     cx.update(ensure_text_input_bindings);
@@ -9720,8 +9720,8 @@ fn rejected_generation_transition_keeps_retained_surface_inert_for_pointer_activ
         }
     }
 
-    let retained_publication = range_publication_fingerprint(&input, cx);
-    let (retained_object, retained_hit, active_after_transition, terminal_quiescent) =
+    let generation_two_publication = range_publication_fingerprint(&input, cx);
+    let (generation_two_object, generation_two_hit, active_after_transition, terminal_quiescent) =
         input.read_with(cx, |input, _| {
             let surface = input.surface().unwrap();
             let object = surface.realized_objects()[0];
@@ -9739,13 +9739,15 @@ fn rejected_generation_transition_keeps_retained_surface_inert_for_pointer_activ
     let superseded_losses = events
         .borrow()
         .iter()
-        .filter(|event| matches!(
-            event,
-            RangeTextInputEvent::InlineObjectRealizationLost(loss)
-                if loss.anchor == generation_one_active
-                    && loss.reason
-                        == gpui_text_input::InlineObjectRealizationLossReason::Superseded
-        ))
+        .filter(|event| {
+            matches!(
+                event,
+                RangeTextInputEvent::InlineObjectRealizationLost(loss)
+                    if loss.anchor == generation_one_active
+                        && loss.reason
+                            == gpui_text_input::InlineObjectRealizationLossReason::Superseded
+            )
+        })
         .count();
     let activation_count_after_transition = events
         .borrow()
@@ -9761,22 +9763,22 @@ fn rejected_generation_transition_keeps_retained_surface_inert_for_pointer_activ
         input.read_with(cx, |input, _| input.realization_diagnostics());
     let events_after_repeated_request = events.borrow().len();
 
-    let retained_click = retained_object.hit_bounds().origin + gpui::point(px(1.), px(1.));
+    let generation_two_click =
+        generation_two_object.hit_bounds().origin + gpui::point(px(1.), px(1.));
     cx.simulate_event(MouseDownEvent {
-        position: retained_click,
+        position: generation_two_click,
         modifiers: Modifiers::none(),
         button: MouseButton::Left,
         click_count: 1,
         first_mouse: false,
     });
-    cx.run_until_parked();
-    let publication_after_inert_pointer = range_publication_fingerprint(&input, cx);
-    let active_after_inert_pointer =
-        input.read_with(cx, |input, _| input.active_inline_object());
-    let diagnostics_after_inert_pointer =
+    drive_pages_with_objects(&input, cx, &source, &facts);
+    let publication_after_current_pointer = range_publication_fingerprint(&input, cx);
+    let active_after_current_pointer = input.read_with(cx, |input, _| input.active_inline_object());
+    let diagnostics_after_current_pointer =
         input.read_with(cx, |input, _| input.realization_diagnostics());
-    let events_after_inert_pointer = events.borrow().len();
-    let activation_count_after_inert_pointer = events
+    let events_after_current_pointer = events.borrow().len();
+    let activation_count_after_current_pointer = events
         .borrow()
         .iter()
         .filter(|event| matches!(event, RangeTextInputEvent::InlineObjectActivated(_)))
@@ -9808,29 +9810,37 @@ fn rejected_generation_transition_keeps_retained_surface_inert_for_pointer_activ
     assert_eq!(cancelled_object_pages, 0);
     assert!(terminal_quiescent);
     assert_eq!(active_after_transition, None);
-    assert_eq!(generation_one_publication.surface, retained_publication.surface);
-    assert_ne!(generation_one_publication.admission, retained_publication.admission);
-    assert_eq!(
-        retained_publication.surface.geometry.presentation_generation(),
-        PresentationGeneration::new(1)
+    assert_ne!(
+        generation_one_publication.surface,
+        generation_two_publication.surface
     );
-    assert_eq!(retained_publication.surface.geometry.epoch().get(), 2);
-    assert_eq!(retained_object.id(), InlineObjectId::new(301));
-    assert_eq!(retained_object.order(), InlineObjectOrder::new(10));
-    assert_eq!(retained_object.bounds(), generation_one_object.bounds());
+    assert_eq!(
+        generation_two_publication
+            .surface
+            .geometry
+            .presentation_generation(),
+        PresentationGeneration::new(2)
+    );
+    assert_eq!(generation_two_publication.surface.geometry.epoch().get(), 2);
+    assert_eq!(generation_two_object.id(), InlineObjectId::new(301));
+    assert_eq!(generation_two_object.order(), InlineObjectOrder::new(10));
+    assert_eq!(
+        generation_two_object.bounds(),
+        generation_one_object.bounds()
+    );
     assert!(matches!(
-        retained_hit,
-        Some(RangeSurfaceHit::Object(object)) if object == retained_object
+        generation_two_hit,
+        Some(RangeSurfaceHit::Object(object)) if object == generation_two_object
     ));
     assert_eq!(diagnostics_before_transition.response_rejection_count, 0);
-    assert_eq!(diagnostics_after_transition.response_rejection_count, 1);
-    assert_eq!(
-        diagnostics_after_transition.last_response_rejection,
-        Some(gpui_text_input::RangeResponseRejectionClass::CandidateSurfaceIncomplete)
-    );
+    assert_eq!(diagnostics_after_transition.response_rejection_count, 0);
+    assert_eq!(diagnostics_after_transition.last_response_rejection, None);
 
     assert!(repeated_generation_two_request.is_ok());
-    assert_eq!(publication_after_repeated_request, retained_publication);
+    assert_eq!(
+        publication_after_repeated_request,
+        generation_two_publication
+    );
     assert_eq!(
         diagnostics_after_repeated_request.response_rejection_count,
         diagnostics_after_transition.response_rejection_count
@@ -9841,15 +9851,41 @@ fn rejected_generation_transition_keeps_retained_surface_inert_for_pointer_activ
     );
     assert_eq!(events_after_repeated_request, events_after_transition);
 
-    assert_eq!(publication_after_inert_pointer, retained_publication);
-    assert_eq!(active_after_inert_pointer, None);
-    assert_eq!(events_after_inert_pointer, events_after_repeated_request);
-    assert_eq!(activation_count_after_inert_pointer, 1);
     assert_eq!(
-        diagnostics_after_inert_pointer.response_rejection_count,
+        publication_after_current_pointer
+            .surface
+            .geometry
+            .presentation_generation(),
+        PresentationGeneration::new(2)
+    );
+    let active_after_current_pointer = active_after_current_pointer.unwrap();
+    assert_eq!(
+        active_after_current_pointer.object_id,
+        InlineObjectId::new(301)
+    );
+    assert_eq!(
+        active_after_current_pointer.order,
+        InlineObjectOrder::new(10)
+    );
+    assert_eq!(
+        active_after_current_pointer.presentation_generation,
+        PresentationGeneration::new(2)
+    );
+    assert_eq!(active_after_current_pointer.layout_epoch.get(), 2);
+    assert_eq!(
+        active_after_current_pointer.bounds,
+        generation_two_object.bounds()
+    );
+    assert_eq!(
+        events_after_current_pointer,
+        events_after_repeated_request + 1
+    );
+    assert_eq!(activation_count_after_current_pointer, 2);
+    assert_eq!(
+        diagnostics_after_current_pointer.response_rejection_count,
         diagnostics_after_transition.response_rejection_count
     );
-    let terminal = diagnostics_after_inert_pointer.current;
+    let terminal = diagnostics_after_current_pointer.current;
     assert_eq!(terminal.pending_target_intents, 0);
     assert_eq!(terminal.active_geometry_jobs, 0);
     assert_eq!(terminal.pending_geometry_pages, 0);
@@ -9861,8 +9897,8 @@ fn rejected_generation_transition_keeps_retained_surface_inert_for_pointer_activ
     assert_eq!(terminal.candidates, 0);
     assert_eq!(terminal.scheduled_continuations, 0);
     assert!(input.read_with(cx, |input, _| input.is_quiescent()));
-    assert!(terminal.owned_bytes <= diagnostics_after_inert_pointer.max_surface_bytes);
-    assert!(terminal.owned_items <= diagnostics_after_inert_pointer.max_surface_items);
+    assert!(terminal.owned_bytes <= diagnostics_after_current_pointer.max_surface_bytes);
+    assert!(terminal.owned_items <= diagnostics_after_current_pointer.max_surface_items);
 }
 
 #[gpui::test]

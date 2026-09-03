@@ -231,6 +231,17 @@ impl RangeTextInput {
                     | crate::RangeRealizationPriority::DirectedSelection
                     | crate::RangeRealizationPriority::ActiveInteraction
             )
+        {
+            desired.preserve_scroll_anchor = false;
+        }
+        if restoration.is_none()
+            && matches!(
+                desired.priority(),
+                crate::RangeRealizationPriority::Caret
+                    | crate::RangeRealizationPriority::Ime
+                    | crate::RangeRealizationPriority::DirectedSelection
+                    | crate::RangeRealizationPriority::ActiveInteraction
+            )
             && let Some(anchor) = desired.source_selection.map(|selection| selection.head)
             && (anchor.byte_offset.get() == self.config.binding.extent().byte_len()
                 || self

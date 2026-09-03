@@ -260,6 +260,15 @@ impl RangeTextInput {
         let mut target = self.desired.target();
         let anchor = restoration
             .map(super::restoration::restoration_layout_anchor)
+            .or_else(|| {
+                (self.desired.priority() == crate::RangeRealizationPriority::ScrollAnchor)
+                    .then(|| {
+                        self.surface
+                            .as_ref()
+                            .map(CoherentRangeSurface::scroll_position)
+                    })
+                    .flatten()
+            })
             .or_else(|| self.desired.exact_interaction_anchor())
             .or_else(|| {
                 matches!(
