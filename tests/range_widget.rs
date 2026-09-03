@@ -8433,8 +8433,10 @@ fn object_gap_platform_composition_is_not_collapsed_and_lifecycle_loss_is_once(
     cx.update(ensure_text_input_bindings);
     let source = "ab";
     let facts = vec![object_fact(501, 1, 10)];
-    let (input, cx) = cx.add_window_view(|window, cx| {
-        let input = RangeTextInput::new(config(source, 1), window, cx).unwrap();
+    let configuration = config(source, 1);
+    let settlement_coordinator = configuration.settlement_coordinator.clone();
+    let (input, cx) = cx.add_window_view(move |window, cx| {
+        let input = RangeTextInput::new(configuration, window, cx).unwrap();
         input.focus(window);
         input
     });
@@ -8444,24 +8446,238 @@ fn object_gap_platform_composition_is_not_collapsed_and_lifecycle_loss_is_once(
     drive_pages_with_objects(&input, cx, source, &facts);
     cx.simulate_keystrokes("right");
     drive_pages_with_objects(&input, cx, source, &facts);
+    let object = InlineObjectNeighbor::new(InlineObjectId::new(501), InlineObjectOrder::new(10));
+    let expected_selection = RangeSourceSelection {
+        anchor: SourcePosition::new(ByteOffset::new(1), InlineObjectGap::Before(object)),
+        head: SourcePosition::new(ByteOffset::new(1), InlineObjectGap::After(object)),
+    };
+    let before_mark = input.read_with(cx, |input, _| {
+        let surface = input.surface().unwrap();
+        (
+            surface.binding(),
+            surface.selection(),
+            surface.platform_selection(),
+            surface.composition(),
+            input.active_inline_object(),
+            input.realization_diagnostics().current,
+        )
+    });
+    assert_eq!(before_mark.0, binding(source, 1));
+    assert_eq!(before_mark.1, expected_selection);
+    assert!(before_mark.2.is_none());
+    assert!(before_mark.3.is_none());
+    assert_eq!(before_mark.4.unwrap().object_id, InlineObjectId::new(501));
+    assert!(input.read_with(cx, |input, _| input.is_quiescent()));
+    assert!(input.read_with(cx, |input, _| input.is_semantically_quiescent()));
+    assert_eq!(settlement_coordinator.retained_count(), 0);
+    let settled_before = events
+        .borrow()
+        .iter()
+        .filter(|event| matches!(event, RangeTextInputEvent::MutationSettled { .. }))
+        .count();
     cx.update(|window, app| {
         input.update(app, |input, cx| {
             assert!(input.selected_text_range(false, window, cx).is_none());
             input.replace_and_mark_text_in_range(None, "marked", None, window, cx);
         })
     });
+    let after_mark = input.read_with(cx, |input, _| {
+        let surface = input.surface().unwrap();
+        (
+            surface.binding(),
+            surface.selection(),
+            surface.platform_selection(),
+            surface.composition(),
+            input.active_inline_object(),
+            input.realization_diagnostics().current,
+        )
+    });
+    assert_eq!(after_mark, before_mark);
     assert!(input.update(cx, |input, _| input.take_request()).is_none());
+    assert!(input.read_with(cx, |input, _| input.is_quiescent()));
+    assert!(input.read_with(cx, |input, _| input.is_semantically_quiescent()));
+    assert_eq!(settlement_coordinator.retained_count(), 0);
+    assert_eq!(
+        input.read_with(cx, |input, _| input.lease_host_operation().unwrap().operation()),
+        gpui_text_input::OperationId::new(1)
+    );
+    assert_eq!(settlement_coordinator.retained_count(), 0);
+    assert_eq!(
+        events
+            .borrow()
+            .iter()
+            .filter(|event| matches!(event, RangeTextInputEvent::MutationSettled { .. }))
+            .count(),
+        settled_before
+    );
     input.read_with(cx, |input, _| {
+        let diagnostics = input.realization_diagnostics();
         assert!(input.surface().unwrap().composition().is_none());
+        assert!(input.adopted_mutation_positions().is_none());
         assert!(input.active_inline_object().is_some());
+        assert_eq!(diagnostics.current.pending_rebind_intents, 0);
+        assert_eq!(diagnostics.current.pending_configuration_bytes, 0);
+        assert_eq!(diagnostics.current.pending_configuration_items, 0);
+        assert_eq!(diagnostics.current.request_payload_bytes, 0);
+        assert_eq!(diagnostics.current.request_payload_items, 0);
+        assert_eq!(diagnostics.current.response_custody_count, 0);
     });
 
+    // This independent direct rebind is only a downstream control; no mutation settled it.
     cx.update(|window, app| {
         input.update(app, |input, cx| {
             input.rebind(binding(source, 2), None, window, cx).unwrap();
         })
     });
-    drive_pages_with_objects(&input, cx, source, &facts);
+    let after_direct_rebind = input.read_with(cx, |input, _| {
+        (
+            input.surface().map(|surface| surface.binding()),
+            input.surface().and_then(|surface| surface.composition()),
+            input.active_inline_object(),
+            input.realization_diagnostics().current,
+        )
+    });
+    assert_eq!(after_direct_rebind.0, Some(binding(source, 1)));
+    assert!(after_direct_rebind.1.is_none());
+    assert!(after_direct_rebind.2.is_none());
+    assert_eq!(after_direct_rebind.3.pending_page_requests, 1);
+    assert_eq!(after_direct_rebind.3.pending_index_intents, 1);
+    assert_eq!(after_direct_rebind.3.pending_target_intents, 0);
+    assert_eq!(after_direct_rebind.3.pending_rebind_intents, 0);
+    assert_eq!(after_direct_rebind.3.candidates, 1);
+    assert_eq!(after_direct_rebind.3.queued_requests, 1);
+
+    let mut target_step = None;
+    let mut terminal_publication_step = None;
+    let mut index_step = None;
+    let mut observed_quiescent = false;
+    for step in 0..512 {
+        let request = input.update(cx, |input, _| input.take_request());
+        let had_request = request.is_some();
+        match request {
+            Some(RangeTextInputRequest::Page(request)) => {
+                observed_quiescent = false;
+                assert_eq!(request.key().binding(), BindingId::new(17));
+                assert_eq!(request.key().revision(), SourceRevision::new(2));
+                let ownership = input.read_with(cx, |input, _| {
+                    input.realization_diagnostics().current
+                });
+                assert_eq!(ownership.active_geometry_jobs, 1);
+                if request.key().purpose() == PagePurpose::GeometryTarget {
+                    target_step.get_or_insert(step);
+                } else if request.key().purpose() == PagePurpose::GeometryIndex {
+                    index_step.get_or_insert(step);
+                } else {
+                    panic!("unexpected direct-rebind page purpose: {:?}", request.key().purpose());
+                }
+                let page = page_for(source, request.key().id().get(), request);
+                cx.update(|window, app| {
+                    input.update(app, |input, cx| input.deliver_page(page, window, cx).unwrap())
+                });
+            }
+            Some(RangeTextInputRequest::ObjectPage(request)) => {
+                observed_quiescent = false;
+                assert_eq!(request.key().binding(), BindingId::new(17));
+                assert_eq!(request.key().revision(), SourceRevision::new(2));
+                let ownership = input.read_with(cx, |input, _| {
+                    input.realization_diagnostics().current
+                });
+                assert_eq!(ownership.active_geometry_jobs, 1);
+                if request.key().purpose() == ObjectPurpose::GeometryTarget {
+                    target_step.get_or_insert(step);
+                } else if request.key().purpose() == ObjectPurpose::GeometryIndex {
+                    index_step.get_or_insert(step);
+                } else {
+                    panic!(
+                        "unexpected direct-rebind object purpose: {:?}",
+                        request.key().purpose()
+                    );
+                }
+                let page = restoration_object_page(request, &facts, request.key().id().get());
+                cx.update(|window, app| {
+                    input.update(app, |input, cx| {
+                        input.deliver_object_page_in_window(page, window, cx).unwrap()
+                    })
+                });
+            }
+            Some(RangeTextInputRequest::ReleasePage(_))
+            | Some(RangeTextInputRequest::CancelPage(_))
+            | Some(RangeTextInputRequest::ReleaseObjectPage(_))
+            | Some(RangeTextInputRequest::CancelObjectPage(_)) => {
+                observed_quiescent = false;
+            }
+            None => {
+                let quiescent = input.read_with(cx, |input, _| input.is_quiescent());
+                if quiescent && observed_quiescent {
+                    break;
+                }
+                observed_quiescent = quiescent;
+            }
+            Some(request) => panic!("unexpected direct-rebind request: {request:?}"),
+        }
+        let successor_published = input.read_with(cx, |input, _| {
+            input
+                .surface()
+                .is_some_and(|surface| surface.binding() == binding(source, 2))
+        });
+        if successor_published && terminal_publication_step.is_none() {
+            terminal_publication_step = Some(step);
+            input.read_with(cx, |input, _| {
+                let surface = input.surface().unwrap();
+                assert_eq!(
+                    surface.selection(),
+                    RangeSourceSelection::caret(SourcePosition::new(
+                        ByteOffset::new(0),
+                        InlineObjectGap::NoObjects,
+                    ))
+                );
+                assert_eq!(
+                    surface.platform_selection(),
+                    Some(RangeSelection::caret(ByteOffset::new(0)))
+                );
+                assert!(surface.composition().is_none());
+            });
+        }
+        if !had_request {
+            cx.update(|window, app| window.draw(app).clear());
+            cx.run_until_parked();
+        }
+    }
+    assert!(target_step.is_some());
+    assert!(terminal_publication_step.is_some());
+    assert!(index_step.is_some());
+    assert!(target_step <= terminal_publication_step);
+    assert!(terminal_publication_step <= index_step);
+    input.read_with(cx, |input, _| {
+        let surface = input.surface().unwrap();
+        let ownership = input.realization_diagnostics().current;
+        assert_eq!(surface.binding(), binding(source, 2));
+        assert_eq!(
+            surface.selection(),
+            RangeSourceSelection::caret(SourcePosition::new(
+                ByteOffset::new(0),
+                InlineObjectGap::NoObjects,
+            ))
+        );
+        assert_eq!(
+            surface.platform_selection(),
+            Some(RangeSelection::caret(ByteOffset::new(0)))
+        );
+        assert!(surface.composition().is_none());
+        assert!(input.is_quiescent());
+        assert_eq!(ownership.pending_index_intents, 0);
+        assert_eq!(ownership.pending_target_intents, 0);
+        assert_eq!(ownership.pending_presentation_intents, 0);
+        assert_eq!(ownership.queued_requests, 0);
+    });
+    assert_eq!(
+        events
+            .borrow()
+            .iter()
+            .filter(|event| matches!(event, RangeTextInputEvent::MutationSettled { .. }))
+            .count(),
+        settled_before
+    );
     assert_eq!(
         events
             .borrow()
@@ -8491,10 +8707,77 @@ fn object_gap_platform_composition_is_not_collapsed_and_lifecycle_loss_is_once(
         .unwrap();
     cx.update(|window, app| {
         input.update(app, |input, cx| {
-            let _ = input.dispose(window, cx);
+            let disposal_requests = input.dispose(window, cx);
+            assert!(disposal_requests.is_empty());
             assert!(input.dispose(window, cx).is_empty());
         })
     });
+    input.read_with(cx, |input, _| {
+        let diagnostics = input.realization_diagnostics();
+        let ownership = diagnostics.current;
+        assert!(input.surface().is_none());
+        assert!(input.active_inline_object().is_none());
+        assert!(input.is_quiescent());
+        assert!(input.is_semantically_quiescent());
+        assert!(!diagnostics.continuation_scheduled);
+        assert_eq!(diagnostics.adopted_custody_bytes, 0);
+        assert_eq!(diagnostics.adopted_custody_items, 0);
+        assert_eq!(diagnostics.filler_count, 0);
+        assert_eq!(diagnostics.surface_charge.bytes, 0);
+        assert_eq!(diagnostics.surface_charge.items, 0);
+        assert_eq!(ownership.pending_configuration_bytes, 0);
+        assert_eq!(ownership.pending_configuration_items, 0);
+        assert_eq!(ownership.pending_rebind_intents, 0);
+        assert_eq!(ownership.pending_index_intents, 0);
+        assert_eq!(ownership.pending_target_intents, 0);
+        assert_eq!(ownership.pending_layout_intents, 0);
+        assert_eq!(ownership.pending_presentation_intents, 0);
+        assert_eq!(ownership.scheduled_continuations, 0);
+        assert_eq!(ownership.request_storage_bytes, 0);
+        assert_eq!(ownership.request_storage_items, 0);
+        assert_eq!(ownership.request_payload_bytes, 0);
+        assert_eq!(ownership.request_payload_items, 0);
+        assert_eq!(ownership.response_custody_count, 0);
+        assert_eq!(ownership.response_custody_bytes, 0);
+        assert_eq!(ownership.response_custody_items, 0);
+        assert_eq!(ownership.response_processing_bytes, 0);
+        assert_eq!(ownership.response_processing_items, 0);
+        assert_eq!(ownership.deferred_response_bytes, 0);
+        assert_eq!(ownership.deferred_response_items, 0);
+        assert_eq!(ownership.page_alias_storage_bytes, 0);
+        assert_eq!(ownership.page_alias_storage_items, 0);
+        assert_eq!(ownership.page_alias_waits, 0);
+        assert_eq!(ownership.resident_page_bytes, 0);
+        assert_eq!(ownership.resident_object_bytes, 0);
+        assert_eq!(ownership.pending_page_bytes, 0);
+        assert_eq!(ownership.pending_object_bytes, 0);
+        assert_eq!(ownership.clipboard_bytes, 0);
+        assert_eq!(ownership.clipboard_items, 0);
+        assert_eq!(ownership.resident_pages, 0);
+        assert_eq!(ownership.resident_objects, 0);
+        assert_eq!(ownership.pending_page_requests, 0);
+        assert_eq!(ownership.pending_object_requests, 0);
+        assert_eq!(ownership.dispatched_page_requests, 0);
+        assert_eq!(ownership.dispatched_object_requests, 0);
+        assert_eq!(ownership.active_geometry_jobs, 0);
+        assert_eq!(ownership.pending_geometry_pages, 0);
+        assert_eq!(ownership.pending_geometry_objects, 0);
+        assert_eq!(ownership.resident_geometry_page_waits, 0);
+        assert_eq!(ownership.coalesced_geometry_page_waits, 0);
+        assert_eq!(ownership.index_geometry_page_waits, 0);
+        assert_eq!(ownership.target_geometry_page_waits, 0);
+        assert_eq!(ownership.deferred_geometry_responses, 0);
+        assert_eq!(ownership.candidates, 0);
+        assert_eq!(ownership.candidate_bytes, 0);
+        assert_eq!(ownership.candidate_items, 0);
+        assert_eq!(ownership.pending_geometry_record_bytes, 0);
+        assert_eq!(ownership.pending_geometry_record_items, 0);
+        assert_eq!(ownership.dispatched_record_bytes, 0);
+        assert_eq!(ownership.dispatched_record_items, 0);
+        assert_eq!(ownership.queued_requests, 0);
+        assert_eq!(ownership.checkpoints, 0);
+    });
+    assert_eq!(settlement_coordinator.retained_count(), 0);
     assert_eq!(
         events
             .borrow()
