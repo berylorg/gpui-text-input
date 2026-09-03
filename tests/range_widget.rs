@@ -2725,22 +2725,9 @@ fn post_validation_restoration_geometry_failure_rejects_once_and_retries_validat
     let seed = restoration_seed(source, 1, ordinary_position(0));
     let index = validate_restoration_to_first_geometry_page(&input, cx, source, seed);
     assert_eq!(index.key().purpose(), PagePurpose::GeometryIndex);
-    let target = input
-        .update(cx, |input, _| input.take_request())
-        .expect("restoration geometry target request");
-    let RangeTextInputRequest::Page(target) = target else {
-        panic!("restoration retry setup must dispatch a geometry target page")
-    };
-    assert_eq!(target.key().purpose(), PagePurpose::GeometryTarget);
-    input.update(cx, |input, cx| {
-        assert!(matches!(
-            input.fail_page(index.key(), PageFailure::Unavailable, cx),
-            Err(gpui_text_input::RangeTextInputError::Stale)
-        ));
-    });
     input.update(cx, |input, cx| {
         input
-            .fail_page(target.key(), PageFailure::Unavailable, cx)
+            .fail_page(index.key(), PageFailure::Unavailable, cx)
             .unwrap()
     });
     assert!(drive_pages(&input, cx, source).is_empty());

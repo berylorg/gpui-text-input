@@ -328,7 +328,6 @@ impl RangeTextInput {
             source: seed.scroll.position.byte_offset,
             intra_anchor: seed.scroll.intra_anchor,
         };
-        desired.viewport_extent = self.config.viewport_extent;
         desired.overscan = self.config.overscan;
         desired.target_block = gpui::Pixels::ZERO;
         desired.realization_anchor_block = gpui::Pixels::ZERO;
