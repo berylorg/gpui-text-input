@@ -2823,12 +2823,57 @@ fn post_validation_select_all_rejects_restoration_once_and_runs_ordinary_target(
     let seed = restoration_seed(source, 1, ordinary_position(0));
     let restoration_geometry =
         validate_restoration_to_first_geometry_page(&input, cx, source, seed);
+    assert_eq!(
+        restoration_geometry.key().purpose(),
+        PagePurpose::GeometryIndex
+    );
+    let restoration_geometry_key = restoration_geometry.key();
+    let late_restoration_geometry = page_for(source, 80_999, restoration_geometry);
 
     cx.simulate_keystrokes("ctrl-a");
+    assert_eq!(
+        events
+            .borrow()
+            .iter()
+            .filter(|event| matches!(event, RangeTextInputEvent::RestorationRejected))
+            .count(),
+        1
+    );
+    assert!(matches!(
+        input.update(cx, |input, _| input.take_request()),
+        Some(RangeTextInputRequest::CancelPage(key)) if key == restoration_geometry_key
+    ));
+    let late_result = cx.update(|window, app| {
+        input.update(app, |input, cx| {
+            input.deliver_page(late_restoration_geometry, window, cx)
+        })
+    });
+    let Err(gpui_text_input::RangeTextInputError::PageResponseRejected(released)) = late_result
+    else {
+        panic!("cancelled restoration geometry response was not released: {late_result:?}")
+    };
+    assert_eq!(released.key(), restoration_geometry_key);
+    let ordinary_geometry = input
+        .update(cx, |input, _| input.take_request())
+        .expect("ordinary Select All geometry proceeds after restoration cancellation");
+    let RangeTextInputRequest::Page(ordinary_geometry) = ordinary_geometry else {
+        panic!("ordinary Select All must restart text geometry")
+    };
+    assert_eq!(
+        ordinary_geometry.key().purpose(),
+        PagePurpose::GeometryIndex
+    );
+    assert_ne!(ordinary_geometry.key(), restoration_geometry_key);
+    let ordinary_geometry = page_for(source, 81_000, ordinary_geometry);
+    cx.update(|window, app| {
+        input.update(app, |input, cx| {
+            input.deliver_page(ordinary_geometry, window, cx).unwrap()
+        })
+    });
     let (requests, cancellations) =
-        drive_pages_observing_cancel(&input, cx, source, restoration_geometry.key());
+        drive_pages_observing_cancel(&input, cx, source, restoration_geometry_key);
     assert!(requests.is_empty());
-    assert_eq!(cancellations, 1);
+    assert_eq!(cancellations, 0);
     input.read_with(cx, |input, _| {
         assert_eq!(
             input.surface().unwrap().platform_selection().unwrap(),
