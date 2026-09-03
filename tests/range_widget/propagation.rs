@@ -116,9 +116,79 @@ fn atom_cut_propagates_after_bounded_classification_without_write_or_deletion(
     drive_pages_with_objects(&input, cx, source, std::slice::from_ref(&object));
     cx.simulate_keystrokes("ctrl-a");
     drive_pages_with_objects(&input, cx, source, std::slice::from_ref(&object));
+    let start = ordinary_position(0);
+    let end = ordinary_position(source.len() as u64);
+    let (surface_proves_start_gap, surface_proves_end_gap) = input.read_with(cx, |input, _| {
+        let surface = input.surface().unwrap();
+        assert_eq!(surface.source_caret(), end);
+        assert_eq!(
+            surface.source_selection(),
+            RangeSourceSelection {
+                anchor: start,
+                head: end,
+            }
+        );
+        assert_eq!(surface.scroll_position(), end);
+        assert_eq!(
+            surface.binding().extent().byte_len(),
+            end.byte_offset.get()
+        );
+        assert!(source.is_char_boundary(start.byte_offset.get() as usize));
+        assert!(source.is_char_boundary(end.byte_offset.get() as usize));
+        assert_eq!(start.gap, InlineObjectGap::NoObjects);
+        assert_eq!(end.gap, InlineObjectGap::NoObjects);
+        assert_eq!(object.anchor(), ByteOffset::new(1));
+
+        assert_eq!(surface.object_pages().len(), 1);
+        let page = &surface.object_pages()[0];
+        assert!(page.objects().is_empty());
+        assert_eq!(
+            page.preceding(),
+            ObjectPageEdgeFact::Continues(object.cursor())
+        );
+        assert_eq!(page.following(), ObjectPageEdgeFact::EnvelopeBoundary);
+        (
+            page.key().demand().contains_anchor(start.byte_offset),
+            page.key().demand().contains_anchor(end.byte_offset)
+                && object.anchor() < end.byte_offset,
+        )
+    });
+    assert!(!surface_proves_start_gap);
+    assert!(surface_proves_end_gap);
+    assert!(matches!(
+        input.read_with(cx, |input, _| input.export_restoration(None)),
+        Err(gpui_text_input::RangeTextInputError::IncompleteSurface)
+    ));
+
+    let distinct_edit_positions = [start, end];
+    assert!(
+        distinct_edit_positions
+            .iter()
+            .all(|position| position.byte_offset != object.anchor())
+    );
+    let (text, objects) = admitted_sources_with_facts(
+        source,
+        1,
+        &distinct_edit_positions,
+        std::slice::from_ref(&object),
+    );
+    input.update(cx, |input, _| {
+        input
+            .admit_edit_positions(&distinct_edit_positions, &text, &objects)
+            .unwrap();
+    });
     let events = restoration_events(&input, cx);
     let before = range_publication_fingerprint(&input, cx);
     let seed = input.read_with(cx, |input, _| input.export_restoration(None).unwrap());
+    assert_eq!(seed.caret, end);
+    assert_eq!(
+        seed.selection,
+        RangeSourceSelection {
+            anchor: start,
+            head: end,
+        }
+    );
+    assert_eq!(seed.scroll.position, end);
 
     cx.simulate_keystrokes("ctrl-x");
     drive_pages_with_objects(&input, cx, source, std::slice::from_ref(&object));
