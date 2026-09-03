@@ -843,6 +843,13 @@ custody to the host and still reaches its exact terminal there, but its result i
 detached widget and cannot mutate a later binding. Late page and job responses are rejected by their
 request or job key; late operation results are consumed only by their exact detached-custody key.
 
+An opt-in `test-support` feature may expose a checked one-way qualification operation that lowers
+only the configured range-backed surface-item limit on an already initialized widget. It rejects
+widening and performs no allocation, notification, publication, or event work. The seam exists only
+so crate-root integration tests can measure one successful transition and exercise exact-fit and
+one-under admission on the same live subject; it is absent from default builds and is not a runtime
+configuration contract for applications.
+
 At a quiescent range-backed cut with no active composition, pre-admission ordinary edit or
 historical-root selection, or admitted operation, the host may synchronously request one compact
 restoration seed before rebind or unmount. The seed contains only the exact binding identity,

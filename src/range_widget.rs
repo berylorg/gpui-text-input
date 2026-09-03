@@ -31,6 +31,9 @@ pub use types::*;
 
 use std::{cell::Cell, collections::VecDeque, rc::Rc};
 
+#[cfg(feature = "test-support")]
+use std::num::NonZeroUsize;
+
 use gpui::{Bounds, Context, EventEmitter, FocusHandle, Focusable, Pixels, Subscription, Window};
 use gpui_scrollbar::{
     ScrollDirection, ScrollbarInteraction, ScrollbarMountGeneration, ScrollbarOwnerId,
@@ -636,6 +639,18 @@ impl RangeTextInput {
 
     pub const fn last_surface_admission_charge(&self) -> Option<RangeSurfaceCharge> {
         self.last_surface_admission
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn lower_max_surface_items_for_test(
+        &mut self,
+        max_surface_items: NonZeroUsize,
+    ) -> Result<(), RangeTextInputError> {
+        if max_surface_items.get() > self.config.limits.max_surface_items {
+            return Err(RangeTextInputError::InvalidLimits);
+        }
+        self.config.limits.max_surface_items = max_surface_items.get();
+        Ok(())
     }
 
     pub fn take_request(&mut self) -> Option<RangeTextInputRequest> {

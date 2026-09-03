@@ -1,5 +1,8 @@
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
+#[cfg(feature = "test-support")]
+use std::num::NonZeroUsize;
+
 #[path = "range_widget/propagation.rs"]
 mod propagation;
 #[path = "range_widget/range_widget_legacy_contracts.rs"]
@@ -7839,6 +7842,7 @@ fn deferred_true_rebind_preserves_surface_and_blocks_normal_clipboard(
     );
 }
 
+#[cfg(feature = "test-support")]
 #[gpui::test]
 fn repeated_wheel_retarget_rejection_preserves_full_publication_fingerprint(
     cx: &mut gpui::TestAppContext,
@@ -7846,65 +7850,137 @@ fn repeated_wheel_retarget_rejection_preserves_full_publication_fingerprint(
     let source = (0..100)
         .map(|line| format!("line-{line:03}\n"))
         .collect::<String>();
-    let mut rejected_config = config(&source, 1);
-    rejected_config.limits.max_surface_bytes = 2 * 1024 * 1024;
-    rejected_config.limits.max_surface_items = 644;
-    rejected_config.limits.max_realization_work_per_frame = 1_024;
-    let (rejected, cx) =
-        cx.add_window_view(|window, cx| RangeTextInput::new(rejected_config, window, cx).unwrap());
-    drive_pages(&rejected, cx, &source);
-    let events = restoration_events(&rejected, cx);
-    let before = range_publication_fingerprint(&rejected, cx);
+    let mut configuration = config(&source, 1);
+    configuration.limits.max_surface_bytes = 2 * 1024 * 1024;
+    configuration.limits.max_surface_items = 2 * 1024 * 1024;
+    configuration.limits.max_realization_work_per_frame = 1_024;
+    let (input, cx) =
+        cx.add_window_view(|window, cx| RangeTextInput::new(configuration, window, cx).unwrap());
+    drive_pages(&input, cx, &source);
+    let events = restoration_events(&input, cx);
+    let initial = range_publication_fingerprint(&input, cx);
+    let initial_ownership = input.read_with(cx, |input, _| input.realization_diagnostics().current);
+
     cx.simulate_event(ScrollWheelEvent {
         position: point(px(1.), px(1.)),
         delta: ScrollDelta::Pixels(point(px(0.), px(-48.))),
         ..Default::default()
     });
-    let Some(RangeTextInputRequest::Page(first_retarget)) =
-        rejected.update(cx, |input, _| input.take_request())
+    let Some(RangeTextInputRequest::Page(retarget)) =
+        input.update(cx, |input, _| input.take_request())
     else {
-        panic!("first wheel retarget request")
+        panic!("wheel retarget request")
     };
-    let first_retarget_key = first_retarget.key();
-    let first_retarget_demand = first_retarget_key.demand();
-    assert_eq!(first_retarget_key.purpose(), PagePurpose::GeometryTarget);
+    assert_eq!(retarget.key().purpose(), PagePurpose::GeometryTarget);
     assert!(matches!(
-        first_retarget_demand,
+        retarget.key().demand(),
         PageDemandEnvelope::Adjacent {
             direction: PageDirection::Forward,
             ..
         }
     ));
-    let committed = range_publication_fingerprint(&rejected, cx);
-    assert_ne!(committed.admission, before.admission);
-    assert_eq!(committed.surface, before.surface);
-    let event_count = events.borrow().len();
+    let admitted = range_publication_fingerprint(&input, cx);
+    let admission = input
+        .update(cx, |input, _| input.last_surface_admission_charge())
+        .expect("wheel retarget admission charge");
+    let ownership = input.read_with(cx, |input, _| input.realization_diagnostics().current);
+    assert_ne!(admitted.admission, initial.admission);
+    assert_eq!(admitted.admission, Some(admission));
+    assert_eq!(
+        ownership.dispatched_page_requests,
+        initial_ownership.dispatched_page_requests + 1
+    );
+    assert_eq!(
+        ownership.candidate_items,
+        initial_ownership.candidate_items + 1
+    );
+    let exact_items =
+        admission.items + (ownership.candidate_items - initial_ownership.candidate_items);
+    assert_eq!(exact_items, admission.items + 1);
+
+    input.update(cx, |input, cx| {
+        input
+            .fail_page(retarget.key(), PageFailure::Cancelled, cx)
+            .unwrap();
+    });
+    assert_eq!(
+        range_publication_fingerprint(&input, cx).surface,
+        initial.surface
+    );
+
+    input.update(cx, |input, _| {
+        input
+            .lower_max_surface_items_for_test(NonZeroUsize::new(exact_items).unwrap())
+            .unwrap();
+    });
+    let exact_before_ownership =
+        input.read_with(cx, |input, _| input.realization_diagnostics().current);
+    let events_after_exact_lowering = events.borrow().len();
     cx.simulate_event(ScrollWheelEvent {
         position: point(px(1.), px(1.)),
         delta: ScrollDelta::Pixels(point(px(0.), px(-48.))),
         ..Default::default()
     });
-    assert!(
-        rejected
-            .update(cx, |input, _| input.take_request())
-            .is_none()
+    let Some(RangeTextInputRequest::Page(exact_retarget)) =
+        input.update(cx, |input, _| input.take_request())
+    else {
+        panic!("exact-fit wheel retarget request")
+    };
+    assert_eq!(exact_retarget.key().purpose(), PagePurpose::GeometryTarget);
+    assert!(matches!(
+        exact_retarget.key().demand(),
+        PageDemandEnvelope::Adjacent {
+            direction: PageDirection::Forward,
+            ..
+        }
+    ));
+    let exact_admitted = range_publication_fingerprint(&input, cx);
+    let exact_admission = input
+        .update(cx, |input, _| input.last_surface_admission_charge())
+        .expect("exact-fit wheel retarget admission charge");
+    let exact_ownership = input.read_with(cx, |input, _| input.realization_diagnostics().current);
+    assert_eq!(exact_admitted.admission, Some(exact_admission));
+    assert_eq!(exact_admission, admission);
+    assert_eq!(
+        exact_ownership.candidate_items,
+        exact_before_ownership.candidate_items + 1
     );
-    assert_eq!(range_publication_fingerprint(&rejected, cx), committed);
-    assert_eq!(events.borrow().len(), event_count);
-    cx.simulate_event(ScrollWheelEvent {
-        position: point(px(1.), px(1.)),
-        delta: ScrollDelta::Pixels(point(px(0.), px(-96.))),
-        ..Default::default()
+    assert_eq!(
+        exact_admission.items
+            + (exact_ownership.candidate_items - exact_before_ownership.candidate_items),
+        exact_items
+    );
+    assert_eq!(events.borrow().len(), events_after_exact_lowering);
+    input.update(cx, |input, _| {
+        assert!(matches!(
+            input.lower_max_surface_items_for_test(NonZeroUsize::new(exact_items + 1).unwrap()),
+            Err(gpui_text_input::RangeTextInputError::InvalidLimits)
+        ));
     });
-    assert!(
-        rejected
-            .update(cx, |input, _| input.take_request())
-            .is_none()
-    );
-    assert_eq!(range_publication_fingerprint(&rejected, cx), committed);
-    assert_eq!(events.borrow().len(), event_count);
+    assert_eq!(range_publication_fingerprint(&input, cx), exact_admitted);
+    assert_eq!(events.borrow().len(), events_after_exact_lowering);
+
+    let one_under = exact_items.checked_sub(1).expect("one-under capacity");
+    input.update(cx, |input, _| {
+        input
+            .lower_max_surface_items_for_test(NonZeroUsize::new(one_under).unwrap())
+            .unwrap();
+    });
+    let before = range_publication_fingerprint(&input, cx);
+    let event_count = events.borrow().len();
+    for delta in [-48., -96.] {
+        cx.simulate_event(ScrollWheelEvent {
+            position: point(px(1.), px(1.)),
+            delta: ScrollDelta::Pixels(point(px(0.), px(delta))),
+            ..Default::default()
+        });
+        assert!(input.update(cx, |input, _| input.take_request()).is_none());
+        assert_eq!(range_publication_fingerprint(&input, cx), before);
+        assert_eq!(events.borrow().len(), event_count);
+    }
 }
 
+#[cfg(feature = "test-support")]
 #[gpui::test]
 fn repeated_rendered_scrollbar_retarget_rejection_preserves_full_publication_fingerprint(
     cx: &mut gpui::TestAppContext,
@@ -7914,7 +7990,7 @@ fn repeated_rendered_scrollbar_retarget_rejection_preserves_full_publication_fin
         .collect::<String>();
     let mut configuration = config(&source, 1);
     configuration.limits.max_surface_bytes = 2 * 1024 * 1024;
-    configuration.limits.max_surface_items = 644;
+    configuration.limits.max_surface_items = 2 * 1024 * 1024;
     configuration.limits.max_realization_work_per_frame = 1_024;
     let (input, cx) =
         cx.add_window_view(|window, cx| RangeTextInput::new(configuration, window, cx).unwrap());
@@ -7922,30 +7998,137 @@ fn repeated_rendered_scrollbar_retarget_rejection_preserves_full_publication_fin
     let events = restoration_events(&input, cx);
     cx.update(|window, app| window.draw(app).clear());
     cx.run_until_parked();
-    cx.simulate_event(ScrollWheelEvent {
-        position: point(px(1.), px(1.)),
-        delta: ScrollDelta::Pixels(point(px(0.), px(-48.))),
-        ..Default::default()
+    let viewport = cx.update(|window, _| window.viewport_size());
+    let initial = range_publication_fingerprint(&input, cx);
+    let initial_ownership = input.read_with(cx, |input, _| input.realization_diagnostics().current);
+    cx.simulate_event(MouseDownEvent {
+        position: point(viewport.width - px(1.), viewport.height * 0.9),
+        modifiers: Modifiers::none(),
+        button: MouseButton::Left,
+        click_count: 1,
+        first_mouse: false,
     });
-    let Some(RangeTextInputRequest::Page(first_retarget)) =
+    let Some(RangeTextInputRequest::Page(retarget)) =
         input.update(cx, |input, _| input.take_request())
     else {
-        panic!("scrollbar activation retarget request")
+        panic!("rendered scrollbar retarget request")
     };
-    let first_retarget_key = first_retarget.key();
-    let first_retarget_demand = first_retarget_key.demand();
-    assert_eq!(first_retarget_key.purpose(), PagePurpose::GeometryTarget);
+    assert_eq!(retarget.key().purpose(), PagePurpose::GeometryTarget);
     assert!(matches!(
-        first_retarget_demand,
+        retarget.key().demand(),
         PageDemandEnvelope::Adjacent {
             direction: PageDirection::Forward,
             ..
         }
     ));
-    let committed = range_publication_fingerprint(&input, cx);
-    let event_count = events.borrow().len();
+    let admitted = range_publication_fingerprint(&input, cx);
+    let admission = input
+        .update(cx, |input, _| input.last_surface_admission_charge())
+        .expect("rendered scrollbar retarget admission charge");
+    let ownership = input.read_with(cx, |input, _| input.realization_diagnostics().current);
+    assert_ne!(admitted.admission, initial.admission);
+    assert_eq!(admitted.admission, Some(admission));
+    assert_eq!(
+        ownership.dispatched_page_requests,
+        initial_ownership.dispatched_page_requests + 1
+    );
+    assert_eq!(
+        ownership.candidate_items,
+        initial_ownership.candidate_items + 1
+    );
+    let exact_items =
+        admission.items + (ownership.candidate_items - initial_ownership.candidate_items);
+    assert_eq!(exact_items, admission.items + 1);
+
+    input.update(cx, |input, cx| {
+        input
+            .fail_page(retarget.key(), PageFailure::Cancelled, cx)
+            .unwrap();
+    });
+    assert_eq!(
+        range_publication_fingerprint(&input, cx).surface,
+        initial.surface
+    );
+
+    input.update(cx, |input, _| {
+        input
+            .lower_max_surface_items_for_test(NonZeroUsize::new(exact_items).unwrap())
+            .unwrap();
+    });
+    cx.update(|window, app| window.draw(app).clear());
+    cx.run_until_parked();
     let viewport = cx.update(|window, _| window.viewport_size());
-    for fraction in [0.9, 0.75] {
+    let exact_before_ownership =
+        input.read_with(cx, |input, _| input.realization_diagnostics().current);
+    let events_after_exact_lowering = events.borrow().len();
+    cx.simulate_event(MouseDownEvent {
+        position: point(viewport.width - px(1.), viewport.height * 0.9),
+        modifiers: Modifiers::none(),
+        button: MouseButton::Left,
+        click_count: 1,
+        first_mouse: false,
+    });
+    let Some(RangeTextInputRequest::Page(exact_retarget)) =
+        input.update(cx, |input, _| input.take_request())
+    else {
+        panic!("exact-fit rendered scrollbar retarget request")
+    };
+    assert_eq!(exact_retarget.key().purpose(), PagePurpose::GeometryTarget);
+    assert!(matches!(
+        exact_retarget.key().demand(),
+        PageDemandEnvelope::Adjacent {
+            direction: PageDirection::Forward,
+            ..
+        }
+    ));
+    let exact_admitted = range_publication_fingerprint(&input, cx);
+    let exact_admission = input
+        .update(cx, |input, _| input.last_surface_admission_charge())
+        .expect("exact-fit rendered scrollbar retarget admission charge");
+    let exact_ownership = input.read_with(cx, |input, _| input.realization_diagnostics().current);
+    assert_eq!(exact_admitted.admission, Some(exact_admission));
+    assert_eq!(exact_admission, admission);
+    assert_eq!(
+        exact_ownership.candidate_items,
+        exact_before_ownership.candidate_items + 1
+    );
+    assert_eq!(
+        exact_admission.items
+            + (exact_ownership.candidate_items - exact_before_ownership.candidate_items),
+        exact_items
+    );
+    assert_eq!(events.borrow().len(), events_after_exact_lowering);
+    input.update(cx, |input, _| {
+        assert!(matches!(
+            input.lower_max_surface_items_for_test(NonZeroUsize::new(exact_items + 1).unwrap()),
+            Err(gpui_text_input::RangeTextInputError::InvalidLimits)
+        ));
+    });
+    assert_eq!(range_publication_fingerprint(&input, cx), exact_admitted);
+    assert_eq!(events.borrow().len(), events_after_exact_lowering);
+
+    let one_under = exact_items.checked_sub(1).expect("one-under capacity");
+    input.update(cx, |input, _| {
+        input
+            .lower_max_surface_items_for_test(NonZeroUsize::new(one_under).unwrap())
+            .unwrap();
+    });
+    cx.update(|window, app| window.draw(app).clear());
+    cx.run_until_parked();
+    let viewport = cx.update(|window, _| window.viewport_size());
+    let before = range_publication_fingerprint(&input, cx);
+    let event_count = events.borrow().len();
+    cx.simulate_event(MouseDownEvent {
+        position: point(viewport.width - px(1.), viewport.height * 0.9),
+        modifiers: Modifiers::none(),
+        button: MouseButton::Left,
+        click_count: 1,
+        first_mouse: false,
+    });
+    assert!(input.update(cx, |input, _| input.take_request()).is_none());
+    assert_eq!(range_publication_fingerprint(&input, cx), before);
+    assert_eq!(events.borrow().len(), event_count);
+    for fraction in [0.75, 0.6] {
         cx.simulate_event(MouseDownEvent {
             position: point(viewport.width - px(1.), viewport.height * fraction),
             modifiers: Modifiers::none(),
@@ -7954,7 +8137,7 @@ fn repeated_rendered_scrollbar_retarget_rejection_preserves_full_publication_fin
             first_mouse: false,
         });
         assert!(input.update(cx, |input, _| input.take_request()).is_none());
-        assert_eq!(range_publication_fingerprint(&input, cx), committed);
+        assert_eq!(range_publication_fingerprint(&input, cx), before);
         assert_eq!(events.borrow().len(), event_count);
     }
 }

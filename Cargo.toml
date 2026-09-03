@@ -20,6 +20,10 @@ license.workspace = true
 rust-version.workspace = true
 version.workspace = true
 
+[features]
+default = []
+test-support = []
+
 [dependencies]
 gpui.workspace = true
 gpui-scrollbar.workspace = true
