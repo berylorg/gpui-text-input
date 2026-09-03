@@ -3483,9 +3483,116 @@ fn post_validation_restoration_rebind_and_dispose_cancel_and_reject_once(
     cx: &mut gpui::TestAppContext,
 ) {
     let source = "restore cancellation";
+    fn assert_semantic_owners(
+        input: &RangeTextInput,
+        pending_index_intents: usize,
+        empty_response_custody: (usize, usize),
+    ) {
+        let current = input.realization_diagnostics().current;
+        let (resident_pages, resident_page_bytes, resident_objects, resident_object_bytes) =
+            input.surface().map_or((0, 0, 0, 0), |surface| {
+                (
+                    surface.pages().len(),
+                    surface
+                        .pages()
+                        .iter()
+                        .map(|page| page.retained_charge().bytes())
+                        .sum::<usize>(),
+                    surface
+                        .object_pages()
+                        .iter()
+                        .map(|page| page.retained_charge().objects())
+                        .sum::<usize>(),
+                    surface
+                        .object_pages()
+                        .iter()
+                        .map(|page| page.retained_charge().bytes())
+                        .sum::<usize>(),
+                )
+            });
+        assert_eq!(current.resident_pages, resident_pages);
+        assert_eq!(current.resident_page_bytes, resident_page_bytes);
+        assert_eq!(current.resident_objects, resident_objects);
+        assert_eq!(current.resident_object_bytes, resident_object_bytes);
+        assert_eq!(current.pending_page_bytes, 0);
+        assert_eq!(current.pending_object_bytes, 0);
+        assert_eq!(current.clipboard_bytes, 0);
+        assert_eq!(current.clipboard_items, 0);
+        assert_eq!(current.request_payload_bytes, 0);
+        assert_eq!(current.request_payload_items, 0);
+        assert_eq!(current.deferred_response_bytes, 0);
+        assert_eq!(current.deferred_response_items, 0);
+        let expected_response_custody = if input.surface().is_some() {
+            empty_response_custody
+        } else {
+            (0, 0)
+        };
+        assert_eq!(current.response_custody_bytes, expected_response_custody.0);
+        assert_eq!(current.response_custody_items, expected_response_custody.1);
+        assert_eq!(current.response_processing_bytes, 0);
+        assert_eq!(current.candidate_bytes, 0);
+        assert_eq!(current.candidate_items, 0);
+        assert_eq!(current.pending_geometry_record_bytes, 0);
+        assert_eq!(current.pending_geometry_record_items, 0);
+        assert_eq!(current.pending_configuration_bytes, 0);
+        assert_eq!(current.pending_configuration_items, 0);
+        assert_eq!(current.pending_index_intents, pending_index_intents);
+        assert_eq!(current.active_geometry_jobs, 0);
+        assert_eq!(current.pending_page_requests, 0);
+        assert_eq!(current.dispatched_page_requests, 0);
+        assert_eq!(current.pending_object_requests, 0);
+        assert_eq!(current.dispatched_object_requests, 0);
+        assert_eq!(current.pending_geometry_pages, 0);
+        assert_eq!(current.pending_geometry_objects, 0);
+        assert_eq!(current.resident_geometry_page_waits, 0);
+        assert_eq!(current.coalesced_geometry_page_waits, 0);
+        assert_eq!(current.index_geometry_page_waits, 0);
+        assert_eq!(current.target_geometry_page_waits, 0);
+        assert_eq!(current.deferred_geometry_responses, 0);
+        assert_eq!(current.response_custody_count, 0);
+        assert_eq!(current.response_processing_items, 0);
+        assert_eq!(current.candidates, 0);
+        assert_eq!(current.scheduled_continuations, 0);
+        assert_eq!(current.queued_requests, 0);
+        assert_eq!(current.pending_target_intents, 0);
+        assert_eq!(current.pending_layout_intents, 0);
+        assert_eq!(current.pending_presentation_intents, 0);
+        assert_eq!(current.pending_rebind_intents, 0);
+        assert_eq!(current.page_alias_waits, 0);
+        assert_eq!(input.clipboard_counts(), Default::default());
+        if input.surface().is_none() {
+            assert_eq!(
+                current.geometry_bytes,
+                std::mem::size_of::<ExactGeometryOwner>()
+            );
+            assert_eq!(current.geometry_items, 1);
+            assert_eq!(current.owned_bytes, std::mem::size_of::<RangeTextInput>());
+            assert_eq!(current.owned_items, 4);
+            assert_eq!(current.request_storage_bytes, 0);
+            assert_eq!(current.request_storage_items, 0);
+            assert_eq!(current.page_alias_storage_bytes, 0);
+            assert_eq!(current.page_alias_storage_items, 0);
+            assert_eq!(current.dispatched_record_bytes, 0);
+            assert_eq!(current.dispatched_record_items, 0);
+            assert_eq!(current.checkpoints, 0);
+        }
+    }
     let (input, cx) = cx
         .add_window_view(|window, cx| RangeTextInput::new(config(source, 1), window, cx).unwrap());
+    let empty_response_custody = input.read_with(cx, |input, _| {
+        let current = input.realization_diagnostics().current;
+        assert_eq!(current.response_custody_count, 0);
+        (
+            current.response_custody_bytes,
+            current.response_custody_items,
+        )
+    });
     assert!(drive_pages(&input, cx, source).is_empty());
+    let mut predecessor_text_dispatches = Vec::new();
+    let mut predecessor_object_dispatches = Vec::new();
+    let predecessor_object_release_keys = Vec::new();
+    let mut predecessor_text_releases = Vec::new();
+    let mut predecessor_object_releases = Vec::new();
     let events = Rc::new(RefCell::new(Vec::new()));
     let captured = events.clone();
     cx.cx.update(|cx| {
@@ -3495,21 +3602,100 @@ fn post_validation_restoration_rebind_and_dispose_cancel_and_reject_once(
         .detach();
     });
     let seed = restoration_seed(source, 1, ordinary_position(0));
-    let geometry = validate_restoration_to_first_geometry_page(&input, cx, source, seed);
+    input.update(cx, |input, cx| input.import_restoration(seed, cx).unwrap());
+    let geometry = 'validation: {
+        for page_id in 71_000..71_100 {
+            match input.update(cx, |input, _| input.take_request()).unwrap() {
+                RangeTextInputRequest::Page(request)
+                    if request.key().purpose() == PagePurpose::Restoration =>
+                {
+                    let key = request.key();
+                    assert_eq!(key.revision(), SourceRevision::new(1));
+                    assert!(!predecessor_text_dispatches.contains(&key));
+                    predecessor_text_dispatches.push(key);
+                    let page = page_for(source, page_id, request);
+                    assert_eq!(page.key(), key);
+                    cx.update(|window, app| {
+                        input.update(app, |input, cx| {
+                            input.deliver_page(page, window, cx).unwrap()
+                        })
+                    });
+                }
+                RangeTextInputRequest::Page(request)
+                    if matches!(
+                        request.key().purpose(),
+                        PagePurpose::GeometryIndex | PagePurpose::GeometryTarget
+                    ) =>
+                {
+                    break 'validation request;
+                }
+                RangeTextInputRequest::ObjectPage(request) => {
+                    let key = request.key();
+                    assert_eq!(key.revision(), SourceRevision::new(1));
+                    assert!(!predecessor_object_dispatches.contains(&key));
+                    predecessor_object_dispatches.push(key);
+                    let page = restoration_object_page(request, &[], page_id);
+                    assert_eq!(page.key(), key);
+                    cx.update(|window, app| {
+                        input.update(app, |input, cx| {
+                            input
+                                .deliver_object_page_in_window(page, window, cx)
+                                .unwrap()
+                        })
+                    });
+                }
+                RangeTextInputRequest::ReleasePage(key) => {
+                    assert!(predecessor_text_dispatches.contains(&key));
+                    assert!(!predecessor_text_releases.contains(&key));
+                    predecessor_text_releases.push(key);
+                }
+                RangeTextInputRequest::ReleaseObjectPage(key) => {
+                    assert!(predecessor_object_release_keys.contains(&key));
+                    assert!(!predecessor_object_releases.contains(&key));
+                    predecessor_object_releases.push(key);
+                }
+                other => panic!("unexpected restoration validation request: {other:?}"),
+            }
+        }
+        panic!("restoration did not begin geometry within its bounded validation drive")
+    };
+    let restoration_geometry_key = geometry.key();
+    let late_restoration_geometry = page_for(source, 72_999, geometry);
+    let duplicate_restoration_geometry = late_restoration_geometry.clone();
     cx.update(|window, app| {
         input.update(app, |input, cx| {
             input.rebind(binding(source, 2), None, window, cx).unwrap()
         })
     });
+    assert_eq!(
+        events
+            .borrow()
+            .iter()
+            .filter(|event| matches!(event, RangeTextInputEvent::RestorationRejected))
+            .count(),
+        1
+    );
     let mut exact_cancellations = 0;
+    let mut successor_text_dispatches = Vec::new();
+    let mut successor_text_releases = Vec::new();
+    let mut successor_object_dispatches = Vec::new();
+    let mut successor_object_releases = Vec::new();
+    let mut observed_delayed_index_cut = false;
+    let mut reached_quiescence = false;
     let mut page_id = 73_000;
-    for _ in 0..64 {
+    for _ in 0..256 {
         match input.update(cx, |input, _| input.take_request()) {
-            Some(RangeTextInputRequest::CancelPage(key)) if key == geometry.key() => {
+            Some(RangeTextInputRequest::CancelPage(key)) if key == restoration_geometry_key => {
                 exact_cancellations += 1;
             }
             Some(RangeTextInputRequest::Page(request)) => {
+                let key = request.key();
+                assert_eq!(key.binding(), BindingId::new(17));
+                assert_eq!(key.revision(), SourceRevision::new(2));
+                assert!(!successor_text_dispatches.contains(&key));
+                successor_text_dispatches.push(key);
                 let page = page_for(source, page_id, request);
+                assert_eq!(page.key(), key);
                 page_id += 1;
                 cx.update(|window, app| {
                     input.update(app, |input, cx| {
@@ -3518,7 +3704,14 @@ fn post_validation_restoration_rebind_and_dispose_cancel_and_reject_once(
                 });
             }
             Some(RangeTextInputRequest::ObjectPage(request)) => {
+                let key = request.key();
+                assert_eq!(key.binding(), BindingId::new(17));
+                assert_eq!(key.revision(), SourceRevision::new(2));
+                assert!(!successor_object_dispatches.contains(&key));
+                successor_object_dispatches.push(key);
                 let page = restoration_object_page(request, &[], page_id);
+                assert_eq!(page.key(), key);
+                page_id += 1;
                 cx.update(|window, app| {
                     input.update(app, |input, cx| {
                         input
@@ -3527,15 +3720,161 @@ fn post_validation_restoration_rebind_and_dispose_cancel_and_reject_once(
                     })
                 });
             }
-            Some(RangeTextInputRequest::ReleasePage(_))
-            | Some(RangeTextInputRequest::ReleaseObjectPage(_))
-            | Some(RangeTextInputRequest::CancelObjectPage(_)) => {}
+            Some(RangeTextInputRequest::ReleasePage(key))
+                if key.revision() == SourceRevision::new(2) =>
+            {
+                successor_text_releases.push(key)
+            }
+            Some(RangeTextInputRequest::ReleaseObjectPage(key))
+                if key.revision() == SourceRevision::new(2) =>
+            {
+                successor_object_releases.push(key)
+            }
+            Some(RangeTextInputRequest::ReleasePage(key)) => {
+                assert!(predecessor_text_dispatches.contains(&key));
+                assert!(!predecessor_text_releases.contains(&key));
+                predecessor_text_releases.push(key)
+            }
+            Some(RangeTextInputRequest::ReleaseObjectPage(key)) => {
+                assert!(predecessor_object_release_keys.contains(&key));
+                assert!(!predecessor_object_releases.contains(&key));
+                predecessor_object_releases.push(key)
+            }
             Some(other) => panic!("unexpected rebind request: {other:?}"),
-            None => break,
+            None => {
+                if input.read_with(cx, |input, _| input.is_quiescent()) {
+                    reached_quiescence = true;
+                    break;
+                }
+                if !observed_delayed_index_cut {
+                    input.read_with(cx, |input, _| {
+                        assert_semantic_owners(input, 1, empty_response_custody);
+                        assert_eq!(input.surface().unwrap().binding(), binding(source, 2));
+                        assert!(input.is_surface_current_and_interactive());
+                        assert!(input.is_semantically_quiescent());
+                    });
+                    observed_delayed_index_cut = true;
+                }
+                cx.update(|window, app| window.draw(app).clear());
+                cx.run_until_parked();
+            }
         }
     }
+    assert!(
+        reached_quiescence,
+        "rebind lifecycle exceeded its bounded drive"
+    );
+    assert!(observed_delayed_index_cut);
     assert_eq!(exact_cancellations, 1);
-    input.read_with(cx, |input, _| assert!(input.is_quiescent()));
+    assert!(!predecessor_text_dispatches.is_empty());
+    assert_eq!(
+        predecessor_text_releases.len(),
+        predecessor_text_dispatches.len(),
+        "predecessor text releases {predecessor_text_releases:?} did not match dispatched keys {predecessor_text_dispatches:?}"
+    );
+    assert_eq!(
+        predecessor_object_releases.len(),
+        predecessor_object_release_keys.len(),
+        "predecessor object releases {predecessor_object_releases:?} did not match expected keys {predecessor_object_release_keys:?}"
+    );
+    assert!(!predecessor_object_dispatches.is_empty());
+    assert!(predecessor_object_dispatches
+        .iter()
+        .all(|key| key.purpose() == ObjectPurpose::Restoration));
+    assert!(predecessor_text_dispatches.iter().all(|key| {
+        predecessor_text_releases
+            .iter()
+            .filter(|released| *released == key)
+            .count()
+            == 1
+    }));
+    assert!(predecessor_object_release_keys.iter().all(|key| {
+        predecessor_object_releases
+            .iter()
+            .filter(|released| *released == key)
+            .count()
+            == 1
+    }));
+    assert!(!successor_text_dispatches.is_empty());
+    assert!(!successor_object_dispatches.is_empty());
+    assert_eq!(
+        successor_text_releases.len(),
+        successor_text_dispatches.len()
+    );
+    assert_eq!(
+        successor_object_releases.len(),
+        successor_object_dispatches.len()
+    );
+    for key in &successor_text_dispatches {
+        assert_eq!(
+            successor_text_releases
+                .iter()
+                .filter(|released| *released == key)
+                .count(),
+            1
+        );
+    }
+    for key in &successor_object_dispatches {
+        assert_eq!(
+            successor_object_releases
+                .iter()
+                .filter(|released| *released == key)
+                .count(),
+            1
+        );
+    }
+    assert!(successor_text_releases
+        .iter()
+        .all(|key| successor_text_dispatches.contains(key)));
+    assert!(successor_object_releases
+        .iter()
+        .all(|key| successor_object_dispatches.contains(key)));
+    input.read_with(cx, |input, _| {
+        assert_semantic_owners(input, 0, empty_response_custody);
+        assert_eq!(input.surface().unwrap().binding(), binding(source, 2));
+        assert!(input.is_semantically_quiescent());
+        assert!(input.is_quiescent());
+    });
+    let successor_publication = range_publication_fingerprint(&input, cx);
+    for obsolete in [late_restoration_geometry, duplicate_restoration_geometry] {
+        let expected_return = obsolete.clone();
+        let events_before = events.borrow().clone();
+        let ownership_before = input.read_with(cx, |input, _| {
+            assert_semantic_owners(input, 0, empty_response_custody);
+            assert!(input.is_semantically_quiescent());
+            assert!(input.is_quiescent());
+            input.realization_diagnostics().current
+        });
+        let rejected = cx.update(|window, app| {
+            input.update(app, |input, cx| input.deliver_page(obsolete, window, cx))
+        });
+        let Err(gpui_text_input::RangeTextInputError::PageResponseRejected(returned)) = rejected
+        else {
+            panic!("obsolete restoration geometry payload was not returned: {rejected:?}")
+        };
+        assert_eq!(returned, expected_return);
+        assert_eq!(returned.key(), restoration_geometry_key);
+        assert_eq!(
+            range_publication_fingerprint(&input, cx),
+            successor_publication
+        );
+        assert!(input.update(cx, |input, _| input.take_request()).is_none());
+        input.read_with(cx, |input, _| {
+            assert_semantic_owners(input, 0, empty_response_custody);
+            assert_eq!(input.realization_diagnostics().current, ownership_before);
+            assert!(input.is_semantically_quiescent());
+            assert!(input.is_quiescent());
+        });
+        assert_eq!(events.borrow().as_slice(), events_before.as_slice());
+        assert_eq!(
+            events
+                .borrow()
+                .iter()
+                .filter(|event| matches!(event, RangeTextInputEvent::RestorationRejected))
+                .count(),
+            1
+        );
+    }
     assert_eq!(
         events
             .borrow()
@@ -3557,6 +3896,9 @@ fn post_validation_restoration_rebind_and_dispose_cancel_and_reject_once(
         .detach();
     });
     let geometry = validate_restoration_to_first_geometry_page(&disposed, cx, source, seed);
+    let restoration_geometry_key = geometry.key();
+    let late_restoration_geometry = page_for(source, 73_999, geometry);
+    let duplicate_restoration_geometry = late_restoration_geometry.clone();
     let drained =
         cx.update(|window, app| disposed.update(app, |input, cx| input.dispose(window, cx)));
     assert_eq!(
@@ -3564,13 +3906,64 @@ fn post_validation_restoration_rebind_and_dispose_cancel_and_reject_once(
             .iter()
             .filter(|request| matches!(
                 request,
-                RangeTextInputRequest::CancelPage(key) if *key == geometry.key()
+                RangeTextInputRequest::CancelPage(key) if *key == restoration_geometry_key
             ))
             .count(),
         1
     );
+    assert_eq!(
+        dispose_events
+            .borrow()
+            .iter()
+            .filter(|event| matches!(event, RangeTextInputEvent::RestorationRejected))
+            .count(),
+        1
+    );
+    for obsolete in [late_restoration_geometry, duplicate_restoration_geometry] {
+        let expected_return = obsolete.clone();
+        let events_before = dispose_events.borrow().clone();
+        let ownership_before = disposed.read_with(cx, |input, _| {
+            assert_semantic_owners(input, 0, empty_response_custody);
+            let current = input.realization_diagnostics().current;
+            assert!(input.surface().is_none());
+            assert!(input.is_semantically_quiescent());
+            assert!(input.is_quiescent());
+            current
+        });
+        let rejected = cx.update(|window, app| {
+            disposed.update(app, |input, cx| input.deliver_page(obsolete, window, cx))
+        });
+        let Err(gpui_text_input::RangeTextInputError::PageResponseRejected(returned)) = rejected
+        else {
+            panic!("disposed restoration geometry payload was not returned: {rejected:?}")
+        };
+        assert_eq!(returned, expected_return);
+        assert_eq!(returned.key(), restoration_geometry_key);
+        assert!(disposed
+            .update(cx, |input, _| input.take_request())
+            .is_none());
+        disposed.read_with(cx, |input, _| {
+            assert_semantic_owners(input, 0, empty_response_custody);
+            let current = input.realization_diagnostics().current;
+            assert_eq!(current, ownership_before);
+            assert!(input.surface().is_none());
+            assert!(input.is_semantically_quiescent());
+            assert!(input.is_quiescent());
+        });
+        assert_eq!(dispose_events.borrow().as_slice(), events_before.as_slice());
+        assert_eq!(
+            dispose_events
+                .borrow()
+                .iter()
+                .filter(|event| matches!(event, RangeTextInputEvent::RestorationRejected))
+                .count(),
+            1
+        );
+    }
     disposed.read_with(cx, |input, _| {
+        assert_semantic_owners(input, 0, empty_response_custody);
         assert!(input.surface().is_none());
+        assert!(input.is_semantically_quiescent());
         assert!(input.is_quiescent());
     });
     assert_eq!(
