@@ -495,7 +495,7 @@ impl RangeTextInput {
         }
         let (job_id, request_id, committed_next_id) = self.transition_ids()?;
         let target_anchor = restoration
-            .map(|seed| seed.scroll.position)
+            .map(super::restoration::restoration_layout_anchor)
             .or_else(|| desired.exact_interaction_anchor())
             .or_else(|| {
                 matches!(

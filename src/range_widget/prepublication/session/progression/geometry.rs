@@ -210,7 +210,11 @@ impl RangePrepublicationSession {
                     .geometry
                     .as_mut()
                     .ok_or(RangePrepublicationFailure::Stale)?
-                    .request_block_target_anchored(id, target, self.seed.scroll.position)
+                    .request_block_target_anchored(
+                        id,
+                        target,
+                        crate::range_widget::restoration::restoration_layout_anchor(self.seed),
+                    )
                     .map_err(classify_geometry_error)?;
                 self.geometry_job = Some(start.key());
                 self.stage = SessionStage::Target;

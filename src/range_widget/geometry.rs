@@ -259,7 +259,7 @@ impl RangeTextInput {
             .or(self.restoration_seed);
         let mut target = self.desired.target();
         let anchor = restoration
-            .map(|seed| seed.scroll.position)
+            .map(super::restoration::restoration_layout_anchor)
             .or_else(|| self.desired.exact_interaction_anchor())
             .or_else(|| {
                 matches!(

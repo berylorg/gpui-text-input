@@ -2484,13 +2484,13 @@ fn restoration_coalesces_offsets_and_proves_before_between_after_before_publicat
     let after = SourcePosition::new(ByteOffset::new(1), InlineObjectGap::after(second));
     let seed = RangeRestorationSeed {
         binding: binding(source, 1),
-        caret: after,
+        caret: between,
         selection: RangeSourceSelection {
             anchor: before,
-            head: after,
+            head: between,
         },
         scroll: RangeRestorationScrollAnchor {
-            position: between,
+            position: after,
             intra_anchor: px(0.),
         },
         history: None,
@@ -2536,6 +2536,40 @@ fn restoration_coalesces_offsets_and_proves_before_between_after_before_publicat
     drive_pages_with_objects(&input, cx, source, &facts);
     input.read_with(cx, |input, _| {
         assert!(input.is_quiescent());
+        let surface = input.surface().unwrap();
+        assert_eq!(
+            surface
+                .realized_object_gaps()
+                .iter()
+                .map(|gap| gap.position())
+                .collect::<Vec<_>>(),
+            [before, between, after]
+        );
+        let gap_bounds = [before, between, after].map(|position| {
+            surface
+                .realized_object_gaps()
+                .iter()
+                .find(|gap| gap.position() == position)
+                .unwrap()
+                .caret_bounds()
+        });
+        assert!(gap_bounds[0].origin.x < gap_bounds[1].origin.x);
+        assert!(gap_bounds[1].origin.x < gap_bounds[2].origin.x);
+        assert_eq!(
+            [before, between, after]
+                .map(|position| { surface.position_for_source_position(position).unwrap() }),
+            gap_bounds.map(|bounds| bounds.origin)
+        );
+        let objects = surface.realized_objects();
+        assert_eq!(objects[0].leading(), before);
+        assert_eq!(objects[0].trailing(), between);
+        assert_eq!(objects[1].leading(), between);
+        assert_eq!(objects[1].trailing(), after);
+        assert_eq!(objects[0].leading_caret_bounds(), gap_bounds[0]);
+        assert_eq!(objects[0].trailing_caret_bounds(), gap_bounds[1]);
+        assert_eq!(objects[1].leading_caret_bounds(), gap_bounds[1]);
+        assert_eq!(objects[1].trailing_caret_bounds(), gap_bounds[2]);
+        assert_eq!(surface.caret_bounds(px(16.)), Some(gap_bounds[1]));
         assert_eq!(input.export_restoration(None).unwrap(), seed)
     });
 }

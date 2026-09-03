@@ -29,6 +29,25 @@ pub(super) enum RestorationValidationNext {
     Complete,
 }
 
+pub(super) fn restoration_layout_anchor(seed: RangeRestorationSeed) -> SourcePosition {
+    let scroll = seed.scroll.position;
+    [
+        seed.caret,
+        seed.selection.anchor,
+        seed.selection.head,
+        scroll,
+    ]
+    .into_iter()
+    .filter(|position| position.byte_offset == scroll.byte_offset)
+    .fold(scroll, |first, position| {
+        position
+            .compare_in_revision(first)
+            .is_some_and(std::cmp::Ordering::is_lt)
+            .then_some(position)
+            .unwrap_or(first)
+    })
+}
+
 impl RestorationValidation {
     pub fn new(seed: RangeRestorationSeed) -> Self {
         let positions = [
