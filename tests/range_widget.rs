@@ -9498,6 +9498,256 @@ fn pointer_activation_and_realization_loss_use_only_the_current_exact_surface(
 }
 
 #[gpui::test]
+fn rejected_generation_transition_keeps_retained_surface_inert_for_pointer_activation(
+    cx: &mut gpui::TestAppContext,
+) {
+    cx.update(ensure_text_input_bindings);
+    let source = (0..80)
+        .map(|index| format!("line {index}\n"))
+        .collect::<String>();
+    let facts = vec![object_fact(301, 1, 10)];
+    let (input, cx) = cx.add_window_view(|window, cx| {
+        let input = RangeTextInput::new(config(&source, 1), window, cx).unwrap();
+        input.focus(window);
+        input
+    });
+    drive_pages_with_objects(&input, cx, &source, &facts);
+    let events = restoration_events(&input, cx);
+    let generation_one_object = input.read_with(cx, |input, _| {
+        input.surface().unwrap().realized_objects()[0]
+    });
+    let generation_one_click =
+        generation_one_object.hit_bounds().origin + gpui::point(px(1.), px(1.));
+    cx.simulate_event(MouseDownEvent {
+        position: generation_one_click,
+        modifiers: Modifiers::none(),
+        button: MouseButton::Left,
+        click_count: 1,
+        first_mouse: false,
+    });
+    drive_pages_with_objects(&input, cx, &source, &facts);
+
+    let generation_one_active =
+        input.read_with(cx, |input, _| input.active_inline_object().unwrap());
+    let generation_one_publication = range_publication_fingerprint(&input, cx);
+    let diagnostics_before_transition =
+        input.read_with(cx, |input, _| input.realization_diagnostics());
+    let generation_two_request = input.update(cx, |input, cx| {
+        input.set_presentation_generation(PresentationGeneration::new(2), cx)
+    });
+    let active_after_transition_started =
+        input.read_with(cx, |input, _| input.active_inline_object());
+
+    let mut page_requests = 0usize;
+    let mut object_request_generations = Vec::new();
+    let mut released_pages = 0usize;
+    let mut released_object_pages = 0usize;
+    let mut cancelled_pages = 0usize;
+    let mut cancelled_object_pages = 0usize;
+    let mut observed_quiescent = false;
+    for _ in 0..512 {
+        let request = input.update(cx, |input, _| input.take_request());
+        let had_request = request.is_some();
+        match request {
+            Some(RangeTextInputRequest::Page(request)) => {
+                observed_quiescent = false;
+                page_requests += 1;
+                let page = page_for(&source, request.key().id().get(), request);
+                cx.update(|window, app| {
+                    input.update(app, |input, cx| {
+                        input.deliver_page(page, window, cx).unwrap()
+                    })
+                });
+            }
+            Some(RangeTextInputRequest::ObjectPage(request)) => {
+                observed_quiescent = false;
+                object_request_generations.push(request.key().presentation_generation());
+                let page = restoration_object_page(request, &facts, request.key().id().get());
+                cx.update(|window, app| {
+                    input.update(app, |input, cx| {
+                        input
+                            .deliver_object_page_in_window(page, window, cx)
+                            .unwrap()
+                    })
+                });
+            }
+            Some(RangeTextInputRequest::ReleasePage(_)) => {
+                observed_quiescent = false;
+                released_pages += 1;
+            }
+            Some(RangeTextInputRequest::ReleaseObjectPage(_)) => {
+                observed_quiescent = false;
+                released_object_pages += 1;
+            }
+            Some(RangeTextInputRequest::CancelPage(_)) => {
+                observed_quiescent = false;
+                cancelled_pages += 1;
+            }
+            Some(RangeTextInputRequest::CancelObjectPage(_)) => {
+                observed_quiescent = false;
+                cancelled_object_pages += 1;
+            }
+            None => {
+                let quiescent = input.read_with(cx, |input, _| input.is_quiescent());
+                if quiescent && observed_quiescent {
+                    break;
+                }
+                observed_quiescent = quiescent;
+            }
+            Some(request) => panic!("unexpected presentation diagnosis request: {request:?}"),
+        }
+        if !had_request {
+            cx.update(|window, app| window.draw(app).clear());
+            cx.run_until_parked();
+        }
+    }
+
+    let retained_publication = range_publication_fingerprint(&input, cx);
+    let (retained_object, retained_hit, active_after_transition, terminal_quiescent) =
+        input.read_with(cx, |input, _| {
+            let surface = input.surface().unwrap();
+            let object = surface.realized_objects()[0];
+            let click = object.hit_bounds().origin + gpui::point(px(1.), px(1.));
+            (
+                object,
+                surface.hit_test_composite(click),
+                input.active_inline_object(),
+                input.is_quiescent(),
+            )
+        });
+    let diagnostics_after_transition =
+        input.read_with(cx, |input, _| input.realization_diagnostics());
+    let events_after_transition = events.borrow().len();
+    let superseded_losses = events
+        .borrow()
+        .iter()
+        .filter(|event| matches!(
+            event,
+            RangeTextInputEvent::InlineObjectRealizationLost(loss)
+                if loss.anchor == generation_one_active
+                    && loss.reason
+                        == gpui_text_input::InlineObjectRealizationLossReason::Superseded
+        ))
+        .count();
+    let activation_count_after_transition = events
+        .borrow()
+        .iter()
+        .filter(|event| matches!(event, RangeTextInputEvent::InlineObjectActivated(_)))
+        .count();
+
+    let repeated_generation_two_request = input.update(cx, |input, cx| {
+        input.set_presentation_generation(PresentationGeneration::new(2), cx)
+    });
+    let publication_after_repeated_request = range_publication_fingerprint(&input, cx);
+    let diagnostics_after_repeated_request =
+        input.read_with(cx, |input, _| input.realization_diagnostics());
+    let events_after_repeated_request = events.borrow().len();
+
+    let retained_click = retained_object.hit_bounds().origin + gpui::point(px(1.), px(1.));
+    cx.simulate_event(MouseDownEvent {
+        position: retained_click,
+        modifiers: Modifiers::none(),
+        button: MouseButton::Left,
+        click_count: 1,
+        first_mouse: false,
+    });
+    cx.run_until_parked();
+    let publication_after_inert_pointer = range_publication_fingerprint(&input, cx);
+    let active_after_inert_pointer =
+        input.read_with(cx, |input, _| input.active_inline_object());
+    let diagnostics_after_inert_pointer =
+        input.read_with(cx, |input, _| input.realization_diagnostics());
+    let events_after_inert_pointer = events.borrow().len();
+    let activation_count_after_inert_pointer = events
+        .borrow()
+        .iter()
+        .filter(|event| matches!(event, RangeTextInputEvent::InlineObjectActivated(_)))
+        .count();
+
+    assert!(generation_two_request.is_ok());
+    assert_eq!(generation_one_active.binding, binding(&source, 1));
+    assert_eq!(generation_one_active.object_id, InlineObjectId::new(301));
+    assert_eq!(generation_one_active.order, InlineObjectOrder::new(10));
+    assert_eq!(
+        generation_one_active.presentation_generation,
+        PresentationGeneration::new(1)
+    );
+    assert_eq!(generation_one_active.layout_epoch.get(), 2);
+    assert_eq!(generation_one_active.bounds, generation_one_object.bounds());
+    assert!(active_after_transition_started.is_none());
+    assert_eq!(superseded_losses, 1);
+    assert_eq!(activation_count_after_transition, 1);
+
+    assert!(page_requests > 0);
+    assert!(!object_request_generations.is_empty());
+    assert!(
+        object_request_generations
+            .iter()
+            .all(|generation| *generation == PresentationGeneration::new(2))
+    );
+    assert!(released_pages + released_object_pages > 0);
+    assert_eq!(cancelled_pages, 0);
+    assert_eq!(cancelled_object_pages, 0);
+    assert!(terminal_quiescent);
+    assert_eq!(active_after_transition, None);
+    assert_eq!(generation_one_publication.surface, retained_publication.surface);
+    assert_ne!(generation_one_publication.admission, retained_publication.admission);
+    assert_eq!(
+        retained_publication.surface.geometry.presentation_generation(),
+        PresentationGeneration::new(1)
+    );
+    assert_eq!(retained_publication.surface.geometry.epoch().get(), 2);
+    assert_eq!(retained_object.id(), InlineObjectId::new(301));
+    assert_eq!(retained_object.order(), InlineObjectOrder::new(10));
+    assert_eq!(retained_object.bounds(), generation_one_object.bounds());
+    assert!(matches!(
+        retained_hit,
+        Some(RangeSurfaceHit::Object(object)) if object == retained_object
+    ));
+    assert_eq!(diagnostics_before_transition.response_rejection_count, 0);
+    assert_eq!(diagnostics_after_transition.response_rejection_count, 1);
+    assert_eq!(
+        diagnostics_after_transition.last_response_rejection,
+        Some(gpui_text_input::RangeResponseRejectionClass::CandidateSurfaceIncomplete)
+    );
+
+    assert!(repeated_generation_two_request.is_ok());
+    assert_eq!(publication_after_repeated_request, retained_publication);
+    assert_eq!(
+        diagnostics_after_repeated_request.response_rejection_count,
+        diagnostics_after_transition.response_rejection_count
+    );
+    assert_eq!(
+        diagnostics_after_repeated_request.current,
+        diagnostics_after_transition.current
+    );
+    assert_eq!(events_after_repeated_request, events_after_transition);
+
+    assert_eq!(publication_after_inert_pointer, retained_publication);
+    assert_eq!(active_after_inert_pointer, None);
+    assert_eq!(events_after_inert_pointer, events_after_repeated_request);
+    assert_eq!(activation_count_after_inert_pointer, 1);
+    assert_eq!(
+        diagnostics_after_inert_pointer.response_rejection_count,
+        diagnostics_after_transition.response_rejection_count
+    );
+    let terminal = diagnostics_after_inert_pointer.current;
+    assert_eq!(terminal.pending_target_intents, 0);
+    assert_eq!(terminal.active_geometry_jobs, 0);
+    assert_eq!(terminal.pending_geometry_pages, 0);
+    assert_eq!(terminal.pending_geometry_objects, 0);
+    assert_eq!(terminal.dispatched_page_requests, 0);
+    assert_eq!(terminal.dispatched_object_requests, 0);
+    assert_eq!(terminal.response_custody_count, 0);
+    assert_eq!(terminal.queued_requests, 0);
+    assert_eq!(terminal.candidates, 0);
+    assert_eq!(terminal.scheduled_continuations, 0);
+    assert!(input.read_with(cx, |input, _| input.is_quiescent()));
+    assert!(terminal.owned_bytes <= diagnostics_after_inert_pointer.max_surface_bytes);
+    assert!(terminal.owned_items <= diagnostics_after_inert_pointer.max_surface_items);
+}
+
+#[gpui::test]
 fn exact_attached_inline_object_surface_owns_focus_loss_until_one_explicit_dismissal(
     cx: &mut gpui::TestAppContext,
 ) {
