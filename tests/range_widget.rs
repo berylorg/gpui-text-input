@@ -4683,13 +4683,12 @@ fn shared_large_object_presentation_is_charged_once_through_publication(
     };
     let drive = |input: &gpui::Entity<RangeTextInput>,
                  cx: &mut gpui::VisualTestContext,
-                 facts: &[InlineObjectFact],
-                 terminal_publication_peak: Option<usize>| {
+                 facts: &[InlineObjectFact]| {
         let mut observed_quiescent = false;
         let mut target_page_key = None;
         let mut target_page_releases = 0;
         let mut target_object_key = None;
-        for step in 0..512 {
+        for _ in 0..512 {
             if !facts.is_empty()
                 && input.read_with(cx, |input, _| {
                     input
@@ -4766,38 +4765,19 @@ fn shared_large_object_presentation_is_charged_once_through_publication(
                             }),
                         )
                     });
-                    let retrying_terminal_publication = delivery.is_ok()
-                        && after.0.last_response_rejection.is_none()
-                        && after.0.current.response_custody_count == 1
-                        && after.1.is_none();
-                    if retrying_terminal_publication {
-                        let terminal_publication_peak = terminal_publication_peak
-                            .expect("only the one-under run may retain terminal response custody");
-                        assert_eq!(
-                            after.0.max_surface_bytes.checked_add(1),
-                            Some(terminal_publication_peak)
-                        );
-                        assert!(after.0.surface_high_water.bytes < after.0.max_surface_bytes);
-                        assert!(after.0.current.owned_bytes < after.0.max_surface_bytes);
+                    if after.0.last_response_rejection.is_some() {
                         assert!(
-                            after.0.current.response_custody_bytes
-                                > before.current.response_custody_bytes
+                            delivery.is_ok(),
+                            "accepted terminal response settlement remains a successful public delivery"
                         );
-                        assert_eq!(after.0.current.pending_object_requests, 1);
-                        assert_eq!(after.0.current.dispatched_object_requests, 1);
-                        assert_eq!(after.0.current.active_geometry_jobs, 1);
-                        assert_eq!(after.0.current.pending_geometry_objects, 1);
-                        assert_eq!(after.0.current.resident_objects, 0);
-                        assert_eq!(after.0.current.pending_target_intents, 0);
-                        assert_eq!(after.0.current.pending_index_intents, 1);
-                        assert_eq!(after.0.current.scheduled_continuations, 1);
-                        assert_eq!(after.0.surface_charge.bytes, 0);
-                        assert_eq!(after.0.response_rejection_count, 0);
-                        panic!(
-                            "GeometryTarget object response first mismatched at drive step {step}: custody admission returned Ok with a {}-byte peak below the {}-byte limit, but the {}-byte terminal publication was retained as retryable custody without settlement or rejection; key={key:?}",
-                            after.0.surface_high_water.bytes,
-                            after.0.max_surface_bytes,
-                            terminal_publication_peak,
+                        assert_eq!(after.0.current.response_custody_count, 0);
+                        assert_eq!(
+                            after.0.current.response_custody_bytes,
+                            before.current.response_custody_bytes
+                        );
+                        assert_eq!(
+                            after.0.current.response_custody_items,
+                            before.current.response_custody_items
                         );
                     }
                     if delivery.is_ok() && after.0.last_response_rejection.is_none() {
@@ -4855,7 +4835,7 @@ fn shared_large_object_presentation_is_charged_once_through_publication(
     let (probe, cx) = cx.add_window_view(|window, cx| {
         RangeTextInput::new(configured(16 * 1024 * 1024), window, cx).unwrap()
     });
-    drive(&probe, cx, &facts, None).unwrap_or_else(|error| {
+    drive(&probe, cx, &facts).unwrap_or_else(|error| {
         panic!(
             "large-display probe failed with {error:?}: {:?}",
             probe.read_with(cx, |input, _| input.realization_diagnostics())
@@ -4873,11 +4853,12 @@ fn shared_large_object_presentation_is_charged_once_through_publication(
         assert!(diagnostics.current.resident_object_bytes >= display_len);
         diagnostics.high_water.owned_bytes
     });
+    assert_eq!(exact_bytes, 902_104);
 
     let (exact, cx) = cx.add_window_view(|window, cx| {
         RangeTextInput::new(configured(exact_bytes), window, cx).unwrap()
     });
-    drive(&exact, cx, &facts, None).unwrap();
+    drive(&exact, cx, &facts).unwrap();
     exact.read_with(cx, |input, _| {
         assert_eq!(
             input.realization_diagnostics().high_water.owned_bytes,
@@ -4911,19 +4892,52 @@ fn shared_large_object_presentation_is_charged_once_through_publication(
         RangeTextInput::new(configured(exact_bytes - 1), window, cx).unwrap()
     });
     assert!(matches!(
-        drive(&one_under, cx, &facts, Some(exact_bytes)),
+        drive(&one_under, cx, &facts),
         Err(gpui_text_input::RangeTextInputError::SurfaceCapacity)
     ));
     one_under.read_with(cx, |input, _| {
         let diagnostics = input.realization_diagnostics();
-        assert_eq!(diagnostics.current.response_custody_count, 1);
+        assert_eq!(
+            diagnostics.last_response_rejection,
+            Some(gpui_text_input::RangeResponseRejectionClass::ResidencyCapacity)
+        );
+        assert_eq!(diagnostics.response_rejection_count, 1);
+        assert_eq!(diagnostics.current.response_custody_count, 0);
+        assert_eq!(diagnostics.current.response_processing_bytes, 0);
+        assert_eq!(diagnostics.current.response_processing_items, 0);
+        assert_eq!(diagnostics.current.pending_page_requests, 0);
+        assert_eq!(diagnostics.current.dispatched_page_requests, 0);
+        assert_eq!(diagnostics.current.pending_object_requests, 0);
+        assert_eq!(diagnostics.current.dispatched_object_requests, 0);
+        assert_eq!(diagnostics.current.active_geometry_jobs, 0);
+        assert_eq!(diagnostics.current.pending_geometry_pages, 0);
+        assert_eq!(diagnostics.current.pending_geometry_objects, 0);
+        assert_eq!(diagnostics.current.pending_target_intents, 0);
+        assert_eq!(diagnostics.current.pending_index_intents, 0);
+        assert_eq!(diagnostics.current.resident_objects, 0);
+        assert_eq!(diagnostics.current.scheduled_continuations, 0);
+        assert_eq!(diagnostics.current.queued_requests, 1);
+        assert_eq!(
+            diagnostics.max_surface_bytes.checked_add(1),
+            Some(exact_bytes)
+        );
         assert!(diagnostics.surface_high_water.bytes < exact_bytes);
+        assert_eq!(diagnostics.surface_charge.bytes, 0);
         assert!(
             input
                 .surface()
                 .is_none_or(|surface| surface.realized_objects().is_empty())
         );
     });
+    assert!(matches!(
+        one_under.update(cx, |input, _| input.take_request()),
+        Some(RangeTextInputRequest::ReleaseObjectPage(key))
+            if key.purpose() == ObjectPurpose::GeometryTarget
+    ));
+    assert!(one_under
+        .update(cx, |input, _| input.take_request())
+        .is_none());
+    one_under.read_with(cx, |input, _| assert!(input.is_quiescent()));
 }
 
 #[gpui::test]

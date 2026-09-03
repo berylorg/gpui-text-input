@@ -1414,7 +1414,12 @@ impl RangeTextInput {
             ) {
                 Ok(preparation) => preparation,
                 Err(RangeTextInputError::SurfaceCapacity) => {
-                    return Ok(ResponseDeliveryProgress::RetryableTerminalSurfaceCapacity);
+                    return self.settle_terminal_object_response(
+                        job,
+                        key,
+                        RangeTextInputError::SurfaceCapacity,
+                        cx,
+                    );
                 }
                 Err(error) => return Err(error),
             };
