@@ -5597,6 +5597,775 @@ fn clipboard_prepare_exact_fit_and_one_under_cross_split_atom_before_empty_objec
 }
 
 #[gpui::test]
+fn geometry_object_then_clipboard_object_custody_preserves_order_and_charge(
+    cx: &mut gpui::TestAppContext,
+) {
+    #[derive(Debug, PartialEq, Eq)]
+    enum ResponseEvent {
+        GeometryObjectRequest,
+        ClipboardSeedObjectRequest,
+        ClipboardContinuationObjectRequest,
+        ClipboardSeedRelease,
+        GeometryRelease,
+        ClipboardContinuationRelease,
+        GeometryIndexObjectRelease,
+        GeometryTargetObjectRelease,
+        OtherObjectRelease(ObjectPurpose),
+        ClipboardPageRelease,
+        GeometryIndexPageRelease,
+        GeometryTargetPageRelease,
+        OtherPageRelease(PagePurpose),
+        ClipboardPageRequest,
+        GeometryIndexPageRequest,
+        GeometryTargetPageRequest,
+        GeometryIndexObjectRequest,
+        GeometryTargetObjectRequest,
+        ClipboardProvenance,
+        ClipboardWrite,
+        Unexpected,
+    }
+
+    let source = format!("abcdefghij\n{}", "tail\n".repeat(32));
+    let selected_start = source.len() as u64 - 5;
+    let start = ordinary_position(selected_start);
+    let end = ordinary_position(source.len() as u64);
+    let atom = AtomId::new(716);
+    let atom_range = ByteRange::from_u64(selected_start, selected_start + 1).unwrap();
+    let facts = [
+        object_fact_with_fallback(713, selected_start + 1, 1, String::new()),
+        object_fact_with_fallback(714, selected_start + 2, 1, String::new()),
+        object_fact_with_fallback(715, selected_start + 4, 1, String::new()),
+    ];
+    let mut configuration = config(&source, 1);
+    configuration.limits.max_surface_bytes = 16 * 1024 * 1024;
+    configuration.limits.max_surface_items = 2 * 1024 * 1024;
+    configuration.limits.max_realization_work_per_frame = 1;
+    configuration.clipboard_limits = ClipboardLimits::new_composite(64, 8, 2, 64 * 1024)
+        .unwrap()
+        .with_provenance(ClipboardProvenancePolicy::Stream(
+            ClipboardProvenanceLimits::new(32 * 1024, 4 * 1024 * 1024).unwrap(),
+        ));
+    let (input, cx) =
+        cx.add_window_view(|window, cx| RangeTextInput::new(configuration, window, cx).unwrap());
+    let initial_lifecycle = drive_pages(&input, cx, &source);
+    let empty_custody = input.read_with(cx, |input, _| {
+        let current = input.realization_diagnostics().current;
+        (
+            current.response_custody_bytes,
+            current.response_custody_items,
+        )
+    });
+
+    let mut response_events = Vec::new();
+    let target = hold_same_revision_geometry_target(&input, cx, px(320.));
+    response_events.push(ResponseEvent::GeometryTargetPageRequest);
+    let target_page = page_for(&source, 89_000, target);
+    cx.update(|window, app| {
+        input.update(app, |input, cx| {
+            input.deliver_page(target_page, window, cx).unwrap()
+        })
+    });
+    let mut lifecycle = Vec::new();
+    let geometry_request = loop {
+        match input.update(cx, |input, _| input.take_request()).unwrap() {
+            RangeTextInputRequest::ObjectPage(request)
+                if request.key().purpose() == ObjectPurpose::GeometryTarget =>
+            {
+                response_events.push(ResponseEvent::GeometryObjectRequest);
+                break request;
+            }
+            request @ RangeTextInputRequest::ReleasePage(key) => {
+                response_events.push(match key.purpose() {
+                    PagePurpose::Clipboard => ResponseEvent::ClipboardPageRelease,
+                    PagePurpose::GeometryIndex => ResponseEvent::GeometryIndexPageRelease,
+                    PagePurpose::GeometryTarget => ResponseEvent::GeometryTargetPageRelease,
+                    purpose => ResponseEvent::OtherPageRelease(purpose),
+                });
+                lifecycle.push(request);
+            }
+            request @ RangeTextInputRequest::ReleaseObjectPage(key) => {
+                response_events.push(ResponseEvent::OtherObjectRelease(key.purpose()));
+                lifecycle.push(request);
+            }
+            other => panic!("unexpected geometry-object setup request: {other:?}"),
+        }
+    };
+
+    let (text, objects) = admitted_sources(&source, 1, &[start, end]);
+    let clipboard_key = input
+        .update(cx, |input, cx| {
+            input.begin_composite_clipboard(
+                gpui_text_input::ClipboardKind::Copy,
+                SourceRange::new(start, end).unwrap(),
+                MutationPositions::new(end, start, end),
+                &text,
+                &objects,
+                cx,
+            )
+        })
+        .unwrap();
+    let first_clipboard_request = loop {
+        match input.update(cx, |input, _| input.take_request()).unwrap() {
+            RangeTextInputRequest::ObjectPage(request)
+                if request.key().purpose() == ObjectPurpose::Clipboard =>
+            {
+                response_events.push(ResponseEvent::ClipboardSeedObjectRequest);
+                break request;
+            }
+            request @ RangeTextInputRequest::ReleasePage(key) => {
+                response_events.push(match key.purpose() {
+                    PagePurpose::Clipboard => ResponseEvent::ClipboardPageRelease,
+                    PagePurpose::GeometryIndex => ResponseEvent::GeometryIndexPageRelease,
+                    PagePurpose::GeometryTarget => ResponseEvent::GeometryTargetPageRelease,
+                    purpose => ResponseEvent::OtherPageRelease(purpose),
+                });
+                lifecycle.push(request);
+            }
+            request @ RangeTextInputRequest::ReleaseObjectPage(key) => {
+                response_events.push(ResponseEvent::OtherObjectRelease(key.purpose()));
+                lifecycle.push(request);
+            }
+            other => panic!("unexpected clipboard setup request: {other:?}"),
+        }
+    };
+    let queued_request_order = [
+        geometry_request.key().purpose(),
+        first_clipboard_request.key().purpose(),
+    ];
+    let first_clipboard_object_key = first_clipboard_request.key();
+    let first_clipboard_page = ObjectPage::new(
+        ObjectPageId::new(89_001),
+        first_clipboard_object_key,
+        vec![facts[0].clone()],
+        ObjectPageEdgeFact::EnvelopeBoundary,
+        ObjectPageEdgeFact::Continues(facts[0].cursor()),
+        false,
+        Some(facts[0].cursor()),
+    )
+    .unwrap();
+    let geometry_key = geometry_request.key();
+    let geometry_page = ObjectPage::new(
+        ObjectPageId::new(89_002),
+        geometry_key,
+        Vec::with_capacity(1),
+        ObjectPageEdgeFact::EnvelopeBoundary,
+        ObjectPageEdgeFact::EnvelopeBoundary,
+        true,
+        None,
+    )
+    .unwrap();
+    let (
+        clipboard_object_key,
+        seed_frame_remaining,
+        processing_high_water_baseline,
+        geometry_only_custody,
+        ordered_custody,
+        staged_lifecycle,
+    ) = cx.update(|window, app| {
+            input.update(app, |input, cx| {
+                input
+                    .deliver_object_page_in_window(first_clipboard_page, window, cx)
+                    .unwrap();
+                let seed_frame_remaining = input.realization_diagnostics().frame.remaining;
+                let mut staged_lifecycle = Vec::new();
+                let clipboard_request = loop {
+                    match input.take_request().unwrap() {
+                        RangeTextInputRequest::ObjectPage(request)
+                            if request.key().purpose() == ObjectPurpose::Clipboard =>
+                        {
+                            response_events
+                                .push(ResponseEvent::ClipboardContinuationObjectRequest);
+                            break request;
+                        }
+                        request @ (RangeTextInputRequest::ReleasePage(_)
+                        | RangeTextInputRequest::ReleaseObjectPage(_)) => {
+                            match &request {
+                                RangeTextInputRequest::ReleaseObjectPage(key)
+                                    if *key == first_clipboard_object_key =>
+                                {
+                                    response_events.push(ResponseEvent::ClipboardSeedRelease)
+                                }
+                                RangeTextInputRequest::ReleaseObjectPage(key) => {
+                                    response_events
+                                        .push(ResponseEvent::OtherObjectRelease(key.purpose()))
+                                }
+                                RangeTextInputRequest::ReleasePage(key) => {
+                                    response_events.push(match key.purpose() {
+                                        PagePurpose::Clipboard => ResponseEvent::ClipboardPageRelease,
+                                        PagePurpose::GeometryIndex => {
+                                            ResponseEvent::GeometryIndexPageRelease
+                                        }
+                                        PagePurpose::GeometryTarget => {
+                                            ResponseEvent::GeometryTargetPageRelease
+                                        }
+                                        purpose => ResponseEvent::OtherPageRelease(purpose),
+                                    })
+                                }
+                                _ => unreachable!(),
+                            }
+                            staged_lifecycle.push(request)
+                        }
+                        other => panic!("unexpected clipboard-object setup request: {other:?}"),
+                    }
+                };
+                let clipboard_object_key = clipboard_request.key();
+                let clipboard_page = restoration_object_page(clipboard_request, &facts, 89_003);
+                let processing_high_water_baseline = {
+                    let high_water = input.realization_diagnostics().high_water;
+                    (
+                        high_water.response_processing_bytes,
+                        high_water.response_processing_items,
+                    )
+                };
+
+                input
+                    .deliver_object_page_in_window(geometry_page, window, cx)
+                    .unwrap();
+                let diagnostics = input.realization_diagnostics();
+                let current = diagnostics.current;
+                let geometry_only_custody = (
+                    current.response_custody_count,
+                    current.response_custody_bytes,
+                    current.response_custody_items,
+                    current.response_processing_bytes,
+                    current.response_processing_items,
+                    current.scheduled_continuations,
+                    current.dispatched_object_requests,
+                    current.clipboard_bytes,
+                    current.clipboard_items,
+                    diagnostics.high_water.response_processing_bytes,
+                    diagnostics.high_water.response_processing_items,
+                );
+
+                input
+                    .deliver_object_page_in_window(clipboard_page, window, cx)
+                    .unwrap();
+                let diagnostics = input.realization_diagnostics();
+                let current = diagnostics.current;
+                let ordered_custody = (
+                    current.response_custody_count,
+                    current.response_custody_bytes,
+                    current.response_custody_items,
+                    current.response_processing_bytes,
+                    current.response_processing_items,
+                    current.scheduled_continuations,
+                    current.dispatched_object_requests,
+                    current.clipboard_bytes,
+                    current.clipboard_items,
+                    diagnostics.high_water.response_processing_bytes,
+                    diagnostics.high_water.response_processing_items,
+                );
+                (
+                    clipboard_object_key,
+                    seed_frame_remaining,
+                    processing_high_water_baseline,
+                    geometry_only_custody,
+                    ordered_custody,
+                    staged_lifecycle,
+                )
+            })
+        });
+    lifecycle.extend(staged_lifecycle);
+
+    cx.update(|window, app| window.draw(app).clear());
+    let after_continuation = input.read_with(cx, |input, _| {
+        let diagnostics = input.realization_diagnostics();
+        let current = diagnostics.current;
+        (
+            current.response_custody_count,
+            current.response_custody_bytes,
+            current.response_custody_items,
+            current.response_processing_bytes,
+            current.response_processing_items,
+            diagnostics.high_water.response_processing_bytes,
+            diagnostics.high_water.response_processing_items,
+            current.scheduled_continuations,
+            current.dispatched_object_requests,
+            current.clipboard_bytes,
+            current.clipboard_items,
+        )
+    });
+
+    let mut provenance = None;
+    let mut unexpected_requests = Vec::new();
+    for _ in 0..256 {
+        while let Some(request) = input.update(cx, |input, _| input.take_request()) {
+            match request {
+                RangeTextInputRequest::ClipboardProvenancePage(page) => {
+                    response_events.push(ResponseEvent::ClipboardProvenance);
+                    provenance = Some(page);
+                }
+                request @ RangeTextInputRequest::ReleaseObjectPage(key) => {
+                    if key == geometry_key {
+                        response_events.push(ResponseEvent::GeometryRelease);
+                    } else if key == clipboard_object_key {
+                        response_events.push(ResponseEvent::ClipboardContinuationRelease);
+                    } else if key == first_clipboard_object_key {
+                        response_events.push(ResponseEvent::ClipboardSeedRelease);
+                    } else {
+                        response_events.push(match key.purpose() {
+                            ObjectPurpose::GeometryIndex => {
+                                ResponseEvent::GeometryIndexObjectRelease
+                            }
+                            ObjectPurpose::GeometryTarget => {
+                                ResponseEvent::GeometryTargetObjectRelease
+                            }
+                            purpose => ResponseEvent::OtherObjectRelease(purpose),
+                        });
+                    }
+                    lifecycle.push(request);
+                }
+                request @ RangeTextInputRequest::ReleasePage(key) => {
+                    response_events.push(match key.purpose() {
+                        PagePurpose::Clipboard => ResponseEvent::ClipboardPageRelease,
+                        PagePurpose::GeometryIndex => ResponseEvent::GeometryIndexPageRelease,
+                        PagePurpose::GeometryTarget => ResponseEvent::GeometryTargetPageRelease,
+                        purpose => ResponseEvent::OtherPageRelease(purpose),
+                    });
+                    lifecycle.push(request);
+                }
+                RangeTextInputRequest::Page(request)
+                    if matches!(
+                        request.key().purpose(),
+                        PagePurpose::Clipboard
+                            | PagePurpose::GeometryIndex
+                            | PagePurpose::GeometryTarget
+                    ) =>
+                {
+                    response_events.push(match request.key().purpose() {
+                        PagePurpose::Clipboard => ResponseEvent::ClipboardPageRequest,
+                        PagePurpose::GeometryIndex => ResponseEvent::GeometryIndexPageRequest,
+                        PagePurpose::GeometryTarget => ResponseEvent::GeometryTargetPageRequest,
+                        _ => unreachable!(),
+                    });
+                    let page = if request.key().purpose() == PagePurpose::Clipboard {
+                        page_for_split_atom(
+                            &source,
+                            request.key().id().get(),
+                            request,
+                            atom,
+                            atom_range,
+                            "",
+                        )
+                    } else {
+                        page_for(&source, request.key().id().get(), request)
+                    };
+                    cx.update(|window, app| {
+                        input.update(app, |input, cx| {
+                            input.deliver_page(page, window, cx).unwrap()
+                        })
+                    });
+                }
+                RangeTextInputRequest::ObjectPage(request)
+                    if matches!(
+                        request.key().purpose(),
+                        ObjectPurpose::GeometryIndex | ObjectPurpose::GeometryTarget
+                    ) =>
+                {
+                    response_events.push(match request.key().purpose() {
+                        ObjectPurpose::GeometryIndex => ResponseEvent::GeometryIndexObjectRequest,
+                        ObjectPurpose::GeometryTarget => ResponseEvent::GeometryTargetObjectRequest,
+                        _ => unreachable!(),
+                    });
+                    let id = request.key().id().get();
+                    let page = restoration_object_page(request, &[], id);
+                    cx.update(|window, app| {
+                        input.update(app, |input, cx| {
+                            input
+                                .deliver_object_page_in_window(page, window, cx)
+                                .unwrap()
+                        })
+                    });
+                }
+                other => {
+                    response_events.push(ResponseEvent::Unexpected);
+                    unexpected_requests.push(format!("{other:?}"));
+                }
+            }
+            if provenance.is_some() {
+                break;
+            }
+        }
+        if provenance.is_some() {
+            break;
+        }
+        cx.update(|window, app| window.draw(app).clear());
+        cx.run_until_parked();
+    }
+    let provenance_observation = provenance.as_ref().map(|provenance| {
+        (
+            provenance.key().clipboard(),
+            provenance
+                .items()
+                .iter()
+                .map(|item| item.object_id())
+                .collect::<Vec<_>>(),
+        )
+    });
+    let provenance_charge = input.read_with(cx, |input, _| {
+        (
+            input.realization_diagnostics().current,
+            input.clipboard_counts(),
+        )
+    });
+    let provenance_acknowledgement = provenance.map(|provenance| {
+        input.update(cx, |input, cx| {
+            input.acknowledge_clipboard_provenance_page(provenance, cx)
+        })
+    });
+
+    let mut write = None;
+    if matches!(provenance_acknowledgement.as_ref(), Some(Ok(()))) {
+        for _ in 0..256 {
+            while let Some(request) = input.update(cx, |input, _| input.take_request()) {
+                match request {
+                    RangeTextInputRequest::ClipboardWrite(request) => {
+                        response_events.push(ResponseEvent::ClipboardWrite);
+                        write = Some(request);
+                        break;
+                    }
+                    RangeTextInputRequest::Page(request)
+                        if matches!(
+                            request.key().purpose(),
+                            PagePurpose::Clipboard
+                                | PagePurpose::GeometryIndex
+                                | PagePurpose::GeometryTarget
+                        ) =>
+                    {
+                        response_events.push(match request.key().purpose() {
+                            PagePurpose::Clipboard => ResponseEvent::ClipboardPageRequest,
+                            PagePurpose::GeometryIndex => ResponseEvent::GeometryIndexPageRequest,
+                            PagePurpose::GeometryTarget => ResponseEvent::GeometryTargetPageRequest,
+                            _ => unreachable!(),
+                        });
+                        let page = if request.key().purpose() == PagePurpose::Clipboard {
+                            page_for_split_atom(
+                                &source,
+                                request.key().id().get(),
+                                request,
+                                atom,
+                                atom_range,
+                                "",
+                            )
+                        } else {
+                            page_for(&source, request.key().id().get(), request)
+                        };
+                        cx.update(|window, app| {
+                            input.update(app, |input, cx| {
+                                input.deliver_page(page, window, cx).unwrap()
+                            })
+                        });
+                    }
+                    RangeTextInputRequest::ObjectPage(request)
+                        if matches!(
+                            request.key().purpose(),
+                            ObjectPurpose::GeometryIndex | ObjectPurpose::GeometryTarget
+                        ) =>
+                    {
+                        response_events.push(match request.key().purpose() {
+                            ObjectPurpose::GeometryIndex => {
+                                ResponseEvent::GeometryIndexObjectRequest
+                            }
+                            ObjectPurpose::GeometryTarget => {
+                                ResponseEvent::GeometryTargetObjectRequest
+                            }
+                            _ => unreachable!(),
+                        });
+                        let id = request.key().id().get();
+                        let page = restoration_object_page(request, &[], id);
+                        cx.update(|window, app| {
+                            input.update(app, |input, cx| {
+                                input
+                                    .deliver_object_page_in_window(page, window, cx)
+                                    .unwrap()
+                            })
+                        });
+                    }
+                    request @ RangeTextInputRequest::ReleaseObjectPage(key) => {
+                        if key == geometry_key {
+                            response_events.push(ResponseEvent::GeometryRelease);
+                        } else if key == clipboard_object_key {
+                            response_events.push(ResponseEvent::ClipboardContinuationRelease);
+                        } else if key == first_clipboard_object_key {
+                            response_events.push(ResponseEvent::ClipboardSeedRelease);
+                        } else {
+                            response_events.push(match key.purpose() {
+                                ObjectPurpose::GeometryIndex => {
+                                    ResponseEvent::GeometryIndexObjectRelease
+                                }
+                                ObjectPurpose::GeometryTarget => {
+                                    ResponseEvent::GeometryTargetObjectRelease
+                                }
+                                purpose => ResponseEvent::OtherObjectRelease(purpose),
+                            });
+                        }
+                        lifecycle.push(request);
+                    }
+                    request @ RangeTextInputRequest::ReleasePage(key) => {
+                        response_events.push(match key.purpose() {
+                            PagePurpose::Clipboard => ResponseEvent::ClipboardPageRelease,
+                            PagePurpose::GeometryIndex => ResponseEvent::GeometryIndexPageRelease,
+                            PagePurpose::GeometryTarget => ResponseEvent::GeometryTargetPageRelease,
+                            purpose => ResponseEvent::OtherPageRelease(purpose),
+                        });
+                        lifecycle.push(request);
+                    }
+                    other => {
+                        response_events.push(ResponseEvent::Unexpected);
+                        unexpected_requests.push(format!("{other:?}"));
+                    }
+                }
+            }
+            if write.is_some() {
+                break;
+            }
+            cx.update(|window, app| window.draw(app).clear());
+            cx.run_until_parked();
+        }
+    }
+    let write_key = write.as_ref().map(|write| write.key());
+    let write_settlement = write.map(|write| {
+        input.update(cx, |input, cx| {
+            input.settle_clipboard_write(write.key(), ClipboardWriteOutcome::Failed, cx)
+        })
+    });
+
+    for _ in 0..256 {
+        while let Some(request) = input.update(cx, |input, _| input.take_request()) {
+            match request {
+                request @ RangeTextInputRequest::ReleaseObjectPage(key) => {
+                    if key == geometry_key {
+                        response_events.push(ResponseEvent::GeometryRelease);
+                    } else if key == clipboard_object_key {
+                        response_events.push(ResponseEvent::ClipboardContinuationRelease);
+                    } else if key == first_clipboard_object_key {
+                        response_events.push(ResponseEvent::ClipboardSeedRelease);
+                    } else {
+                        response_events.push(match key.purpose() {
+                            ObjectPurpose::GeometryIndex => {
+                                ResponseEvent::GeometryIndexObjectRelease
+                            }
+                            ObjectPurpose::GeometryTarget => {
+                                ResponseEvent::GeometryTargetObjectRelease
+                            }
+                            purpose => ResponseEvent::OtherObjectRelease(purpose),
+                        });
+                    }
+                    lifecycle.push(request);
+                }
+                request @ RangeTextInputRequest::ReleasePage(key) => {
+                    response_events.push(match key.purpose() {
+                        PagePurpose::Clipboard => ResponseEvent::ClipboardPageRelease,
+                        PagePurpose::GeometryIndex => ResponseEvent::GeometryIndexPageRelease,
+                        PagePurpose::GeometryTarget => ResponseEvent::GeometryTargetPageRelease,
+                        purpose => ResponseEvent::OtherPageRelease(purpose),
+                    });
+                    lifecycle.push(request);
+                }
+                RangeTextInputRequest::Page(request)
+                    if matches!(
+                        request.key().purpose(),
+                        PagePurpose::Clipboard
+                            | PagePurpose::GeometryIndex
+                            | PagePurpose::GeometryTarget
+                    ) =>
+                {
+                    response_events.push(match request.key().purpose() {
+                        PagePurpose::Clipboard => ResponseEvent::ClipboardPageRequest,
+                        PagePurpose::GeometryIndex => ResponseEvent::GeometryIndexPageRequest,
+                        PagePurpose::GeometryTarget => ResponseEvent::GeometryTargetPageRequest,
+                        _ => unreachable!(),
+                    });
+                    let page = if request.key().purpose() == PagePurpose::Clipboard {
+                        page_for_split_atom(
+                            &source,
+                            request.key().id().get(),
+                            request,
+                            atom,
+                            atom_range,
+                            "",
+                        )
+                    } else {
+                        page_for(&source, request.key().id().get(), request)
+                    };
+                    cx.update(|window, app| {
+                        input.update(app, |input, cx| {
+                            input.deliver_page(page, window, cx).unwrap()
+                        })
+                    });
+                }
+                RangeTextInputRequest::ObjectPage(request)
+                    if matches!(
+                        request.key().purpose(),
+                        ObjectPurpose::GeometryIndex | ObjectPurpose::GeometryTarget
+                    ) =>
+                {
+                    response_events.push(match request.key().purpose() {
+                        ObjectPurpose::GeometryIndex => ResponseEvent::GeometryIndexObjectRequest,
+                        ObjectPurpose::GeometryTarget => ResponseEvent::GeometryTargetObjectRequest,
+                        _ => unreachable!(),
+                    });
+                    let id = request.key().id().get();
+                    let page = restoration_object_page(request, &[], id);
+                    cx.update(|window, app| {
+                        input.update(app, |input, cx| {
+                            input
+                                .deliver_object_page_in_window(page, window, cx)
+                                .unwrap()
+                        })
+                    });
+                }
+                other => {
+                    response_events.push(ResponseEvent::Unexpected);
+                    unexpected_requests.push(format!("{other:?}"));
+                }
+            }
+        }
+        if input.read_with(cx, |input, _| input.is_quiescent()) {
+            break;
+        }
+        cx.update(|window, app| window.draw(app).clear());
+        cx.run_until_parked();
+    }
+
+    let release_counts = (
+        lifecycle
+            .iter()
+            .filter(|request| matches!(request, RangeTextInputRequest::ReleaseObjectPage(key) if *key == first_clipboard_object_key))
+            .count(),
+        lifecycle
+            .iter()
+            .filter(|request| matches!(request, RangeTextInputRequest::ReleaseObjectPage(key) if *key == geometry_key))
+            .count(),
+        lifecycle
+            .iter()
+            .filter(|request| matches!(request, RangeTextInputRequest::ReleaseObjectPage(key) if *key == clipboard_object_key))
+            .count(),
+    );
+    let terminal = input.read_with(cx, |input, _| {
+        (
+            input.realization_diagnostics().current,
+            input.clipboard_counts(),
+            input.is_quiescent(),
+        )
+    });
+
+    assert!(initial_lifecycle.is_empty());
+    assert_eq!(seed_frame_remaining, 0);
+    assert_eq!(
+        queued_request_order,
+        [ObjectPurpose::GeometryTarget, ObjectPurpose::Clipboard]
+    );
+    assert_eq!(geometry_key.binding(), clipboard_key.binding());
+    assert_eq!(geometry_key.revision(), clipboard_key.revision());
+    assert_eq!(geometry_key.purpose(), ObjectPurpose::GeometryTarget);
+    assert_eq!(first_clipboard_object_key.binding(), clipboard_key.binding());
+    assert_eq!(first_clipboard_object_key.revision(), clipboard_key.revision());
+    assert_eq!(first_clipboard_object_key.purpose(), ObjectPurpose::Clipboard);
+    assert_eq!(clipboard_object_key.binding(), clipboard_key.binding());
+    assert_eq!(clipboard_object_key.revision(), clipboard_key.revision());
+    assert_eq!(clipboard_object_key.purpose(), ObjectPurpose::Clipboard);
+    assert_ne!(first_clipboard_object_key, clipboard_object_key);
+    assert_ne!(geometry_key, first_clipboard_object_key);
+    assert_ne!(geometry_key, clipboard_object_key);
+    assert_eq!(geometry_only_custody.0, 1);
+    assert!(geometry_only_custody.1 > empty_custody.0);
+    assert!(geometry_only_custody.2 > empty_custody.1);
+    assert_eq!(geometry_only_custody.3, 0);
+    assert_eq!(geometry_only_custody.4, 0);
+    assert_eq!(geometry_only_custody.5, 1);
+    assert_eq!(geometry_only_custody.6, 2);
+    assert_eq!(geometry_only_custody.9, processing_high_water_baseline.0);
+    assert_eq!(geometry_only_custody.10, processing_high_water_baseline.1);
+    assert_eq!(ordered_custody.0, 2);
+    assert!(ordered_custody.1 > geometry_only_custody.1);
+    assert!(ordered_custody.2 > geometry_only_custody.2);
+    assert_eq!(ordered_custody.3, 0);
+    assert_eq!(ordered_custody.4, 0);
+    assert_eq!(ordered_custody.5, 1);
+    assert_eq!(ordered_custody.6, 2);
+    assert_eq!(ordered_custody.7, geometry_only_custody.7);
+    assert_eq!(ordered_custody.8, geometry_only_custody.8);
+    assert_eq!(ordered_custody.9, processing_high_water_baseline.0);
+    assert_eq!(ordered_custody.10, processing_high_water_baseline.1);
+    assert_eq!(after_continuation.0, 0);
+    assert_eq!(after_continuation.1, empty_custody.0);
+    assert_eq!(after_continuation.2, empty_custody.1);
+    assert_eq!(after_continuation.3, 0);
+    assert_eq!(after_continuation.4, 0);
+    assert!(
+        after_continuation.5 > processing_high_water_baseline.0,
+        "processing bytes did not rise: baseline={processing_high_water_baseline:?}, after={after_continuation:?}, geometry={geometry_only_custody:?}, ordered={ordered_custody:?}"
+    );
+    assert!(
+        after_continuation.6 > processing_high_water_baseline.1,
+        "processing items did not rise: baseline={processing_high_water_baseline:?}, after={after_continuation:?}, geometry={geometry_only_custody:?}, ordered={ordered_custody:?}"
+    );
+    assert!(after_continuation.9 > ordered_custody.7);
+    assert!(after_continuation.10 > ordered_custody.8);
+    assert_eq!(
+        provenance_observation,
+        Some((
+            clipboard_key,
+            vec![facts[0].id(), facts[1].id(), facts[2].id()]
+        ))
+    );
+    assert_eq!(provenance_charge.0.response_custody_count, 0);
+    assert_eq!(provenance_charge.0.response_custody_bytes, empty_custody.0);
+    assert_eq!(provenance_charge.0.response_custody_items, empty_custody.1);
+    assert_eq!(provenance_charge.0.response_processing_bytes, 0);
+    assert_eq!(provenance_charge.0.response_processing_items, 0);
+    assert_eq!(provenance_charge.0.dispatched_object_requests, 0);
+    assert_eq!(provenance_charge.1.retained_provenance_items, 3);
+    assert!(matches!(provenance_acknowledgement, Some(Ok(()))));
+    assert_eq!(write_key, Some(clipboard_key));
+    assert!(matches!(
+        write_settlement,
+        Some(Ok(gpui_text_input::ClipboardCompletion::WriteFailed))
+    ));
+    assert!(unexpected_requests.is_empty(), "{unexpected_requests:?}");
+    assert_eq!(
+        response_events,
+        [
+            ResponseEvent::GeometryTargetPageRequest,
+            ResponseEvent::GeometryTargetPageRelease,
+            ResponseEvent::GeometryObjectRequest,
+            ResponseEvent::ClipboardSeedObjectRequest,
+            ResponseEvent::ClipboardSeedRelease,
+            ResponseEvent::ClipboardContinuationObjectRequest,
+            ResponseEvent::GeometryRelease,
+            ResponseEvent::GeometryTargetPageRequest,
+            ResponseEvent::ClipboardPageRequest,
+            ResponseEvent::GeometryTargetPageRelease,
+            ResponseEvent::GeometryTargetObjectRequest,
+            ResponseEvent::ClipboardPageRelease,
+            ResponseEvent::ClipboardPageRequest,
+            ResponseEvent::GeometryTargetObjectRelease,
+            ResponseEvent::ClipboardPageRelease,
+            ResponseEvent::ClipboardContinuationRelease,
+            ResponseEvent::ClipboardPageRequest,
+            ResponseEvent::ClipboardPageRelease,
+            ResponseEvent::ClipboardPageRequest,
+            ResponseEvent::ClipboardPageRelease,
+            ResponseEvent::ClipboardProvenance,
+            ResponseEvent::ClipboardWrite,
+        ]
+    );
+    assert_eq!(release_counts, (1, 1, 1));
+    assert_eq!(terminal.1, Default::default());
+    assert_eq!(terminal.0.clipboard_bytes, 0);
+    assert_eq!(terminal.0.clipboard_items, 0);
+    assert_eq!(terminal.0.response_custody_count, 0);
+    assert_eq!(terminal.0.response_custody_bytes, empty_custody.0);
+    assert_eq!(terminal.0.response_custody_items, empty_custody.1);
+    assert_eq!(terminal.0.response_processing_bytes, 0);
+    assert_eq!(terminal.0.response_processing_items, 0);
+    assert_eq!(terminal.0.pending_object_requests, 0);
+    assert_eq!(terminal.0.dispatched_object_requests, 0);
+    assert!(terminal.2);
+}
+
+#[gpui::test]
 fn invalid_restoration_boundary_rejects_seed_and_retains_prior_surface(
     cx: &mut gpui::TestAppContext,
 ) {
