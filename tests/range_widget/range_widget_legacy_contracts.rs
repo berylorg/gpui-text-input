@@ -406,11 +406,19 @@ fn saturated_clipboard_text_demand_unwinds_exactly_and_immediate_retry_succeeds(
             _ => None,
         })
         .expect("initial geometry occupies the pending residency slot");
+    let empty_response_custody = input.read_with(cx, |input, _| {
+        let current = input.realization_diagnostics().current;
+        assert_eq!(current.response_custody_count, 0);
+        (
+            current.response_custody_bytes,
+            current.response_custody_items,
+        )
+    });
     let start = ordinary_position(0);
     let end = ordinary_position(source.len() as u64);
     let selection = SourceRange::new(start, end).unwrap();
     let (text, objects) = admitted_sources(source, 1, &[start, end]);
-    input.update(cx, |input, cx| {
+    let cut = input.update(cx, |input, cx| {
         input
             .begin_composite_clipboard(
                 gpui_text_input::ClipboardKind::Cut,
@@ -420,7 +428,7 @@ fn saturated_clipboard_text_demand_unwinds_exactly_and_immediate_retry_succeeds(
                 &objects,
                 cx,
             )
-            .unwrap();
+            .unwrap()
     });
     let object = input
         .update(cx, |input, _| input.take_request())
@@ -430,23 +438,56 @@ fn saturated_clipboard_text_demand_unwinds_exactly_and_immediate_retry_succeeds(
         })
         .expect("clipboard object phase");
     let page = restoration_object_page(object, &[], 82_000);
-    assert!(matches!(
-        input.update(cx, |input, cx| input.deliver_object_page(page, cx)),
-        Err(gpui_text_input::RangeTextInputError::Busy)
-    ));
-    let failed = (0..8)
+    let published_before = input.read_with(cx, |input, _| {
+        input
+            .surface()
+            .map(|surface| (surface.binding(), surface.selection()))
+    });
+    input
+        .update(cx, |input, cx| input.deliver_object_page(page, cx))
+        .unwrap();
+    let released = (0..8)
         .filter_map(|_| input.update(cx, |input, _| input.take_request()))
         .collect::<Vec<_>>();
-    assert!(
-        failed
-            .iter()
-            .all(|request| matches!(request, RangeTextInputRequest::ReleaseObjectPage(_)))
-    );
+    assert_eq!(released.len(), 1);
+    assert!(matches!(
+        released.as_slice(),
+        [RangeTextInputRequest::ReleaseObjectPage(key)] if *key == object.key()
+    ));
+    input.read_with(cx, |input, _| {
+        let diagnostics = input.realization_diagnostics();
+        let current = diagnostics.current;
+        assert_eq!(
+            input
+                .surface()
+                .map(|surface| (surface.binding(), surface.selection())),
+            published_before
+        );
+        assert_eq!(current.response_custody_count, 0);
+        assert_eq!(current.response_custody_bytes, empty_response_custody.0);
+        assert_eq!(current.response_custody_items, empty_response_custody.1);
+        assert_eq!(current.response_processing_bytes, 0);
+        assert_eq!(current.response_processing_items, 0);
+        assert_eq!(current.dispatched_object_requests, 0);
+        assert_eq!(current.pending_object_requests, 0);
+        assert_eq!(current.clipboard_bytes, 0);
+        assert_eq!(current.clipboard_items, 0);
+        assert_eq!(current.scheduled_continuations, 0);
+        assert_eq!(current.queued_requests, 0);
+        assert_eq!(current.pending_page_requests, 1);
+        assert_eq!(current.dispatched_page_requests, 1);
+        assert_eq!(current.active_geometry_jobs, 1);
+        assert!(diagnostics.high_water.owned_bytes <= diagnostics.max_surface_bytes);
+        assert!(diagnostics.high_water.owned_items <= diagnostics.max_surface_items);
+        assert_eq!(input.clipboard_counts(), Default::default());
+    });
     input.update(cx, |input, cx| {
         input
             .fail_page(geometry.key(), PageFailure::Unavailable, cx)
             .unwrap();
         assert!(input.is_quiescent());
+    });
+    let copy = input.update(cx, |input, cx| {
         input
             .begin_composite_clipboard(
                 gpui_text_input::ClipboardKind::Copy,
@@ -456,29 +497,29 @@ fn saturated_clipboard_text_demand_unwinds_exactly_and_immediate_retry_succeeds(
                 &objects,
                 cx,
             )
-            .unwrap();
+            .unwrap()
     });
-    let object = input
-        .update(cx, |input, _| input.take_request())
-        .and_then(|request| match request {
-            RangeTextInputRequest::ObjectPage(page) => Some(page),
-            _ => None,
-        })
-        .expect("immediate retry object page");
+    assert_ne!(copy, cut);
+    let object = match input.update(cx, |input, _| input.take_request()) {
+        Some(RangeTextInputRequest::ObjectPage(page)) => page,
+        request => panic!("released clipboard slot request: {request:?}"),
+    };
+    let object_key = object.key();
     input.update(cx, |input, cx| {
         input
             .deliver_object_page(restoration_object_page(object, &[], 82_001), cx)
             .unwrap()
     });
-    let text_page = input
-        .update(cx, |input, _| input.take_request())
-        .and_then(|request| match request {
-            RangeTextInputRequest::Page(page) if page.key().purpose() == PagePurpose::Clipboard => {
-                Some(page)
-            }
-            _ => None,
-        })
-        .expect("retry owns released text slot");
+    assert!(matches!(
+        take_request_after_scheduled_frames(&input, cx, "reused clipboard object release"),
+        RangeTextInputRequest::ReleaseObjectPage(key) if key == object_key
+    ));
+    let RangeTextInputRequest::Page(text_page) =
+        take_request_after_scheduled_frames(&input, cx, "reused clipboard text page")
+    else {
+        panic!("released clipboard slot did not dispatch its text page")
+    };
+    assert_eq!(text_page.key().purpose(), PagePurpose::Clipboard);
     cx.update(|window, app| {
         input.update(app, |input, cx| {
             input
@@ -486,21 +527,23 @@ fn saturated_clipboard_text_demand_unwinds_exactly_and_immediate_retry_succeeds(
                 .unwrap()
         })
     });
-    let write = (0..4)
-        .find_map(
-            |_| match input.update(cx, |input, _| input.take_request()) {
-                Some(RangeTextInputRequest::ClipboardWrite(write)) => Some(write),
-                _ => None,
-            },
-        )
-        .expect("retry clipboard write");
+    assert!(matches!(
+        take_request_after_scheduled_frames(&input, cx, "reused clipboard text release"),
+        RangeTextInputRequest::ReleasePage(key) if key == text_page.key()
+    ));
+    let RangeTextInputRequest::ClipboardWrite(write) =
+        take_request_after_scheduled_frames(&input, cx, "reused clipboard write")
+    else {
+        panic!("reused clipboard text release was not followed by its write")
+    };
     assert_eq!(write.text(), source);
+    assert_eq!(write.key(), copy);
     input.update(cx, |input, cx| {
         input
             .settle_clipboard_write(write.key(), ClipboardWriteOutcome::Written, cx)
             .unwrap();
     });
-    while input.update(cx, |input, _| input.take_request()).is_some() {}
+    assert!(input.update(cx, |input, _| input.take_request()).is_none());
     input.read_with(cx, |input, _| assert!(input.is_quiescent()));
 }
 
