@@ -1,5 +1,69 @@
 use super::*;
 
+fn next_ascii_demand_page(
+    owner: &mut ExactGeometryOwner,
+    job: GeometryJobKey,
+    source: &str,
+    page_bytes: usize,
+    id: u64,
+) -> (RangePage, usize) {
+    let request = owner.request_page(job, PageRequestId::new(id)).unwrap();
+    let gpui_text_input::PageDemandEnvelope::Adjacent {
+        anchor,
+        direction: gpui_text_input::PageDirection::Forward,
+        max_payload_bytes,
+    } = request.key().demand()
+    else {
+        panic!("canonical target issued a non-forward page demand")
+    };
+    let start = anchor.get() as usize;
+    let end = start
+        .saturating_add(page_bytes.min(max_payload_bytes as usize))
+        .min(source.len());
+    let range = ByteRange::from_u64(start as u64, end as u64).unwrap();
+    let page = RangePage::new(
+        PageId::new(id),
+        request.key(),
+        range,
+        source[start..end].to_owned(),
+        vec![],
+        if start == 0 {
+            PageEdgeFact::DocumentBoundary
+        } else {
+            PageEdgeFact::Continues
+        },
+        if end == source.len() {
+            PageEdgeFact::DocumentBoundary
+        } else {
+            PageEdgeFact::Continues
+        },
+        end == source.len(),
+    )
+    .unwrap();
+    (page, start)
+}
+
+fn drive_ascii_job_from_demands(
+    owner: &mut ExactGeometryOwner,
+    text_system: &WindowTextSystem,
+    source: &str,
+    job: GeometryJobKey,
+    page_bytes: usize,
+    first_request_id: u64,
+) -> (ExactGeometryProgress, usize) {
+    let mut request_id = first_request_id;
+    let mut first_start = None;
+    loop {
+        let (page, start) = next_ascii_demand_page(owner, job, source, page_bytes, request_id);
+        first_start.get_or_insert(start);
+        let admission = admit_page_with_empty_objects(owner, job, &page, text_system).unwrap();
+        if admission.progress() != ExactGeometryProgress::Scanning {
+            return (admission.progress(), first_start.unwrap());
+        }
+        request_id += 1;
+    }
+}
+
 #[gpui::test]
 fn canonical_partitions_preserve_aggregates_and_every_checkpoint_cursor(cx: &mut TestAppContext) {
     with_text_system(cx, |text_system| {
@@ -147,49 +211,37 @@ fn target_resolves_independently_expected_leading_visual_line_sources(cx: &mut T
             drive_ascii_job(&mut owner, text_system, source, index, 0, source.len(), 1),
             ExactGeometryProgress::IndexComplete
         );
-        for (ix, (block, expected_source)) in [
-            (0., 0_u64),
-            (7., 0),
-            (14., 4),
-            (21., 4),
-            (28., 8),
-            (140., 11),
+        for (ix, (block, expected_source, expected_predecessor)) in [
+            (0., 0_u64, 0_u64),
+            (7., 0, 0),
+            (14., 4, 0),
+            (21., 4, 0),
+            (28., 8, 4),
+            (140., 11, 11),
         ]
         .into_iter()
         .enumerate()
         {
+            let target = BlockTarget::new(px(block), px(0.), px(0.));
             let start = owner
-                .request_block_target(
-                    GeometryJobId::new(ix as u64 + 2),
-                    BlockTarget::new(px(block), px(0.), px(0.)),
-                )
+                .request_block_target(GeometryJobId::new(ix as u64 + 2), target)
                 .unwrap();
-            let predecessor = owner
-                .index()
-                .unwrap()
-                .checkpoints()
-                .iter()
-                .rev()
-                .find(|checkpoint| {
-                    checkpoint.source().byte_offset.get() == 0
-                        || checkpoint.resume_block_offset() <= px(block)
-                })
-                .unwrap()
-                .source();
             if start.progress() == ExactGeometryProgress::Scanning {
-                assert_eq!(
-                    drive_ascii_job(
-                        &mut owner,
-                        text_system,
-                        source,
-                        start.key(),
-                        predecessor.byte_offset.get() as usize,
-                        source.len(),
-                        10 + ix as u64,
-                    ),
-                    ExactGeometryProgress::TargetComplete
+                let (progress, demand_start) = drive_ascii_job_from_demands(
+                    &mut owner,
+                    text_system,
+                    source,
+                    start.key(),
+                    source.len(),
+                    10 + ix as u64,
                 );
+                assert_eq!(progress, ExactGeometryProgress::TargetComplete);
+                assert_eq!(demand_start as u64, expected_predecessor);
             }
+            assert_eq!(
+                owner.target().unwrap().predecessor().byte_offset.get(),
+                expected_predecessor
+            );
             assert_eq!(
                 owner.target().unwrap().target_source().byte_offset.get(),
                 expected_source
@@ -208,42 +260,23 @@ fn soft_wrap_target_has_literal_leading_anchor_and_viewport_overscan_maps(cx: &m
             drive_ascii_job(&mut owner, text_system, source, index, 0, source.len(), 1),
             ExactGeometryProgress::IndexComplete
         );
+        let requested_target = BlockTarget::new(px(14.), px(14.), px(14.));
         let start = owner
-            .request_block_target(
-                GeometryJobId::new(2),
-                BlockTarget::new(px(14.), px(14.), px(14.)),
-            )
+            .request_block_target(GeometryJobId::new(2), requested_target)
             .unwrap();
-        let predecessor = owner
-            .index()
-            .unwrap()
-            .checkpoints()
-            .iter()
-            .rev()
-            .find(|checkpoint| {
-                checkpoint.source().byte_offset.get() == 0
-                    || checkpoint.resume_block_offset() <= px(14.)
-            })
-            .unwrap()
-            .source()
-            .byte_offset
-            .get() as usize;
-        assert_eq!(
-            drive_ascii_job(
-                &mut owner,
-                text_system,
-                source,
-                start.key(),
-                predecessor,
-                source.len(),
-                2,
-            ),
-            ExactGeometryProgress::TargetComplete
+        let (progress, predecessor) = drive_ascii_job_from_demands(
+            &mut owner,
+            text_system,
+            source,
+            start.key(),
+            source.len(),
+            2,
         );
+        assert_eq!(progress, ExactGeometryProgress::TargetComplete);
         let target = owner.target().unwrap();
         // The 12px wrap width fits exactly two 6px test-font glyphs. The absolute target begins on
         // the second soft-wrapped visual line, so its independently known leading source is byte 2.
-        assert_eq!(predecessor, 2);
+        assert_eq!(predecessor, 0);
         assert_eq!(target.target_source().byte_offset.get(), 2);
         assert_eq!(target.source_end().byte_offset.get(), 10);
 
@@ -271,6 +304,55 @@ fn soft_wrap_target_has_literal_leading_anchor_and_viewport_overscan_maps(cx: &m
                 ),
             ]
         );
+    });
+}
+
+#[gpui::test]
+fn anchors_before_and_after_nonzero_target_preserve_requested_output_window(
+    cx: &mut TestAppContext,
+) {
+    with_text_system(cx, |text_system| {
+        let source = "a\nb\nc\nd\ne\nf\ng\nh\n";
+        let requested = BlockTarget::new(px(1.), px(10.), px(0.));
+        let run = |anchor: Option<SourcePosition>| {
+            let mut owner = scan_index(text_system, source, &[source.len()], 2, 2, 256 * 1024, 16);
+            let start = match anchor {
+                Some(anchor) => owner
+                    .request_block_target_anchored(GeometryJobId::new(2), requested, anchor)
+                    .unwrap(),
+                None => owner
+                    .request_block_target(GeometryJobId::new(2), requested)
+                    .unwrap(),
+            };
+            assert_eq!(
+                drive_ascii_job(&mut owner, text_system, source, start.key(), 0, 2, 10),
+                ExactGeometryProgress::TargetComplete,
+            );
+            let publication = owner.target().unwrap();
+            (
+                publication.target_source(),
+                publication.source_end(),
+                fragment_facts(publication.fragments()),
+            )
+        };
+
+        let ordinary = run(None);
+        let before = run(Some(SourcePosition::new(
+            ByteOffset::new(0),
+            InlineObjectGap::NoObjects,
+        )));
+        let after = run(Some(SourcePosition::new(
+            ByteOffset::new(source.len() as u64),
+            InlineObjectGap::NoObjects,
+        )));
+
+        assert_eq!(before.0, ordinary.0);
+        assert_eq!(before.1, ordinary.1);
+        assert_eq!(before.2, ordinary.2);
+        assert_eq!(after.0, ordinary.0);
+        assert_eq!(after.2, ordinary.2);
+        assert!(after.1.byte_offset > ordinary.1.byte_offset);
+        assert!(!ordinary.2.is_empty());
     });
 }
 
@@ -375,61 +457,33 @@ fn sparse_gap_discards_pre_window_output_and_matches_dense_canonical_target(
         assert_eq!(sparse_start.progress(), ExactGeometryProgress::Scanning);
         assert_eq!(dense_start.progress(), ExactGeometryProgress::Scanning);
 
-        let sparse_predecessor = sparse
-            .index()
-            .unwrap()
-            .checkpoints()
-            .iter()
-            .rev()
-            .find(|checkpoint| {
-                checkpoint.source().byte_offset.get() == 0
-                    || checkpoint.resume_block_offset() <= target.block_offset()
-            })
-            .unwrap()
-            .source();
-        let dense_predecessor = dense
-            .index()
-            .unwrap()
-            .checkpoints()
-            .iter()
-            .rev()
-            .find(|checkpoint| {
-                checkpoint.source().byte_offset.get() == 0
-                    || checkpoint.resume_block_offset() <= target.block_offset()
-            })
-            .unwrap()
-            .source();
-        assert_eq!(sparse_predecessor.byte_offset.get(), 0);
-        assert!(dense_predecessor.byte_offset.get() > 1_700);
-
-        assert_eq!(
-            drive_ascii_job(
-                &mut sparse,
-                text_system,
-                &source,
-                sparse_start.key(),
-                sparse_predecessor.byte_offset.get() as usize,
-                128,
-                100,
-            ),
-            ExactGeometryProgress::TargetComplete
+        let (sparse_progress, sparse_predecessor) = drive_ascii_job_from_demands(
+            &mut sparse,
+            text_system,
+            &source,
+            sparse_start.key(),
+            128,
+            100,
         );
-        assert_eq!(
-            drive_ascii_job(
-                &mut dense,
-                text_system,
-                &source,
-                dense_start.key(),
-                dense_predecessor.byte_offset.get() as usize,
-                128,
-                100,
-            ),
-            ExactGeometryProgress::TargetComplete
+        assert_eq!(sparse_progress, ExactGeometryProgress::TargetComplete);
+        let (dense_progress, dense_predecessor) = drive_ascii_job_from_demands(
+            &mut dense,
+            text_system,
+            &source,
+            dense_start.key(),
+            128,
+            100,
         );
+        assert_eq!(dense_progress, ExactGeometryProgress::TargetComplete);
+        assert_eq!(sparse_predecessor, 0);
+        assert!(dense_predecessor > 1_700);
         let sparse_target = sparse.target().unwrap();
         let dense_target = dense.target().unwrap();
-        assert_eq!(sparse_target.predecessor(), sparse_predecessor);
-        assert_eq!(dense_target.predecessor(), dense_predecessor);
+        assert_eq!(sparse_target.predecessor().byte_offset.get(), 0);
+        assert_eq!(
+            dense_target.predecessor().byte_offset.get(),
+            dense_predecessor as u64
+        );
         assert_eq!(sparse_target.target_source(), dense_target.target_source());
         assert_eq!(
             fragment_facts(sparse_target.fragments()),
@@ -468,53 +522,34 @@ fn checkpoint_replay_matches_origin_across_cap_flush_and_split_grapheme(cx: &mut
             .clone();
         assert_eq!(checkpoint.cursor_offset(), 6);
         assert!(!checkpoint.is_terminal());
-        let target = BlockTarget::new(checkpoint.resume_block_offset(), px(28.), px(14.));
+        let target = BlockTarget::new(checkpoint.resume_block_offset() + px(14.), px(28.), px(14.));
         let replay_start = replay
             .request_block_target(GeometryJobId::new(2), target)
             .unwrap();
         let origin_start = origin
             .request_block_target(GeometryJobId::new(2), target)
             .unwrap();
-        let replay_predecessor = replay
-            .index()
-            .unwrap()
-            .checkpoints()
-            .iter()
-            .rev()
-            .find(|candidate| {
-                candidate.source().byte_offset.get() == 0
-                    || candidate.resume_block_offset() <= target.block_offset()
-            })
-            .unwrap()
-            .source();
-        assert_eq!(replay_predecessor, checkpoint.source());
         assert_eq!(origin.index().unwrap().checkpoints().len(), 2);
 
-        for (owner, start, predecessor, first_id) in [
-            (&mut replay, replay_start, replay_predecessor, 20),
-            (
-                &mut origin,
-                origin_start,
-                gpui_text_input::SourcePosition::new(
-                    ByteOffset::new(0),
-                    gpui_text_input::InlineObjectGap::NoObjects,
-                ),
-                30,
-            ),
+        for (owner, start, expected_start, first_id) in [
+            (&mut replay, replay_start, 6_usize, 20),
+            (&mut origin, origin_start, 0, 30),
         ] {
             let job = start.key();
-            let mut page_start = predecessor.byte_offset.get() as usize;
-            let first_end = 7;
-            let first = page(owner, job, source, page_start, first_end, first_id);
+            let (first, page_start) = next_ascii_demand_page(
+                owner,
+                job,
+                source,
+                7_usize.saturating_sub(expected_start),
+                first_id,
+            );
+            assert_eq!(page_start, expected_start);
             let mut progress =
                 admit_page_with_empty_objects(owner, job, &first, text_system).unwrap();
-            page_start = first_end;
             let mut id = first_id + 1;
             while progress.progress() == ExactGeometryProgress::Scanning {
-                let end = page_start.saturating_add(8).min(source.len());
-                let next = page(owner, job, source, page_start, end, id);
+                let (next, _) = next_ascii_demand_page(owner, job, source, 8, id);
                 progress = admit_page_with_empty_objects(owner, job, &next, text_system).unwrap();
-                page_start = end;
                 id += 1;
             }
             assert_eq!(progress.progress(), ExactGeometryProgress::TargetComplete);
@@ -555,29 +590,18 @@ fn arbitrarily_long_logical_line_keeps_fixed_scan_and_target_residency(cx: &mut 
         let target_start = owner
             .request_block_target(GeometryJobId::new(2), target)
             .unwrap();
-        let predecessor = owner
-            .index()
-            .unwrap()
-            .checkpoints()
-            .iter()
-            .rev()
-            .find(|checkpoint| {
-                checkpoint.source().byte_offset.get() == 0
-                    || checkpoint.resume_block_offset() <= target.block_offset()
-            })
-            .unwrap()
-            .source();
+        let (progress, predecessor) = drive_ascii_job_from_demands(
+            &mut owner,
+            text_system,
+            &source,
+            target_start.key(),
+            128,
+            id,
+        );
+        assert_eq!(progress, ExactGeometryProgress::TargetComplete);
         assert_eq!(
-            drive_ascii_job(
-                &mut owner,
-                text_system,
-                &source,
-                target_start.key(),
-                predecessor.byte_offset.get() as usize,
-                128,
-                id,
-            ),
-            ExactGeometryProgress::TargetComplete
+            owner.target().unwrap().predecessor().byte_offset.get(),
+            predecessor as u64
         );
         assert!(owner.target().unwrap().fragments().len() <= 8);
         assert!(owner.target().unwrap().source_end().byte_offset.get() < source.len() as u64);

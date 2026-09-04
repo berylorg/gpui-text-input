@@ -128,40 +128,7 @@ impl ExactGeometryOwner {
             .ok_or(ExactGeometryError::IndexIncomplete)?;
         let inputs = self.inputs()?;
         let source_len = inputs.binding.extent().byte_len();
-        let predecessor = if let Some(anchor) = anchor {
-            let include_preceding_object = matches!(
-                anchor.gap,
-                crate::InlineObjectGap::Between { .. } | crate::InlineObjectGap::After(_)
-            );
-            let checkpoint = index
-                .checkpoints
-                .iter()
-                .rev()
-                .find(|checkpoint| {
-                    checkpoint
-                        .source
-                        .compare_in_revision(anchor)
-                        .is_some_and(|ordering| {
-                            ordering.is_lt()
-                                || (!include_preceding_object
-                                    && ordering.is_eq()
-                                    && (source_len == 0 || anchor.byte_offset.get() < source_len))
-                        })
-                })
-                .ok_or(ExactGeometryError::SourceContract)?;
-            checkpoint.clone()
-        } else {
-            index
-                .checkpoints
-                .iter()
-                .rev()
-                .find(|checkpoint| {
-                    checkpoint.source.byte_offset.get() == 0
-                        || checkpoint.resume_block_offset() <= target.block_offset
-                })
-                .expect("index has origin")
-                .clone()
-        };
+        let predecessor = select_target_predecessor(index, target, anchor, source_len)?;
         if predecessor.source.byte_offset.get() == source_len
             && anchor.is_none_or(|anchor| matches!(anchor.gap, crate::InlineObjectGap::NoObjects))
         {
@@ -249,6 +216,58 @@ impl ExactGeometryOwner {
             admission_required_items: required_items,
         })
     }
+}
+
+pub(super) fn select_target_predecessor(
+    index: &ExactGeometryIndex,
+    target: BlockTarget,
+    anchor: Option<SourcePosition>,
+    source_len: u64,
+) -> Result<ExactGeometryCheckpoint, ExactGeometryError> {
+    index
+        .checkpoints
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(checkpoint_index, checkpoint)| {
+            target_predecessor_is_eligible(
+                checkpoint,
+                *checkpoint_index == 0,
+                target,
+                anchor,
+                source_len,
+            )
+        })
+        .map(|(_, checkpoint)| checkpoint.clone())
+        .ok_or(ExactGeometryError::SourceContract)
+}
+
+pub(super) fn target_predecessor_is_eligible(
+    checkpoint: &ExactGeometryCheckpoint,
+    is_origin: bool,
+    target: BlockTarget,
+    anchor: Option<SourcePosition>,
+    source_len: u64,
+) -> bool {
+    let include_preceding_object = anchor.is_some_and(|anchor| {
+        matches!(
+            anchor.gap,
+            crate::InlineObjectGap::Between { .. } | crate::InlineObjectGap::After(_)
+        )
+    });
+    let viewport_leading_block = (target.block_offset - target.overscan).max(gpui::Pixels::ZERO);
+    (is_origin || checkpoint.resume_block_offset() <= viewport_leading_block)
+        && anchor.is_none_or(|anchor| {
+            checkpoint
+                .source
+                .compare_in_revision(anchor)
+                .is_some_and(|ordering| {
+                    ordering.is_lt()
+                        || (!include_preceding_object
+                            && ordering.is_eq()
+                            && (source_len == 0 || anchor.byte_offset.get() < source_len))
+                })
+        })
 }
 
 pub(super) fn validate_target(target: BlockTarget) -> Result<(), ExactGeometryError> {

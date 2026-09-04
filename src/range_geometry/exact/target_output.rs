@@ -4,8 +4,8 @@ use crate::SourcePosition;
 
 use super::{ActiveJob, ActiveKind, BlockTarget};
 
-pub(super) fn admission_intersects_target(
-    fragments: &[StreamingLayoutFragment],
+pub(super) fn fragment_intersects_target(
+    fragment: &StreamingLayoutFragment,
     prior: StreamingLayoutContinuation,
     target: BlockTarget,
     anchor: Option<SourcePosition>,
@@ -13,15 +13,14 @@ pub(super) fn admission_intersects_target(
 ) -> bool {
     let window_start = target.block_offset;
     let window_end = target.block_offset + target.viewport_extent + target.overscan;
-    match anchor {
-        Some(anchor) => fragments
-            .iter()
-            .any(|fragment| fragment_anchor_position(fragment, anchor).is_some()),
-        None => fragments.iter().any(|fragment| {
-            let (start, end) = fragment_vertical_bounds(fragment, prior, line_height);
-            end > window_start && start < window_end
-        }),
-    }
+    let leading_context_start = (target.block_offset - target.overscan).max(Pixels::ZERO);
+    let (start, end) = fragment_vertical_bounds(fragment, prior, line_height);
+    (end > window_start && start < window_end)
+        || (matches!(fragment, StreamingLayoutFragment::InlineObject(_))
+            && end > leading_context_start
+            && start < window_start)
+        || (start >= window_start
+            && anchor.is_some_and(|anchor| fragment_anchor_position(fragment, anchor).is_some()))
 }
 
 fn fragment_anchor_position(
@@ -62,19 +61,18 @@ fn fragment_maps(fragment: &StreamingLayoutFragment) -> &[gpui::StreamingLayoutM
 }
 
 pub(super) fn resolve_source_anchor(job: &mut ActiveJob, fragments: &[StreamingLayoutFragment]) {
-    let ActiveKind::Target { target, anchor, .. } = &mut job.kind else {
+    let ActiveKind::Target { anchor, .. } = &mut job.kind else {
         return;
     };
     let Some(source_anchor) = *anchor else {
         return;
     };
-    let Some(position) = fragments
+    let Some(_) = fragments
         .iter()
         .find_map(|fragment| fragment_anchor_position(fragment, source_anchor))
     else {
         return;
     };
-    *target = BlockTarget::new(position.y, target.viewport_extent(), target.overscan());
     *anchor = None;
 }
 

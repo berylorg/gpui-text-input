@@ -814,24 +814,7 @@ impl CoherentRangeSurface {
             .ok()
             .and_then(|index| self.realized_object_gaps.get(index))
             .map(|gap| gap.caret_bounds.origin)
-            .or_else(|| {
-                let position = position.into();
-                self.fragments().iter().find_map(|fragment| match fragment {
-                    StreamingLayoutFragment::Text(fragment) => fragment
-                        .position_for_logical_position(position)
-                        .ok()
-                        .flatten(),
-                    StreamingLayoutFragment::OversizeAtom(fragment) => {
-                        fragment.position_for_logical_position(position)
-                    }
-                    StreamingLayoutFragment::InlineObject(fragment) => {
-                        fragment.position_for_logical_position(position)
-                    }
-                    StreamingLayoutFragment::Boundary(fragment) => {
-                        fragment.position_for_logical_position(position)
-                    }
-                })
-            })
+            .or_else(|| position_for_composite_fragments(self.fragments(), position))
     }
 
     pub(super) fn adjacent_object(
@@ -1437,22 +1420,61 @@ fn position_for_composite_fragments(
     fragments: &[StreamingLayoutFragment],
     position: SourcePosition,
 ) -> Option<Point<Pixels>> {
+    let source_position = position;
     let position = position.into();
-    fragments.iter().find_map(|fragment| match fragment {
-        StreamingLayoutFragment::Text(fragment) => fragment
-            .position_for_logical_position(position)
-            .ok()
-            .flatten(),
-        StreamingLayoutFragment::OversizeAtom(fragment) => {
-            fragment.position_for_logical_position(position)
-        }
-        StreamingLayoutFragment::InlineObject(fragment) => {
-            fragment.position_for_logical_position(position)
-        }
-        StreamingLayoutFragment::Boundary(fragment) => {
-            fragment.position_for_logical_position(position)
-        }
-    })
+    let owns = |start, end| {
+        let Ok(start) = SourcePosition::try_from(start) else {
+            return false;
+        };
+        let Ok(end) = SourcePosition::try_from(end) else {
+            return false;
+        };
+        start
+            .compare_in_revision(source_position)
+            .is_some_and(|ordering| !ordering.is_gt())
+            && source_position
+                .compare_in_revision(end)
+                .is_some_and(|ordering| ordering.is_lt())
+    };
+    fragments
+        .iter()
+        .find_map(|fragment| match fragment {
+            StreamingLayoutFragment::Text(fragment) => {
+                let range = fragment.logical_range();
+                owns(range.start, range.end)
+                    .then(|| {
+                        fragment
+                            .position_for_logical_position(position)
+                            .ok()
+                            .flatten()
+                    })
+                    .flatten()
+            }
+            StreamingLayoutFragment::OversizeAtom(fragment) => {
+                owns(fragment.logical_range.start, fragment.logical_range.end)
+                    .then(|| fragment.position_for_logical_position(position))
+                    .flatten()
+            }
+            StreamingLayoutFragment::InlineObject(fragment) => {
+                fragment.position_for_logical_position(position)
+            }
+            StreamingLayoutFragment::Boundary(fragment) => {
+                fragment.position_for_logical_position(position)
+            }
+        })
+        .or_else(|| {
+            fragments.iter().find_map(|fragment| {
+                let maps = match fragment {
+                    StreamingLayoutFragment::Text(fragment) => fragment.maps(),
+                    StreamingLayoutFragment::OversizeAtom(fragment) => fragment.maps(),
+                    StreamingLayoutFragment::InlineObject(fragment) => fragment.maps(),
+                    StreamingLayoutFragment::Boundary(fragment) => fragment.maps(),
+                };
+                maps.iter()
+                    .find(|map| map.logical_position == position)
+                    .map(|map| map.position)
+            })
+        })
 }
 
 fn ordinary_offset(position: StreamingLayoutPosition) -> Option<u64> {

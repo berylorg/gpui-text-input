@@ -453,18 +453,64 @@ impl ExactGeometryOwner {
         }
         self.admit_transition_job_id(job_id)?;
         let key = GeometryJobKey::new(self.key, job_id);
-        let predecessor = if let Some(checkpoint) = checkpoint {
-            checkpoint.clone()
-        } else {
+        let source_len = inputs.binding.extent().byte_len();
+        if let Some(checkpoint) = checkpoint {
+            let validated = super::checkpoint::checkpoint(
+                &inputs.layout,
+                checkpoint.continuation,
+                checkpoint.logical_line,
+                checkpoint.grapheme_origin,
+                checkpoint.grapheme.clone(),
+                checkpoint.object_cursor,
+                checkpoint.terminal,
+            )?;
+            if checkpoint.source != validated.source
+                || checkpoint.block_offset != validated.block_offset
+                || checkpoint.visual_lines != validated.visual_lines
+                || checkpoint.segment != validated.segment
+                || checkpoint.input_id != validated.input_id
+                || checkpoint.segment_policy_id != validated.segment_policy_id
+                || checkpoint.logical_line > inputs.binding.extent().line_count()
+                || checkpoint.source.byte_offset.get() > source_len
+                || (checkpoint.terminal && checkpoint.source.byte_offset.get() != source_len)
+            {
+                return Err(ExactGeometryError::SourceContract);
+            }
+        }
+        let origin = || {
             super::checkpoint::make_checkpoint(
                 &Scanner::origin(
                     &inputs.layout,
-                    usize::try_from(inputs.binding.extent().byte_len())
-                        .map_err(|_| ExactGeometryError::SourceContract)?,
+                    usize::try_from(source_len).map_err(|_| ExactGeometryError::SourceContract)?,
                 ),
                 &inputs.layout,
                 false,
-            )?
+            )
+        };
+        let predecessor = if let Some(checkpoint) = checkpoint
+            && super::target::target_predecessor_is_eligible(
+                checkpoint,
+                checkpoint.source.byte_offset.get() == 0
+                    && matches!(checkpoint.source.gap, crate::InlineObjectGap::NoObjects)
+                    && checkpoint.block_offset == gpui::Pixels::ZERO
+                    && checkpoint.visual_lines == 0
+                    && checkpoint.logical_line == 0
+                    && checkpoint.segment == 0
+                    && checkpoint.object_cursor.is_none()
+                    && !checkpoint.terminal,
+                target,
+                anchor,
+                source_len,
+            ) {
+            checkpoint.clone()
+        } else if checkpoint.is_some() {
+            if let Some(index) = self.index.as_deref() {
+                super::target::select_target_predecessor(index, target, anchor, source_len)?
+            } else {
+                origin()?
+            }
+        } else {
+            origin()?
         };
         self.prepare_target_replacement_from_checkpoint_inner(
             key,
@@ -518,40 +564,8 @@ impl ExactGeometryOwner {
     ) -> Result<PreparedGeometryTransition, ExactGeometryError> {
         let inputs = self.inputs()?;
         let source_len = inputs.binding.extent().byte_len();
-        let predecessor = if let Some(anchor) = anchor {
-            let include_preceding_object = matches!(
-                anchor.gap,
-                crate::InlineObjectGap::Between { .. } | crate::InlineObjectGap::After(_)
-            );
-            index
-                .checkpoints
-                .iter()
-                .rev()
-                .find(|checkpoint| {
-                    checkpoint
-                        .source
-                        .compare_in_revision(anchor)
-                        .is_some_and(|ordering| {
-                            ordering.is_lt()
-                                || (!include_preceding_object
-                                    && ordering.is_eq()
-                                    && (source_len == 0 || anchor.byte_offset.get() < source_len))
-                        })
-                })
-                .ok_or(ExactGeometryError::SourceContract)?
-                .clone()
-        } else {
-            index
-                .checkpoints
-                .iter()
-                .rev()
-                .find(|checkpoint| {
-                    checkpoint.source.byte_offset.get() == 0
-                        || checkpoint.resume_block_offset() <= target.block_offset
-                })
-                .expect("index has origin")
-                .clone()
-        };
+        let predecessor =
+            super::target::select_target_predecessor(index, target, anchor, source_len)?;
         self.prepare_target_replacement_from_checkpoint_inner(
             key,
             job_id,
@@ -569,7 +583,7 @@ impl ExactGeometryOwner {
         key: GeometryJobKey,
         job_id: GeometryJobId,
         request_id: PageRequestId,
-        mut target: BlockTarget,
+        target: BlockTarget,
         anchor: Option<SourcePosition>,
         predecessor: ExactGeometryCheckpoint,
         release: ExactGeometryRelease,
@@ -580,9 +594,6 @@ impl ExactGeometryOwner {
             || predecessor.source.byte_offset.get() > inputs.binding.extent().byte_len()
         {
             return Err(ExactGeometryError::SourceContract);
-        }
-        if anchor.is_some() {
-            target.block_offset = predecessor.block_offset;
         }
         if predecessor.source.byte_offset.get() == inputs.binding.extent().byte_len()
             && anchor.is_none_or(|anchor| matches!(anchor.gap, crate::InlineObjectGap::NoObjects))

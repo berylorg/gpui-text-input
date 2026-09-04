@@ -4,6 +4,8 @@ mod response_preparation;
 mod terminal_failure;
 
 pub(super) use deferred::DeferredGeometryResponse;
+#[cfg(test)]
+pub(super) use response_commit::TerminalPublicationPreparationError;
 
 use std::{collections::VecDeque, mem::size_of};
 
@@ -583,7 +585,7 @@ impl RangeTextInput {
                 Some(key),
             ) {
                 Ok(preparation) => preparation,
-                Err(error) => return Some(Err(error)),
+                Err(error) => return Some(Err(error.into_range_error())),
             };
             return Some(self.commit_terminal_response_preparation(preparation, cx));
         }
@@ -667,7 +669,7 @@ impl RangeTextInput {
                 Some(key),
             ) {
                 Ok(preparation) => preparation,
-                Err(error) => return Some(Err(error)),
+                Err(error) => return Some(Err(error.into_range_error())),
             };
             return Some(self.commit_terminal_response_preparation(preparation, cx));
         }
@@ -1125,10 +1127,12 @@ impl RangeTextInput {
                 Some(key),
             ) {
                 Ok(preparation) => preparation,
-                Err(RangeTextInputError::SurfaceCapacity) => {
+                Err(terminal_failure::TerminalResponsePreparationError::RetryablePublicationCapacity) => {
                     return Ok(ResponseDeliveryProgress::RetryableTerminalSurfaceCapacity);
                 }
-                Err(error) => return Err(error),
+                Err(terminal_failure::TerminalResponsePreparationError::Error(error)) => {
+                    return Err(error);
+                }
             };
             return Ok(
                 match self.commit_terminal_response_preparation(preparation, cx) {
@@ -1261,10 +1265,12 @@ impl RangeTextInput {
                 None,
             ) {
                 Ok(preparation) => preparation,
-                Err(RangeTextInputError::SurfaceCapacity) => {
+                Err(terminal_failure::TerminalResponsePreparationError::RetryablePublicationCapacity) => {
                     return Ok(ResponseDeliveryProgress::RetryableTerminalSurfaceCapacity);
                 }
-                Err(error) => return Err(error),
+                Err(terminal_failure::TerminalResponsePreparationError::Error(error)) => {
+                    return Err(error);
+                }
             };
             return Ok(
                 match self.commit_terminal_response_preparation(preparation, cx) {
@@ -1422,15 +1428,12 @@ impl RangeTextInput {
                 Some(key),
             ) {
                 Ok(preparation) => preparation,
-                Err(RangeTextInputError::SurfaceCapacity) => {
-                    return self.settle_terminal_object_response(
-                        job,
-                        key,
-                        RangeTextInputError::SurfaceCapacity,
-                        cx,
-                    );
+                Err(terminal_failure::TerminalResponsePreparationError::RetryablePublicationCapacity) => {
+                    return Ok(ResponseDeliveryProgress::RetryableTerminalSurfaceCapacity);
                 }
-                Err(error) => return Err(error),
+                Err(terminal_failure::TerminalResponsePreparationError::Error(error)) => {
+                    return Err(error);
+                }
             };
             return Ok(
                 match self.commit_terminal_response_preparation(preparation, cx) {
@@ -1700,10 +1703,12 @@ impl RangeTextInput {
                 None,
             ) {
                 Ok(preparation) => preparation,
-                Err(RangeTextInputError::SurfaceCapacity) => {
+                Err(terminal_failure::TerminalResponsePreparationError::RetryablePublicationCapacity) => {
                     return Ok(ResponseDeliveryProgress::RetryableTerminalSurfaceCapacity);
                 }
-                Err(error) => return Err(error),
+                Err(terminal_failure::TerminalResponsePreparationError::Error(error)) => {
+                    return Err(error);
+                }
             };
             return Ok(
                 match self.commit_terminal_response_preparation(preparation, cx) {

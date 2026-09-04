@@ -35,6 +35,50 @@ use gpui_text_input::{
 };
 
 #[gpui::test]
+fn wrapped_canonical_boundary_uses_next_owner_before_trailing_raw_fallback(
+    cx: &mut gpui::TestAppContext,
+) {
+    let source = "abcdefghijklmnop";
+    let mut configuration = config(source, 1);
+    configuration.layout.limits.segment_bytes = 2;
+    configuration.layout.font_size = px(10.);
+    configuration.layout.line_height = px(14.);
+    configuration.viewport_extent = px(80.);
+    configuration.overscan = gpui::Pixels::ZERO;
+    let (input, cx) = cx
+        .add_window_view(move |window, cx| RangeTextInput::new(configuration, window, cx).unwrap());
+    cx.simulate_resize(gpui::size(px(12.), px(80.)));
+    assert!(drive_pages(&input, cx, source).is_empty());
+
+    input.read_with(cx, |input, _| {
+        let surface = input.surface().unwrap();
+        let text_ranges = surface
+            .fragments()
+            .iter()
+            .filter_map(|fragment| match fragment {
+                StreamingLayoutFragment::Text(fragment) => {
+                    let range = fragment.logical_range();
+                    Some((range.start.byte_offset, range.end.byte_offset))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            text_ranges,
+            [(0, 2), (2, 4), (4, 6), (6, 8), (8, 10), (10, 12)]
+        );
+        assert_eq!(
+            surface.position_for_source_position(ordinary_position(2)),
+            Some(point(px(0.), px(14.))),
+        );
+        assert_eq!(
+            surface.position_for_source_position(ordinary_position(12)),
+            Some(point(px(12.), px(70.))),
+        );
+    });
+}
+
+#[gpui::test]
 fn clipboard_begin_exact_peak_follows_the_ordinary_request_path(cx: &mut gpui::TestAppContext) {
     let source = "a";
     let start = ordinary_position(0);
@@ -7434,7 +7478,7 @@ fn normal_cut_post_write_proof_failure_deletes_nothing_and_releases_clipboard(
     cx: &mut gpui::TestAppContext,
 ) {
     cx.update(ensure_text_input_bindings);
-    let source = "0123456789".repeat(12);
+    let source = "0123456789".repeat(24);
     let (input, cx) = cx.add_window_view(|window, cx| {
         let input = RangeTextInput::new(config(&source, 1), window, cx).unwrap();
         input.focus(window);
@@ -7457,7 +7501,9 @@ fn normal_cut_post_write_proof_failure_deletes_nothing_and_releases_clipboard(
         assert!(
             matches!(
                 result,
-                Err(gpui_text_input::RangeTextInputError::Mutation(_))
+                Err(gpui_text_input::RangeTextInputError::Mutation(
+                    gpui_text_input::MutationError::InvalidObjectGapProof
+                ))
             ),
             "unexpected proof-failure settlement: {result:?}"
         );
@@ -8771,6 +8817,124 @@ fn failed_successor_geometry_retains_prior_surface_and_returns_late_page(
 }
 
 #[gpui::test]
+fn prepared_nonzero_target_excludes_anchor_text_and_late_checkpoint_replays_origin(
+    cx: &mut gpui::TestAppContext,
+) {
+    let source = "aa\nbb\ncc\ndd\nee\nff\ngg\nhh\nii\njj\n";
+    let mut configuration = config(source, 1);
+    configuration.layout.line_height = px(14.);
+    configuration.layout.wrap_width = px(512.);
+    configuration.viewport_extent = px(80.);
+    configuration.overscan = px(14.);
+    let fact = object_fact_with_activation(31, 6, 10, true);
+    let (input, cx) =
+        cx.add_window_view(|window, cx| RangeTextInput::new(configuration, window, cx).unwrap());
+    input.update(cx, |input, cx| {
+        input.request_absolute_scroll(px(42.), cx).unwrap()
+    });
+    drive_pages_with_objects(&input, cx, source, std::slice::from_ref(&fact));
+
+    let fragments = input.read_with(cx, |input, _| {
+        let surface = input.surface().unwrap();
+        surface
+            .fragments()
+            .iter()
+            .map(|fragment| match fragment {
+                StreamingLayoutFragment::Text(fragment) => {
+                    let range = fragment.logical_range();
+                    ("text", range.start.byte_offset, range.end.byte_offset)
+                }
+                StreamingLayoutFragment::OversizeAtom(fragment) => (
+                    "atom",
+                    fragment.logical_range.start.byte_offset,
+                    fragment.logical_range.end.byte_offset,
+                ),
+                StreamingLayoutFragment::InlineObject(fragment) => (
+                    "object",
+                    fragment.leading.byte_offset,
+                    fragment.trailing.byte_offset,
+                ),
+                StreamingLayoutFragment::Boundary(fragment) => {
+                    let first = fragment
+                        .maps()
+                        .first()
+                        .unwrap()
+                        .logical_position
+                        .byte_offset;
+                    let last = fragment.maps().last().unwrap().logical_position.byte_offset;
+                    ("boundary", first, last)
+                }
+            })
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(
+        fragments,
+        vec![
+            ("object", 6, 6),
+            ("boundary", 8, 9),
+            ("text", 9, 11),
+            ("boundary", 11, 12),
+            ("text", 12, 14),
+            ("boundary", 14, 15),
+            ("text", 15, 17),
+            ("boundary", 17, 18),
+            ("text", 18, 20),
+            ("boundary", 20, 21),
+            ("text", 21, 23),
+            ("boundary", 23, 24),
+            ("text", 24, 26),
+            ("boundary", 26, 27),
+            ("text", 27, 29),
+            ("boundary", 29, 30),
+        ],
+    );
+
+    input.update(cx, |input, cx| {
+        input.request_absolute_scroll(px(0.), cx).unwrap()
+    });
+    drive_pages_with_objects(&input, cx, source, std::slice::from_ref(&fact));
+    let leading_ranges = input.read_with(cx, |input, _| {
+        input
+            .surface()
+            .unwrap()
+            .fragments()
+            .iter()
+            .take(3)
+            .map(|fragment| match fragment {
+                StreamingLayoutFragment::Text(fragment) => {
+                    let range = fragment.logical_range();
+                    ("text", range.start.byte_offset, range.end.byte_offset)
+                }
+                StreamingLayoutFragment::Boundary(fragment) => {
+                    let first = fragment
+                        .maps()
+                        .first()
+                        .unwrap()
+                        .logical_position
+                        .byte_offset;
+                    let last = fragment.maps().last().unwrap().logical_position.byte_offset;
+                    ("boundary", first, last)
+                }
+                StreamingLayoutFragment::InlineObject(fragment) => (
+                    "object",
+                    fragment.leading.byte_offset,
+                    fragment.trailing.byte_offset,
+                ),
+                StreamingLayoutFragment::OversizeAtom(fragment) => (
+                    "atom",
+                    fragment.logical_range.start.byte_offset,
+                    fragment.logical_range.end.byte_offset,
+                ),
+            })
+            .collect::<Vec<_>>()
+    });
+    assert_eq!(
+        leading_ranges,
+        vec![("text", 0, 2), ("boundary", 2, 3), ("text", 3, 5)],
+    );
+}
+
+#[gpui::test]
 fn boundary_overlapping_object_pages_realize_wrapped_adjacent_objects_once(
     cx: &mut gpui::TestAppContext,
 ) {
@@ -9058,20 +9222,35 @@ fn boundary_overlapping_object_pages_realize_wrapped_adjacent_objects_once(
     );
     assert_eq!(
         page_facts(&terminal_deliveries),
-        vec![(
-            ObjectDemandEnvelope::range(
-                ByteRange::from_u64(32, 40).unwrap(),
-                Some(facts[1].cursor()),
-                ObjectDirection::Forward,
-                32,
-                128 * 1024,
-            )
-            .unwrap(),
-            Vec::new(),
-            true,
-            None,
-        )],
-        "End target did not resume after (32, 20, 222) with one empty adjacent page",
+        vec![
+            (
+                ObjectDemandEnvelope::range(
+                    ByteRange::from_u64(0, 32).unwrap(),
+                    None,
+                    ObjectDirection::Forward,
+                    32,
+                    128 * 1024,
+                )
+                .unwrap(),
+                vec![facts[0].cursor(), facts[1].cursor()],
+                true,
+                None,
+            ),
+            (
+                ObjectDemandEnvelope::range(
+                    ByteRange::from_u64(32, 40).unwrap(),
+                    Some(facts[1].cursor()),
+                    ObjectDirection::Forward,
+                    32,
+                    128 * 1024,
+                )
+                .unwrap(),
+                Vec::new(),
+                true,
+                None,
+            ),
+        ],
+        "End target did not replay the viewport-leading objects before the terminal page",
     );
     assert_eq!(
         terminal_deliveries[0].0.purpose(),
@@ -9087,15 +9266,19 @@ fn boundary_overlapping_object_pages_realize_wrapped_adjacent_objects_once(
             object_occurrences(&terminal_deliveries),
             object_occurrences(&committed_pages),
         ),
-        (2, 0, 0),
-        "object retention duplicated before the checkpoint-resume loss",
+        (2, 2, 2),
+        "object pages were not published exactly once in each coherent surface",
     );
     assert_eq!(
         fragment_cursors,
         expected_object_cursors,
-        "checkpoint resume admitted no inline-object fragments before target publication",
+        "viewport-leading inline-object fragments were not published exactly once",
     );
-    assert_eq!(presentation_cursors, expected_object_cursors);
+    assert_eq!(
+        presentation_cursors,
+        expected_object_cursors,
+        "viewport-leading object presentations were not published exactly once",
+    );
     assert_eq!(
         realized_cursors,
         vec![

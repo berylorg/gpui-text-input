@@ -129,10 +129,7 @@ fn atom_cut_propagates_after_bounded_classification_without_write_or_deletion(
             }
         );
         assert_eq!(surface.scroll_position(), end);
-        assert_eq!(
-            surface.binding().extent().byte_len(),
-            end.byte_offset.get()
-        );
+        assert_eq!(surface.binding().extent().byte_len(), end.byte_offset.get());
         assert!(source.is_char_boundary(start.byte_offset.get() as usize));
         assert!(source.is_char_boundary(end.byte_offset.get() as usize));
         assert_eq!(start.gap, InlineObjectGap::NoObjects);
@@ -141,11 +138,8 @@ fn atom_cut_propagates_after_bounded_classification_without_write_or_deletion(
 
         assert_eq!(surface.object_pages().len(), 1);
         let page = &surface.object_pages()[0];
-        assert!(page.objects().is_empty());
-        assert_eq!(
-            page.preceding(),
-            ObjectPageEdgeFact::Continues(object.cursor())
-        );
+        assert_eq!(page.objects(), std::slice::from_ref(&object));
+        assert_eq!(page.preceding(), ObjectPageEdgeFact::EnvelopeBoundary);
         assert_eq!(page.following(), ObjectPageEdgeFact::EnvelopeBoundary);
         (
             page.key().demand().contains_anchor(start.byte_offset),
@@ -153,12 +147,8 @@ fn atom_cut_propagates_after_bounded_classification_without_write_or_deletion(
                 && object.anchor() < end.byte_offset,
         )
     });
-    assert!(!surface_proves_start_gap);
+    assert!(surface_proves_start_gap);
     assert!(surface_proves_end_gap);
-    assert!(matches!(
-        input.read_with(cx, |input, _| input.export_restoration(None)),
-        Err(gpui_text_input::RangeTextInputError::IncompleteSurface)
-    ));
 
     let distinct_edit_positions = [start, end];
     assert!(
@@ -166,17 +156,6 @@ fn atom_cut_propagates_after_bounded_classification_without_write_or_deletion(
             .iter()
             .all(|position| position.byte_offset != object.anchor())
     );
-    let (text, objects) = admitted_sources_with_facts(
-        source,
-        1,
-        &distinct_edit_positions,
-        std::slice::from_ref(&object),
-    );
-    input.update(cx, |input, _| {
-        input
-            .admit_edit_positions(&distinct_edit_positions, &text, &objects)
-            .unwrap();
-    });
     let events = restoration_events(&input, cx);
     let before = range_publication_fingerprint(&input, cx);
     let seed = input.read_with(cx, |input, _| input.export_restoration(None).unwrap());

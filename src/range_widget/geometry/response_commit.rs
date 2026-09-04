@@ -1,5 +1,16 @@
 use super::*;
 
+pub(in crate::range_widget) enum TerminalPublicationPreparationError {
+    PublicationCapacity,
+    Error(RangeTextInputError),
+}
+
+impl From<RangeTextInputError> for TerminalPublicationPreparationError {
+    fn from(error: RangeTextInputError) -> Self {
+        Self::Error(error)
+    }
+}
+
 impl RangeTextInput {
     pub(super) fn try_prepare_terminal_response_publication(
         &self,
@@ -11,7 +22,7 @@ impl RangeTextInput {
         completed_page: Option<PageRequestKey>,
         completed_object_page: Option<ObjectRequestKey>,
         index_target: Option<crate::range_widget::transition::PreparedIndexResponseTarget>,
-    ) -> Result<PreparedTerminalResponsePublication, RangeTextInputError> {
+    ) -> Result<PreparedTerminalResponsePublication, TerminalPublicationPreparationError> {
         if geometry.progress() != ExactGeometryProgress::TargetComplete
             || geometry
                 .release()
@@ -24,7 +35,7 @@ impl RangeTextInput {
                 .iter()
                 .any(|key| Some(*key) != completed_object_page)
         {
-            return Err(RangeTextInputError::Stale);
+            return Err(RangeTextInputError::Stale.into());
         }
         let target = geometry
             .terminal_target()
@@ -32,7 +43,7 @@ impl RangeTextInput {
         let projected_index = geometry.terminal_index();
         let (state, next_id) = if let Some(index_target) = index_target {
             if index_target.surface_candidate.job != target.key() {
-                return Err(RangeTextInputError::Stale);
+                return Err(RangeTextInputError::Stale.into());
             }
             (
                 index_target.surface_candidate,
@@ -72,10 +83,10 @@ impl RangeTextInput {
                 self.object_residency
                     .resident_pages_after_touch(object_touch),
             )?,
-            (Some(_), Some(_)) => return Err(RangeTextInputError::Stale),
+            (Some(_), Some(_)) => return Err(RangeTextInputError::Stale.into()),
         };
         let TerminalTargetPreparation::Publication(publication) = preparation else {
-            return Err(RangeTextInputError::IncompleteSurface);
+            return Err(RangeTextInputError::IncompleteSurface.into());
         };
         let release_request = match (completed_page, completed_object_page) {
             (Some(key), None) if text_admission.is_some() => {
@@ -85,7 +96,7 @@ impl RangeTextInput {
                 Some(RangeTextInputRequest::ReleaseObjectPage(key))
             }
             (Some(_), None) | (None, Some(_)) => None,
-            _ => return Err(RangeTextInputError::Stale),
+            _ => return Err(RangeTextInputError::Stale.into()),
         };
         let destination_capacity = self
             .requests
@@ -95,11 +106,11 @@ impl RangeTextInput {
         let max_queued_requests = super::super::checked_request_capacity(&self.config)
             .ok_or(RangeTextInputError::SurfaceCapacity)?;
         if destination_capacity > max_queued_requests {
-            return Err(RangeTextInputError::SurfaceCapacity);
+            return Err(RangeTextInputError::SurfaceCapacity.into());
         }
         let destination_requests = VecDeque::with_capacity(max_queued_requests);
         if destination_requests.capacity() > max_queued_requests {
-            return Err(RangeTextInputError::SurfaceCapacity);
+            return Err(RangeTextInputError::SurfaceCapacity.into());
         }
         let text_allocation = text_admission.as_ref().map_or(Ok((0, 0)), |admission| {
             let charge = admission.page().retained_charge();
@@ -262,7 +273,7 @@ impl RangeTextInput {
             || final_publication_charge.bytes > self.config.limits.max_surface_bytes
             || final_publication_charge.items > self.config.limits.max_surface_items
         {
-            return Err(RangeTextInputError::SurfaceCapacity);
+            return Err(TerminalPublicationPreparationError::PublicationCapacity);
         }
         Ok(PreparedTerminalResponsePublication {
             geometry,

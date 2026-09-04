@@ -1,6 +1,90 @@
 use super::*;
 
 #[gpui::test]
+fn wrapped_canonical_boundary_prefers_next_owner_and_trailing_edge_uses_raw_fallback(
+    cx: &mut gpui::TestAppContext,
+) {
+    let source = "abcdefghijklmnop";
+    for expected in [
+        RangeRealizationPriority::Caret,
+        RangeRealizationPriority::Ime,
+        RangeRealizationPriority::DirectedSelection,
+    ] {
+        let mut configuration = config(2 * 1024 * 1024, 32_768);
+        configuration.binding = RangeBinding::new(
+            BindingId::new(260 + expected as u64),
+            SourceRevision::new(1),
+            LogicalExtent::new(source.len() as u64, 1),
+        );
+        configuration.layout.limits.segment_bytes = 2;
+        configuration.layout.wrap_width = px(12.);
+        configuration.layout.font_size = px(10.);
+        configuration.layout.line_height = px(14.);
+        configuration.viewport_extent = px(80.);
+        configuration.overscan = Pixels::ZERO;
+        let (input, cx) = cx.add_window_view(move |window, cx| {
+            RangeTextInput::new(configuration, window, cx).unwrap()
+        });
+        cx.simulate_resize(gpui::size(px(12.), px(80.)));
+        drive_surface_for_source(&input, cx, source);
+        input.read_with(cx, |input, _| {
+            let surface = input.surface().unwrap();
+            assert_eq!(
+                surface.position_for_source_position(SourcePosition::new(
+                    ByteOffset::new(2),
+                    crate::InlineObjectGap::no_objects(),
+                )),
+                Some(gpui::point(px(0.), px(14.))),
+            );
+            assert_eq!(
+                surface.position_for_source_position(SourcePosition::new(
+                    ByteOffset::new(12),
+                    crate::InlineObjectGap::no_objects(),
+                )),
+                Some(gpui::point(px(12.), px(70.))),
+            );
+        });
+        input.update(cx, |input, cx| {
+            let head =
+                SourcePosition::new(ByteOffset::new(2), crate::InlineObjectGap::no_objects());
+            let mut desired = input.desired;
+            desired.reveal_caret = true;
+            desired.source_selection = Some(match expected {
+                RangeRealizationPriority::Caret => RangeSourceSelection::caret(head),
+                RangeRealizationPriority::Ime => RangeSourceSelection {
+                    anchor: SourcePosition::new(
+                        ByteOffset::new(1),
+                        crate::InlineObjectGap::no_objects(),
+                    ),
+                    head,
+                },
+                RangeRealizationPriority::DirectedSelection => RangeSourceSelection {
+                    anchor: SourcePosition::new(
+                        ByteOffset::new(0),
+                        crate::InlineObjectGap::no_objects(),
+                    ),
+                    head,
+                },
+                _ => unreachable!(),
+            });
+            desired.composition = (expected == RangeRealizationPriority::Ime)
+                .then(|| ByteRange::from_u64(1, 2).unwrap());
+            let candidate = input.prepare_target_transition(desired, None).unwrap();
+            input.commit_widget_transition(candidate, Some(cx));
+        });
+        drive_surface_for_source(&input, cx, source);
+        input.read_with(cx, |input, _| {
+            let surface = input.surface().unwrap();
+            assert_eq!(surface.realization_priority(), expected);
+            assert_eq!(
+                surface.caret_bounds(px(14.)).map(|bounds| bounds.origin),
+                Some(gpui::point(px(0.), px(14.))),
+            );
+        });
+    }
+}
+
+#[gpui::test]
 fn offscreen_caret_ime_and_directed_selection_drive_realized_priority(
     cx: &mut gpui::TestAppContext,
 ) {

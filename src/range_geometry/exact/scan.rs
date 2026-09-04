@@ -646,27 +646,34 @@ fn admit_layout(
     // this peak and is therefore charged.
     job.scanner.continuation = admission.continuation;
     job.scanner.continuation_items = session_item_charge.total()?;
-    let admission_items = admission.fragments.len();
     let full_transient_bytes = admission.charge.total()?;
     let full_transient_items = admission.item_charge.total()?;
     let (retained, transient_bytes, transient_items) =
         if matches!(job.kind, ActiveKind::Target { .. }) {
-            super::target_output::resolve_source_anchor(job, &admission.fragments);
             let ActiveKind::Target { target, anchor, .. } = job.kind else {
                 unreachable!();
             };
+            let retained_fragments = admission
+                .fragments
+                .iter()
+                .filter(|fragment| {
+                    super::target_output::fragment_intersects_target(
+                        fragment,
+                        prior,
+                        target,
+                        anchor,
+                        binding.line_height,
+                    )
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            super::target_output::resolve_source_anchor(job, &admission.fragments);
             super::target_output::update_target_source(
                 job,
                 &admission.fragments,
                 admission.continuation,
             );
-            if super::target_output::admission_intersects_target(
-                &admission.fragments,
-                prior,
-                target,
-                anchor,
-                binding.line_height,
-            ) {
+            if !retained_fragments.is_empty() {
                 job.scanner.output_charge = super::accounting::add_fragment_charge(
                     job.scanner.output_charge,
                     admission.charge,
@@ -677,14 +684,14 @@ fn admit_layout(
                 )?;
                 job.scanner
                     .fragments
-                    .extend(admission.fragments.iter().cloned());
+                    .extend(retained_fragments.iter().cloned());
                 // Fragment clones share GPUI's immutable payload Arcs. Only the second initialized
                 // enum records coexist; the payload charge remains single-counted in scanner output.
                 (
                     true,
-                    super::accounting::fragment_record_bytes(admission_items)
+                    super::accounting::fragment_record_bytes(retained_fragments.len())
                         .saturating_add(std::mem::size_of::<StreamingLayoutContinuation>()),
-                    admission_items.saturating_add(1),
+                    retained_fragments.len().saturating_add(1),
                 )
             } else {
                 (false, full_transient_bytes, full_transient_items)

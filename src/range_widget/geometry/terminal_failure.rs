@@ -5,6 +5,20 @@ pub(super) enum TerminalResponsePreparation {
     Failure(PreparedTerminalResponseFailure),
 }
 
+pub(super) enum TerminalResponsePreparationError {
+    RetryablePublicationCapacity,
+    Error(RangeTextInputError),
+}
+
+impl TerminalResponsePreparationError {
+    pub(super) fn into_range_error(self) -> RangeTextInputError {
+        match self {
+            Self::RetryablePublicationCapacity => RangeTextInputError::SurfaceCapacity,
+            Self::Error(error) => error,
+        }
+    }
+}
+
 pub(super) struct PreparedTerminalResponseFailure {
     geometry: crate::range_geometry::PreparedTerminalGeometryFailure,
     completed_page: Option<PageRequestKey>,
@@ -281,7 +295,7 @@ impl RangeTextInput {
         object_touch: Option<ObjectPageId>,
         completed_page: Option<PageRequestKey>,
         completed_object_page: Option<ObjectRequestKey>,
-    ) -> Result<TerminalResponsePreparation, RangeTextInputError> {
+    ) -> Result<TerminalResponsePreparation, TerminalResponsePreparationError> {
         let job = geometry.key();
         let delivered_page = text_admission.is_some();
         let delivered_object_page = object_admission.is_some();
@@ -303,15 +317,31 @@ impl RangeTextInput {
         })();
         match result {
             Ok(publication) => Ok(TerminalResponsePreparation::Publication(publication)),
-            Err(RangeTextInputError::SurfaceCapacity) => Err(RangeTextInputError::SurfaceCapacity),
-            Err(_error) => self.prepare_terminal_response_failure(
-                job,
-                completed_page,
-                completed_object_page,
-                delivered_page,
-                delivered_object_page,
-                RangeTextInputError::IncompleteSurface,
-            ),
+            Err(response_commit::TerminalPublicationPreparationError::PublicationCapacity)
+                if self.surface.is_some() =>
+            {
+                Err(TerminalResponsePreparationError::RetryablePublicationCapacity)
+            }
+            Err(response_commit::TerminalPublicationPreparationError::PublicationCapacity) => self
+                .prepare_terminal_response_failure(
+                    job,
+                    completed_page,
+                    completed_object_page,
+                    delivered_page,
+                    delivered_object_page,
+                    RangeTextInputError::SurfaceCapacity,
+                )
+                .map_err(TerminalResponsePreparationError::Error),
+            Err(response_commit::TerminalPublicationPreparationError::Error(error)) => self
+                .prepare_terminal_response_failure(
+                    job,
+                    completed_page,
+                    completed_object_page,
+                    delivered_page,
+                    delivered_object_page,
+                    error,
+                )
+                .map_err(TerminalResponsePreparationError::Error),
         }
     }
 

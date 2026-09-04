@@ -14,6 +14,19 @@ fn adjacent_key(id: u64, purpose: PagePurpose, max_payload_bytes: u64) -> PageRe
     .unwrap()
 }
 
+#[test]
+fn generic_surface_capacity_remains_distinct_from_final_publication_capacity() {
+    let error = super::super::geometry::TerminalPublicationPreparationError::from(
+        RangeTextInputError::SurfaceCapacity,
+    );
+    assert!(matches!(
+        error,
+        super::super::geometry::TerminalPublicationPreparationError::Error(
+            RangeTextInputError::SurfaceCapacity
+        )
+    ));
+}
+
 #[gpui::test]
 fn terminal_surface_capacity_retries_exact_custody_without_fallback(cx: &mut gpui::TestAppContext) {
     let source = "line\n".repeat(24);
