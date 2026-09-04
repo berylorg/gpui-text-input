@@ -10,6 +10,28 @@ fn begin_request(requests: &[RangeTextInputRequest]) -> gpui_text_input::Mutatio
         .expect("mutation begin")
 }
 
+#[cfg(feature = "test-support")]
+fn page_for_with_reserved_atom_capacity(
+    source: &str,
+    id: u64,
+    request: gpui_text_input::PageRequest,
+    atom_capacity: usize,
+) -> RangePage {
+    let key = request.key();
+    let base = page_for(source, id, request);
+    RangePage::new(
+        base.id(),
+        key,
+        base.range(),
+        base.text().to_owned(),
+        Vec::with_capacity(atom_capacity),
+        base.preceding(),
+        base.following(),
+        base.end_of_source(),
+    )
+    .unwrap()
+}
+
 fn accept_local_to_commit(
     input: &gpui::Entity<RangeTextInput>,
     cx: &mut gpui::VisualTestContext,
@@ -107,10 +129,37 @@ fn nonresident_platform_replacement_resolves_exact_range_before_preflight(
 fn nonresident_marked_replacement_preserves_exact_composition_and_selection(
     cx: &mut gpui::TestAppContext,
 ) {
+    assert_nonresident_marked_replacement(cx, false);
+}
+
+#[cfg(feature = "test-support")]
+#[gpui::test]
+fn superseded_marked_index_capacity_denial_settles_and_publishes(cx: &mut gpui::TestAppContext) {
+    assert_nonresident_marked_replacement(cx, true);
+}
+
+fn assert_nonresident_marked_replacement(
+    cx: &mut gpui::TestAppContext,
+    deny_superseded_candidate: bool,
+) {
     let source = "abcdefghij".repeat(20);
     let inserted = "\u{00e9}\u{1f642}";
-    let (input, cx) = cx.add_window_view(|window, cx| {
-        let input = RangeTextInput::new(config(&source, 1), window, cx).unwrap();
+    let configuration = config(&source, 1);
+    #[cfg(feature = "test-support")]
+    let configuration = if deny_superseded_candidate {
+        let mut configuration = configuration;
+        configuration.residency_limits =
+            ResidencyLimits::new(256, 128 * 1024, 256, 8 * 1024).unwrap();
+        configuration.limits =
+            RangeTextInputLimits::new(4 * 1024 * 1024, 32768, 8, px(80.), 32, 32, px(16.)).unwrap();
+        configuration
+    } else {
+        configuration
+    };
+    #[cfg(not(feature = "test-support"))]
+    assert!(!deny_superseded_candidate);
+    let (input, cx) = cx.add_window_view(move |window, cx| {
+        let input = RangeTextInput::new(configuration, window, cx).unwrap();
         input.focus(window);
         input
     });
@@ -150,7 +199,7 @@ fn nonresident_marked_replacement_preserves_exact_composition_and_selection(
         intended.selection_head(),
     ];
     let (text, objects) = admitted_sources(&successor, 2, &positions);
-    cx.update(|window, app| {
+    let settlement = cx.update(|window, app| {
         input.update(app, |input, cx| {
             input
                 .settle_committed_mutation(
@@ -162,12 +211,285 @@ fn nonresident_marked_replacement_preserves_exact_composition_and_selection(
                     window,
                     cx,
                 )
-                .unwrap();
+                .unwrap()
         })
     });
-    assert!(drive_pages(&input, cx, &successor).is_empty());
+    assert!(matches!(
+        settlement,
+        gpui_text_input::MutationSettlement::Current(
+            gpui_text_input::MutationOutcome::Committed(commit)
+        ) if commit.binding() == binding(&successor, 2)
+    ));
     input.read_with(cx, |input, _| {
+        assert_eq!(input.surface().unwrap().binding(), binding(&source, 1));
+        assert!(!input.is_surface_current_and_interactive());
+    });
+
+    let rejection_baseline = input.read_with(cx, |input, _| {
+        let diagnostics = input.realization_diagnostics();
+        assert_eq!(diagnostics.response_rejection_count, 0);
+        assert_eq!(diagnostics.last_response_rejection, None);
+        assert_eq!(diagnostics.last_response_rejection_stage, None);
+        (
+            diagnostics.response_rejection_count,
+            diagnostics.last_response_rejection,
+            diagnostics.last_response_rejection_stage,
+        )
+    });
+    let mut saw_revision_two_request = false;
+    let mut reached_quiescence = false;
+    let mut last_response = None;
+    let mut responses = Vec::new();
+    let mut page_dispatches = Vec::new();
+    let mut object_dispatches = Vec::new();
+    let mut page_releases = Vec::new();
+    let mut object_releases = Vec::new();
+    let mut page_cancellations = Vec::new();
+    let mut object_cancellations = Vec::new();
+    let mut superseded_index_key = None;
+    #[cfg(feature = "test-support")]
+    let mut exact_processing_limit = None;
+    for _ in 0..512 {
+        let request = input.update(cx, |input, _| input.take_request());
+        let had_request = request.is_some();
+        match request {
+            Some(RangeTextInputRequest::Page(request)) => {
+                assert_eq!(request.key().binding(), BindingId::new(17));
+                assert_eq!(request.key().revision(), SourceRevision::new(2));
+                saw_revision_two_request = true;
+                page_dispatches.push(request.key());
+                if request.key().purpose() == gpui_text_input::PagePurpose::GeometryIndex
+                    && superseded_index_key.is_none()
+                {
+                    superseded_index_key = Some(request.key());
+                }
+                #[cfg(feature = "test-support")]
+                let deny_this_candidate = deny_superseded_candidate
+                    && request.key() == superseded_index_key.expect("index key was captured");
+                #[cfg(feature = "test-support")]
+                let page = if deny_this_candidate {
+                    page_for_with_reserved_atom_capacity(
+                        &successor,
+                        request.key().id().get(),
+                        request,
+                        2048,
+                    )
+                } else {
+                    page_for(&successor, request.key().id().get(), request)
+                };
+                #[cfg(not(feature = "test-support"))]
+                let page = page_for(&successor, request.key().id().get(), request);
+                last_response = Some(format!("page {:?}", request.key()));
+                responses.push(last_response.clone().unwrap());
+                #[cfg(feature = "test-support")]
+                let response_items = page.retained_charge().items();
+                cx.update(|window, app| {
+                    input.update(app, |input, cx| {
+                        #[cfg(feature = "test-support")]
+                        if deny_this_candidate {
+                            let diagnostics = input.realization_diagnostics();
+                            let exact_processing_items = diagnostics
+                                .current
+                                .owned_items
+                                .checked_add(
+                                    response_items.checked_mul(2).expect(
+                                        "bounded response processing remains representable",
+                                    ),
+                                )
+                                .and_then(|items| items.checked_sub(1))
+                                .expect("response processing owns its embedded page record once");
+                            assert!(
+                                diagnostics.high_water.owned_items <= diagnostics.max_surface_items
+                            );
+                            input
+                                .lower_max_surface_items_for_test(
+                                    std::num::NonZeroUsize::new(exact_processing_items).unwrap(),
+                                )
+                                .unwrap();
+                            exact_processing_limit = Some(exact_processing_items);
+                            input.deliver_page(page, window, cx).unwrap();
+                            let denied = input.realization_diagnostics();
+                            assert_eq!(denied.max_surface_items, exact_processing_items);
+                            assert!(denied.current.owned_items <= exact_processing_items);
+                            assert!(denied.high_water.owned_items <= exact_processing_items);
+                            assert_eq!(denied.current.active_geometry_jobs, 1);
+                            assert_eq!(denied.current.candidates, 1);
+                            assert_eq!(input.surface().unwrap().binding(), binding(&source, 1));
+                            assert!(!input.is_surface_current_and_interactive());
+                            return;
+                        }
+                        input.deliver_page(page, window, cx).unwrap()
+                    })
+                });
+            }
+            Some(RangeTextInputRequest::ObjectPage(request)) => {
+                assert_eq!(request.key().binding(), BindingId::new(17));
+                assert_eq!(request.key().revision(), SourceRevision::new(2));
+                saw_revision_two_request = true;
+                object_dispatches.push(request.key());
+                last_response = Some(format!("object page {:?}", request.key()));
+                responses.push(last_response.clone().unwrap());
+                let page = restoration_object_page(request, &[], request.key().id().get());
+                cx.update(|window, app| {
+                    input.update(app, |input, cx| {
+                        input
+                            .deliver_object_page_in_window(page, window, cx)
+                            .unwrap()
+                    })
+                });
+            }
+            Some(RangeTextInputRequest::ReleasePage(key)) => page_releases.push(key),
+            Some(RangeTextInputRequest::CancelPage(key)) => page_cancellations.push(key),
+            Some(RangeTextInputRequest::ReleaseObjectPage(key)) => object_releases.push(key),
+            Some(RangeTextInputRequest::CancelObjectPage(key)) => object_cancellations.push(key),
+            Some(request) => panic!("unexpected marked-successor request: {request:?}"),
+            None => {}
+        }
+        input.read_with(cx, |input, _| {
+            let diagnostics = input.realization_diagnostics();
+            assert_eq!(
+                (
+                    diagnostics.response_rejection_count,
+                    diagnostics.last_response_rejection,
+                    diagnostics.last_response_rejection_stage,
+                ),
+                rejection_baseline,
+                "marked-successor response {last_response:?} was terminally rejected after {responses:?}: {diagnostics:?}"
+            );
+        });
+        if input.read_with(cx, |input, _| input.is_quiescent()) {
+            reached_quiescence = true;
+            break;
+        }
+        if !had_request {
+            cx.update(|window, app| window.draw(app).clear());
+            cx.run_until_parked();
+        }
+    }
+    assert!(saw_revision_two_request);
+    let superseded_index_key = superseded_index_key.expect("revision-two index request dispatched");
+    #[cfg(feature = "test-support")]
+    assert_eq!(exact_processing_limit.is_some(), deny_superseded_candidate);
+    assert!(
+        reached_quiescence,
+        "marked-successor drive exhausted its 512-step bound: {:?}",
+        input.read_with(cx, |input, _| input.realization_diagnostics())
+    );
+    assert_eq!(
+        page_cancellations
+            .iter()
+            .filter(|key| **key == superseded_index_key)
+            .count(),
+        0
+    );
+    assert_eq!(
+        page_releases
+            .iter()
+            .filter(|key| **key == superseded_index_key)
+            .count(),
+        1
+    );
+    for key in page_releases.iter().chain(&page_cancellations) {
+        assert_eq!(key.binding(), BindingId::new(17));
+        assert_eq!(key.revision(), SourceRevision::new(2));
+        assert!(page_dispatches.contains(key));
+        assert_eq!(
+            page_releases
+                .iter()
+                .filter(|settled| *settled == key)
+                .count()
+                + page_cancellations
+                    .iter()
+                    .filter(|settled| *settled == key)
+                    .count(),
+            1
+        );
+    }
+    for key in object_releases.iter().chain(&object_cancellations) {
+        assert_eq!(key.binding(), BindingId::new(17));
+        assert_eq!(key.revision(), SourceRevision::new(2));
+        assert!(object_dispatches.contains(key));
+        assert_eq!(
+            object_releases
+                .iter()
+                .filter(|settled| *settled == key)
+                .count()
+                + object_cancellations
+                    .iter()
+                    .filter(|settled| *settled == key)
+                    .count(),
+            1
+        );
+    }
+    for key in &page_dispatches {
+        assert_eq!(
+            page_releases
+                .iter()
+                .filter(|settled| *settled == key)
+                .count()
+                + page_cancellations
+                    .iter()
+                    .filter(|settled| *settled == key)
+                    .count(),
+            1
+        );
+    }
+    for key in &object_dispatches {
+        assert_eq!(
+            object_releases
+                .iter()
+                .filter(|settled| *settled == key)
+                .count()
+                + object_cancellations
+                    .iter()
+                    .filter(|settled| *settled == key)
+                    .count(),
+            1
+        );
+    }
+    input.read_with(cx, |input, _| {
+        let diagnostics = input.realization_diagnostics();
+        let ownership = diagnostics.current;
+        assert_eq!(
+            (
+                diagnostics.response_rejection_count,
+                diagnostics.last_response_rejection,
+                diagnostics.last_response_rejection_stage,
+            ),
+            rejection_baseline
+        );
+        assert_eq!(diagnostics.response_rejection_count, 0);
+        assert_eq!(diagnostics.last_response_rejection, None);
+        assert_eq!(diagnostics.last_response_rejection_stage, None);
+        assert!(diagnostics.high_water.owned_bytes <= diagnostics.max_surface_bytes);
+        assert!(diagnostics.high_water.owned_items <= diagnostics.max_surface_items);
+        assert_eq!(ownership.pending_page_requests, 0);
+        assert_eq!(ownership.pending_object_requests, 0);
+        assert_eq!(ownership.dispatched_page_requests, 0);
+        assert_eq!(ownership.dispatched_object_requests, 0);
+        assert_eq!(ownership.active_geometry_jobs, 0);
+        assert_eq!(ownership.pending_geometry_pages, 0);
+        assert_eq!(ownership.pending_geometry_objects, 0);
+        assert_eq!(ownership.pending_target_intents, 0);
+        assert_eq!(ownership.pending_index_intents, 0);
+        assert_eq!(ownership.pending_layout_intents, 0);
+        assert_eq!(ownership.pending_presentation_intents, 0);
+        assert_eq!(ownership.pending_rebind_intents, 0);
+        assert_eq!(ownership.scheduled_continuations, 0);
+        assert_eq!(ownership.queued_requests, 0);
+        assert_eq!(ownership.candidates, 0);
+        assert_eq!(ownership.page_alias_waits, 0);
+        assert_eq!(ownership.resident_geometry_page_waits, 0);
+        assert_eq!(ownership.coalesced_geometry_page_waits, 0);
+        assert_eq!(ownership.deferred_geometry_responses, 0);
+        assert_eq!(ownership.response_custody_count, 0);
+        assert_eq!(ownership.response_processing_bytes, 0);
+        assert_eq!(ownership.response_processing_items, 0);
+        assert_eq!(ownership.deferred_response_bytes, 0);
+        assert_eq!(ownership.deferred_response_items, 0);
+        assert!(input.is_surface_current_and_interactive());
         let surface = input.surface().unwrap();
+        assert_eq!(surface.binding(), binding(&successor, 2));
         assert_eq!(
             surface.composition(),
             Some(ByteRange::from_u64(150, 156).unwrap())

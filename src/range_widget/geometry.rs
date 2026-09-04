@@ -7,7 +7,7 @@ pub(super) use deferred::DeferredGeometryResponse;
 #[cfg(test)]
 pub(super) use response_commit::TerminalPublicationPreparationError;
 
-use std::{collections::VecDeque, mem::size_of};
+use std::collections::VecDeque;
 
 use gpui::{Context, Window};
 
@@ -19,7 +19,8 @@ use super::{
 };
 use crate::{
     ExactGeometryProgress, ObjectDemand, ObjectPageId, ObjectRequestId, ObjectRequestKey,
-    PageDemand, PageId, PageRequest, PageRequestId, PageRequestKey, RangePage, RangeTextInputEvent,
+    PageDemand, PageFailure, PageId, PageRequest, PageRequestId, PageRequestKey, RangePage,
+    RangeTextInputEvent,
 };
 
 pub(super) struct PendingGeometryPage {
@@ -1642,6 +1643,14 @@ impl RangeTextInput {
         {
             return Err(RangeTextInputError::Stale);
         }
+        if self
+            .surface_candidate
+            .as_ref()
+            .is_some_and(|candidate| candidate.job == job)
+        {
+            self.settle_superseded_index_page_response(key, cx)?;
+            return Ok(ResponseDeliveryProgress::Progressed);
+        }
         let text_admission = match self.residency.prepare_admit(page) {
             Ok(admission) => admission,
             Err(crate::PageAdmissionError::Malformed(_)) => {
@@ -1743,6 +1752,59 @@ impl RangeTextInput {
                 Err(error) => ResponseDeliveryProgress::AcceptedTerminal(error),
             },
         )
+    }
+
+    fn settle_superseded_index_page_response(
+        &mut self,
+        key: PageRequestKey,
+        cx: &mut Context<Self>,
+    ) -> Result<(), RangeTextInputError> {
+        let settlement = self
+            .residency
+            .prepare_settle(key, PageFailure::Unavailable)
+            .map_err(|_| RangeTextInputError::Stale)?;
+        if !self.dispatched_pages.contains(&key) {
+            return Err(RangeTextInputError::Stale);
+        }
+        let mut retired_cancels = self.requests.iter().enumerate().filter_map(
+            |(index, request)| {
+                matches!(request, RangeTextInputRequest::CancelPage(cancelled) if *cancelled == key)
+                    .then_some(index)
+            },
+        );
+        let cancel_index = retired_cancels.next();
+        if retired_cancels.next().is_some() {
+            return Err(RangeTextInputError::Stale);
+        }
+        let required = self
+            .requests
+            .len()
+            .checked_sub(usize::from(cancel_index.is_some()))
+            .and_then(|count| count.checked_add(1))
+            .expect("bounded obsolete response cleanup count remains representable");
+        assert!(
+            required <= self.requests.capacity(),
+            "range widget reserves existing request capacity for obsolete response cleanup"
+        );
+        if let Some(cancel_index) = cancel_index {
+            let removed = self.requests.remove(cancel_index);
+            debug_assert!(matches!(
+                removed,
+                Some(RangeTextInputRequest::CancelPage(cancelled)) if cancelled == key
+            ));
+        }
+        self.requests
+            .push_back(RangeTextInputRequest::ReleasePage(key));
+        let settled = self.residency.commit_prepared_settle(settlement);
+        debug_assert_eq!(
+            settled,
+            crate::PageSettlement::Settled(PageFailure::Unavailable)
+        );
+        let removed = self.dispatched_pages.remove(&key);
+        debug_assert!(removed);
+        self.observe_realization_ownership();
+        cx.notify();
+        Ok(())
     }
 
     pub(super) fn retire_surface_candidate(&mut self) {
