@@ -4655,23 +4655,123 @@ fn clipboard_ownership_is_exact_across_objects_shared_page_write_and_release(
         RangeTextInput::new(configured(exact_peak - 1), window, cx).unwrap()
     });
     assert!(drive_pages(&one_under, cx, source).is_empty());
+    let baseline_custody = one_under.read_with(cx, |input, _| {
+        let current = input.realization_diagnostics().current;
+        (
+            current.response_custody_bytes,
+            current.response_custody_items,
+        )
+    });
     let mut rejected_page_id = 85_000;
-    let rejected =
-        begin_clipboard_to_provenance(&one_under, cx, source, &facts, &mut rejected_page_id);
+    let start = ordinary_position(0);
+    let end = ordinary_position(source.len() as u64);
+    let selection = SourceRange::new(start, end).unwrap();
+    let (text, objects) = admitted_sources(source, 1, &[start, end]);
+    one_under
+        .update(cx, |input, cx| {
+            input.begin_composite_clipboard(
+                gpui_text_input::ClipboardKind::Copy,
+                selection,
+                MutationPositions::new(end, start, end),
+                &text,
+                &objects,
+                cx,
+            )
+        })
+        .unwrap();
+    let mut delivered_object_key = None;
+    let mut delivered_object_count = 0;
+    let mut released_object_keys = Vec::new();
+    let mut observed_scheduled_without_redispatch = false;
+    for _ in 0..256 {
+        match one_under.update(cx, |input, _| input.take_request()) {
+            Some(RangeTextInputRequest::Page(request))
+                if request.key().purpose() == PagePurpose::Clipboard =>
+            {
+                let page = page_for(source, rejected_page_id, request);
+                rejected_page_id += 1;
+                cx.update(|window, app| {
+                    one_under.update(app, |input, cx| {
+                        input.deliver_page(page, window, cx).unwrap()
+                    })
+                });
+            }
+            Some(RangeTextInputRequest::ObjectPage(request))
+                if request.key().purpose() == ObjectPurpose::Clipboard =>
+            {
+                let key = request.key();
+                assert_eq!(delivered_object_key.replace(key), None);
+                delivered_object_count += 1;
+                let page = restoration_object_page(request, &facts, rejected_page_id);
+                rejected_page_id += 1;
+                cx.update(|window, app| {
+                    one_under.update(app, |input, cx| {
+                        input
+                            .deliver_object_page_in_window(page, window, cx)
+                            .unwrap()
+                    })
+                });
+            }
+            Some(RangeTextInputRequest::ReleasePage(_)) => {}
+            Some(RangeTextInputRequest::ReleaseObjectPage(key)) => released_object_keys.push(key),
+            Some(request) => panic!("unexpected one-under clipboard request: {request:?}"),
+            None => {
+                cx.update(|window, app| window.draw(app).clear());
+                cx.run_until_parked();
+                observed_scheduled_without_redispatch = one_under.read_with(cx, |input, _| {
+                    let diagnostics = input.realization_diagnostics();
+                    delivered_object_key.is_some()
+                        && diagnostics.current.scheduled_continuations == 1
+                        && diagnostics.current.dispatched_object_requests == 1
+                        && diagnostics.current.response_custody_count == 0
+                        && diagnostics.current.response_processing_bytes == 0
+                        && diagnostics.current.response_processing_items == 0
+                        && diagnostics.last_response_rejection.is_none()
+                });
+                if observed_scheduled_without_redispatch {
+                    break;
+                }
+            }
+        }
+    }
     assert!(
-        matches!(
-            rejected,
-            Err(gpui_text_input::RangeTextInputError::SurfaceCapacity)
-        ),
-        "unexpected one-under result: {rejected:?}"
+        observed_scheduled_without_redispatch,
+        "one-under clipboard work did not remain scheduled: {:?}",
+        one_under.read_with(cx, |input, _| input.realization_diagnostics())
     );
-    one_under.read_with(cx, |input, _| {
+    let delivered_object_key = delivered_object_key.unwrap();
+    assert_eq!(delivered_object_count, 1);
+    assert!(!released_object_keys.contains(&delivered_object_key));
+    let before_retry = one_under.read_with(cx, |input, _| {
         let counts = input.clipboard_counts();
+        let diagnostics = input.realization_diagnostics();
         assert_eq!(counts.pending_object_pages, 1);
         assert_eq!(counts.retained_object_facts, 2);
         assert!(counts.owned_bytes > 0);
+        assert_eq!(diagnostics.current.clipboard_bytes, counts.owned_bytes);
+        assert_eq!(diagnostics.current.clipboard_items, counts.owned_items);
+        assert_eq!(diagnostics.current.response_custody_count, 0);
+        assert_eq!(
+            diagnostics.current.response_custody_bytes,
+            baseline_custody.0
+        );
+        assert_eq!(
+            diagnostics.current.response_custody_items,
+            baseline_custody.1
+        );
+        assert_eq!(diagnostics.current.response_processing_bytes, 0);
+        assert_eq!(diagnostics.current.response_processing_items, 0);
+        assert_eq!(diagnostics.current.dispatched_object_requests, 1);
+        assert_eq!(diagnostics.current.scheduled_continuations, 1);
+        assert_eq!(diagnostics.response_rejection_count, 0);
+        assert_eq!(diagnostics.last_response_rejection, None);
+        assert_eq!(
+            diagnostics.max_surface_bytes.checked_add(1),
+            Some(exact_peak)
+        );
+        assert!(diagnostics.high_water.owned_bytes <= diagnostics.max_surface_bytes);
+        counts
     });
-    let before_retry = one_under.read_with(cx, |input, _| input.clipboard_counts());
     let retry = cx.update(|window, app| {
         one_under.update(app, |input, cx| {
             input.rebind(binding(source, 2), None, window, cx)
@@ -4683,7 +4783,56 @@ fn clipboard_ownership_is_exact_across_objects_shared_page_write_and_release(
     ));
     one_under.read_with(cx, |input, _| {
         assert_eq!(input.clipboard_counts(), before_retry);
-        assert!(input.realization_diagnostics().current.clipboard_bytes > 0);
+        let diagnostics = input.realization_diagnostics();
+        assert_eq!(
+            diagnostics.current.clipboard_bytes,
+            before_retry.owned_bytes
+        );
+        assert_eq!(
+            diagnostics.current.clipboard_items,
+            before_retry.owned_items
+        );
+        assert_eq!(diagnostics.current.response_custody_count, 0);
+        assert_eq!(diagnostics.current.response_processing_bytes, 0);
+        assert_eq!(diagnostics.current.response_processing_items, 0);
+        assert_eq!(diagnostics.current.dispatched_object_requests, 1);
+        assert_eq!(diagnostics.current.scheduled_continuations, 1);
+        assert_eq!(diagnostics.response_rejection_count, 0);
+        assert_eq!(diagnostics.last_response_rejection, None);
+    });
+    assert!(
+        one_under
+            .update(cx, |input, _| input.take_request())
+            .is_none()
+    );
+    let disposed =
+        cx.update(|window, app| one_under.update(app, |input, cx| input.dispose(window, cx)));
+    assert_eq!(
+        disposed
+            .iter()
+            .filter(|request| matches!(
+                request,
+                RangeTextInputRequest::CancelObjectPage(key) if *key == delivered_object_key
+            ))
+            .count(),
+        1,
+        "unexpected disposed lifecycle: {disposed:?}"
+    );
+    assert!(!disposed.iter().any(|request| matches!(
+        request,
+        RangeTextInputRequest::ReleaseObjectPage(key) if *key == delivered_object_key
+    )));
+    one_under.read_with(cx, |input, _| {
+        let diagnostics = input.realization_diagnostics();
+        assert_eq!(input.clipboard_counts(), Default::default());
+        assert_eq!(diagnostics.current.clipboard_bytes, 0);
+        assert_eq!(diagnostics.current.clipboard_items, 0);
+        assert_eq!(diagnostics.current.response_custody_count, 0);
+        assert_eq!(diagnostics.current.response_processing_bytes, 0);
+        assert_eq!(diagnostics.current.response_processing_items, 0);
+        assert_eq!(diagnostics.current.dispatched_object_requests, 0);
+        assert_eq!(diagnostics.current.scheduled_continuations, 0);
+        assert!(input.is_quiescent());
     });
 }
 
