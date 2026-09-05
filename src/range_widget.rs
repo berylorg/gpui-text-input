@@ -775,6 +775,24 @@ impl RangeTextInput {
         }
     }
 
+    pub fn set_appearance(
+        &mut self,
+        theme: crate::TextInputTheme,
+        scrollbar_style: gpui_scrollbar::ScrollbarStyle,
+        cx: &mut Context<Self>,
+    ) -> Result<(), RangeTextInputError> {
+        if !self.mounted {
+            return Err(RangeTextInputError::NotMounted);
+        }
+        if self.config.theme == theme && self.config.scrollbar_style == scrollbar_style {
+            return Ok(());
+        }
+        self.config.theme = theme;
+        self.config.scrollbar_style = scrollbar_style;
+        cx.notify();
+        Ok(())
+    }
+
     pub fn set_layout(
         &mut self,
         layout: gpui::StreamingLayoutBinding,

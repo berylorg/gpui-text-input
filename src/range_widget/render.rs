@@ -331,6 +331,13 @@ impl Element for RangeTextInputElement {
                 let Some(surface) = input.surface() else {
                     return;
                 };
+                let text_color = input
+                    .config
+                    .theme
+                    .text
+                    .unwrap_or_else(|| window.text_style().color);
+                let atom_text = input.config.theme.atom_text;
+                let atom_background = input.config.theme.atom_background;
                 for selection in surface.selection_bounds() {
                     window.paint_quad(gpui::fill(
                         Bounds::new(prepaint.origin + selection.origin, selection.size),
@@ -342,12 +349,10 @@ impl Element for RangeTextInputElement {
                         gpui::StreamingLayoutFragment::Text(fragment) => {
                             fragment.paint_background(prepaint.origin, window, cx)
                         }
-                        gpui::StreamingLayoutFragment::OversizeAtom(fragment) => {
-                            fragment.paint_background(prepaint.origin, window)
-                        }
-                        gpui::StreamingLayoutFragment::InlineObject(fragment) => {
-                            fragment.paint_background(prepaint.origin, window)
-                        }
+                        gpui::StreamingLayoutFragment::OversizeAtom(fragment) => fragment
+                            .paint_background_with_color(prepaint.origin, atom_background, window),
+                        gpui::StreamingLayoutFragment::InlineObject(fragment) => fragment
+                            .paint_background_with_color(prepaint.origin, atom_background, window),
                         gpui::StreamingLayoutFragment::Boundary(_) => Ok(()),
                     };
                 }
@@ -369,13 +374,13 @@ impl Element for RangeTextInputElement {
                 for fragment in surface.fragments() {
                     let _ = match fragment {
                         gpui::StreamingLayoutFragment::Text(fragment) => {
-                            fragment.paint(prepaint.origin, window, cx)
+                            fragment.paint_with_color(prepaint.origin, text_color, window, cx)
                         }
                         gpui::StreamingLayoutFragment::OversizeAtom(fragment) => {
-                            fragment.paint(prepaint.origin, window, cx)
+                            fragment.paint_with_color(prepaint.origin, atom_text, window, cx)
                         }
                         gpui::StreamingLayoutFragment::InlineObject(fragment) => {
-                            fragment.paint(prepaint.origin, window, cx)
+                            fragment.paint_with_color(prepaint.origin, atom_text, window, cx)
                         }
                         gpui::StreamingLayoutFragment::Boundary(_) => Ok(()),
                     };

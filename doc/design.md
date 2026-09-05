@@ -818,6 +818,33 @@ Single-line fields normalize inserted newline characters into non-line-breaking 
 
 Read-only mode preserves focus, caret movement, selection, copy, and text-range queries while rejecting destructive edits, cut, paste, undo, redo, and IME replacements that would mutate text.
 
+## Range-Backed Live Appearance
+
+The mounted range-backed widget accepts its complete `TextInputTheme` and `ScrollbarStyle`
+together through one synchronous appearance update. Subsequent paint uses that current theme for
+ordinary text, placeholder, selection, caret, marked underline, source-covering atoms, oversize
+atoms, and source-zero-width objects, and that current style for scrollbar chrome. An absent
+ordinary-text theme color resolves from the current GPUI text style at paint time.
+
+This appearance update preserves the widget entity and focus handle, binding and revision,
+authoritative content, caret and directed selection, composition, history availability, logical
+scroll state, interaction state, resident pages, coherent geometry, pending requests and jobs, and
+ordinary-edit or historical-selection settlement custody. It neither emits an editor event nor
+dispatches, cancels, or releases host work. It schedules repaint without rebuilding the editor or
+replacing its scrollbar interaction owner.
+
+Theme colors use the owned GPUI immutable streaming-fragment paint overrides. They do not reshape
+fragments, start a layout transition, change retained geometry or its accounting, or advance the
+layout epoch or host-owned object presentation generation. Current colors also apply to fragments
+that complete after the update. Scrollbar style changes affect chrome without changing the text
+viewport or logical scroll position. Fonts, wrapping, line metrics, and revisioned host object
+presentation remain inputs to their existing geometry or presentation update boundaries; live
+appearance does not replace those boundaries or coordinate application-wide theme publication.
+
+Focused verification must inspect actual updated scene paint and preservation of retained editor
+state, including pending work, using the ordinary mounted render path. Theme updates require no
+additional resident source, shaped fragment, or work queue capacity.
+
 ## Widget Layer
 
 The GPUI widget layer owns focus handling, platform text-input integration, keyboard action routing

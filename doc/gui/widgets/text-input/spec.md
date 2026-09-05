@@ -76,6 +76,13 @@ The root fills available inline size, can shrink in constrained inline space, cl
 
 Text color may be supplied by `TextInputTheme`; otherwise text inherits the current GPUI text style. Placeholder, selection, caret, marked underline, atom text, and atom background are supplied by `TextInputTheme`. The caret is painted as a narrow quad.
 
+A mounted range-backed input accepts the complete theme and scrollbar style together. Its next
+paint applies those current values to every visible part, including already realized text, atoms,
+and inline objects. Ordinary text with no theme override inherits the current GPUI text color.
+The update preserves focus, selection, composition, history availability, logical scrolling,
+interaction state, and pending host work through the package's live-appearance boundary. Font,
+wrapping, line-metric, and host object-presentation changes use their existing separate boundaries.
+
 An indivisible grapheme or opaque atom larger than the configured shaping-segment cap is shown as
 one compact oversize layout atom using the ordinary atom presentation. It exposes no elided source
 content and preserves the exact logical range for selection, copy, replacement, and deletion.
