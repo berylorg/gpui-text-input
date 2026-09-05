@@ -3824,9 +3824,11 @@ fn post_validation_restoration_rebind_and_dispose_cancel_and_reject_once(
         "predecessor object releases {predecessor_object_releases:?} did not match expected keys {predecessor_object_release_keys:?}"
     );
     assert!(!predecessor_object_dispatches.is_empty());
-    assert!(predecessor_object_dispatches
-        .iter()
-        .all(|key| key.purpose() == ObjectPurpose::Restoration));
+    assert!(
+        predecessor_object_dispatches
+            .iter()
+            .all(|key| key.purpose() == ObjectPurpose::Restoration)
+    );
     assert!(predecessor_text_dispatches.iter().all(|key| {
         predecessor_text_releases
             .iter()
@@ -3869,12 +3871,16 @@ fn post_validation_restoration_rebind_and_dispose_cancel_and_reject_once(
             1
         );
     }
-    assert!(successor_text_releases
-        .iter()
-        .all(|key| successor_text_dispatches.contains(key)));
-    assert!(successor_object_releases
-        .iter()
-        .all(|key| successor_object_dispatches.contains(key)));
+    assert!(
+        successor_text_releases
+            .iter()
+            .all(|key| successor_text_dispatches.contains(key))
+    );
+    assert!(
+        successor_object_releases
+            .iter()
+            .all(|key| successor_object_dispatches.contains(key))
+    );
     input.read_with(cx, |input, _| {
         assert_semantic_owners(input, 0, empty_response_custody);
         assert_eq!(input.surface().unwrap().binding(), binding(source, 2));
@@ -3985,9 +3991,11 @@ fn post_validation_restoration_rebind_and_dispose_cancel_and_reject_once(
         };
         assert_eq!(returned, expected_return);
         assert_eq!(returned.key(), restoration_geometry_key);
-        assert!(disposed
-            .update(cx, |input, _| input.take_request())
-            .is_none());
+        assert!(
+            disposed
+                .update(cx, |input, _| input.take_request())
+                .is_none()
+        );
         disposed.read_with(cx, |input, _| {
             assert_semantic_owners(input, 0, empty_response_custody);
             let current = input.realization_diagnostics().current;
@@ -5129,9 +5137,11 @@ fn shared_large_object_presentation_is_charged_once_through_publication(
         Some(RangeTextInputRequest::ReleaseObjectPage(key))
             if key.purpose() == ObjectPurpose::GeometryTarget
     ));
-    assert!(one_under
-        .update(cx, |input, _| input.take_request())
-        .is_none());
+    assert!(
+        one_under
+            .update(cx, |input, _| input.take_request())
+            .is_none()
+    );
     one_under.read_with(cx, |input, _| assert!(input.is_quiescent()));
 }
 
@@ -5341,9 +5351,11 @@ fn clipboard_prepare_exact_fit_and_one_under_cross_split_atom_before_empty_objec
     assert_eq!(page.items()[0].output_range().start(), ByteOffset::new(1));
     assert_eq!(page.items()[0].output_range().end(), ByteOffset::new(1));
     assert!(!probe_released_pages.is_empty());
-    assert!(probe_released_pages
-        .iter()
-        .all(|key| key.purpose() == PagePurpose::Clipboard));
+    assert!(
+        probe_released_pages
+            .iter()
+            .all(|key| key.purpose() == PagePurpose::Clipboard)
+    );
     let exact_peak = probe.read_with(cx, |input, _| {
         input.realization_diagnostics().high_water.owned_bytes
     });
@@ -5457,9 +5469,11 @@ fn clipboard_prepare_exact_fit_and_one_under_cross_split_atom_before_empty_objec
     assert_eq!(exact_target.key().revision(), exact_begin_key.revision());
     assert_eq!(exact_page.items().len(), 1);
     assert!(!exact_released_pages.is_empty());
-    assert!(exact_released_pages
-        .iter()
-        .all(|key| key.purpose() == PagePurpose::Clipboard));
+    assert!(
+        exact_released_pages
+            .iter()
+            .all(|key| key.purpose() == PagePurpose::Clipboard)
+    );
     assert_eq!(
         exact.read_with(cx, |input, _| {
             input.realization_diagnostics().high_water.owned_bytes
@@ -5677,9 +5691,11 @@ fn clipboard_prepare_exact_fit_and_one_under_cross_split_atom_before_empty_objec
             .count(),
         0
     );
-    assert!(recovery_released_pages
-        .iter()
-        .all(|key| { *key == target.key() || key.purpose() == PagePurpose::Clipboard }));
+    assert!(
+        recovery_released_pages
+            .iter()
+            .all(|key| { *key == target.key() || key.purpose() == PagePurpose::Clipboard })
+    );
     let mut rejected_releases_through_recovery = rejected_released_pages.clone();
     rejected_releases_through_recovery.extend(
         recovery_released_pages
@@ -5704,9 +5720,11 @@ fn clipboard_prepare_exact_fit_and_one_under_cross_split_atom_before_empty_objec
         &rejected_delivered_object_pages,
         &rejected_object_releases_through_recovery,
     );
-    assert!(rejected_released_pages
-        .iter()
-        .all(|key| key.purpose() == PagePurpose::Clipboard));
+    assert!(
+        rejected_released_pages
+            .iter()
+            .all(|key| key.purpose() == PagePurpose::Clipboard)
+    );
     assert_eq!(recovered_page.items().len(), 1);
     assert_eq!(recovered_page.key().clipboard(), rejected_begin_key);
     assert_eq!(recovered_page.items()[0].object_id(), facts[0].id());
@@ -5862,17 +5880,19 @@ fn clipboard_prepare_exact_fit_and_one_under_cross_split_atom_before_empty_objec
         &rejected_delivered_object_pages,
         &all_released_object_pages,
     );
-    assert!(completion_released_pages
-        .iter()
-        .chain(
-            terminal_lifecycle
-                .iter()
-                .filter_map(|request| match request {
-                    RangeTextInputRequest::ReleasePage(key) => Some(key),
-                    _ => None,
-                })
-        )
-        .all(|key| *key == target.key() || key.purpose() == PagePurpose::Clipboard));
+    assert!(
+        completion_released_pages
+            .iter()
+            .chain(
+                terminal_lifecycle
+                    .iter()
+                    .filter_map(|request| match request {
+                        RangeTextInputRequest::ReleasePage(key) => Some(key),
+                        _ => None,
+                    })
+            )
+            .all(|key| *key == target.key() || key.purpose() == PagePurpose::Clipboard)
+    );
     assert_eq!(
         recovery_released_pages
             .iter()
@@ -5910,9 +5930,7 @@ fn clipboard_prepare_exact_fit_and_one_under_cross_split_atom_before_empty_objec
 }
 
 #[gpui::test]
-fn split_atom_clipboard_response_preserves_runnable_progress(
-    cx: &mut gpui::TestAppContext,
-) {
+fn split_atom_clipboard_response_preserves_runnable_progress(cx: &mut gpui::TestAppContext) {
     #[derive(Debug, PartialEq, Eq)]
     enum ProgressEvent {
         ClipboardObjectRequest,
@@ -6488,109 +6506,106 @@ fn geometry_object_then_clipboard_object_custody_preserves_order_and_charge(
         ordered_custody,
         staged_lifecycle,
     ) = cx.update(|window, app| {
-            input.update(app, |input, cx| {
-                input
-                    .deliver_object_page_in_window(first_clipboard_page, window, cx)
-                    .unwrap();
-                let seed_frame_remaining = input.realization_diagnostics().frame.remaining;
-                let mut staged_lifecycle = Vec::new();
-                let clipboard_request = loop {
-                    match input.take_request().unwrap() {
-                        RangeTextInputRequest::ObjectPage(request)
-                            if request.key().purpose() == ObjectPurpose::Clipboard =>
-                        {
-                            response_events
-                                .push(ResponseEvent::ClipboardContinuationObjectRequest);
-                            break request;
-                        }
-                        request @ (RangeTextInputRequest::ReleasePage(_)
-                        | RangeTextInputRequest::ReleaseObjectPage(_)) => {
-                            match &request {
-                                RangeTextInputRequest::ReleaseObjectPage(key)
-                                    if *key == first_clipboard_object_key =>
-                                {
-                                    response_events.push(ResponseEvent::ClipboardSeedRelease)
-                                }
-                                RangeTextInputRequest::ReleaseObjectPage(key) => {
-                                    response_events
-                                        .push(ResponseEvent::OtherObjectRelease(key.purpose()))
-                                }
-                                RangeTextInputRequest::ReleasePage(key) => {
-                                    response_events.push(match key.purpose() {
-                                        PagePurpose::Clipboard => ResponseEvent::ClipboardPageRelease,
-                                        PagePurpose::GeometryIndex => {
-                                            ResponseEvent::GeometryIndexPageRelease
-                                        }
-                                        PagePurpose::GeometryTarget => {
-                                            ResponseEvent::GeometryTargetPageRelease
-                                        }
-                                        purpose => ResponseEvent::OtherPageRelease(purpose),
-                                    })
-                                }
-                                _ => unreachable!(),
-                            }
-                            staged_lifecycle.push(request)
-                        }
-                        other => panic!("unexpected clipboard-object setup request: {other:?}"),
+        input.update(app, |input, cx| {
+            input
+                .deliver_object_page_in_window(first_clipboard_page, window, cx)
+                .unwrap();
+            let seed_frame_remaining = input.realization_diagnostics().frame.remaining;
+            let mut staged_lifecycle = Vec::new();
+            let clipboard_request = loop {
+                match input.take_request().unwrap() {
+                    RangeTextInputRequest::ObjectPage(request)
+                        if request.key().purpose() == ObjectPurpose::Clipboard =>
+                    {
+                        response_events.push(ResponseEvent::ClipboardContinuationObjectRequest);
+                        break request;
                     }
-                };
-                let clipboard_object_key = clipboard_request.key();
-                let clipboard_page = restoration_object_page(clipboard_request, &facts, 89_003);
-                let processing_high_water_baseline = {
-                    let high_water = input.realization_diagnostics().high_water;
-                    (
-                        high_water.response_processing_bytes,
-                        high_water.response_processing_items,
-                    )
-                };
-
-                input
-                    .deliver_object_page_in_window(geometry_page, window, cx)
-                    .unwrap();
-                let diagnostics = input.realization_diagnostics();
-                let current = diagnostics.current;
-                let geometry_only_custody = (
-                    current.response_custody_count,
-                    current.response_custody_bytes,
-                    current.response_custody_items,
-                    current.response_processing_bytes,
-                    current.response_processing_items,
-                    current.scheduled_continuations,
-                    current.dispatched_object_requests,
-                    current.clipboard_bytes,
-                    current.clipboard_items,
-                    diagnostics.high_water.response_processing_bytes,
-                    diagnostics.high_water.response_processing_items,
-                );
-
-                input
-                    .deliver_object_page_in_window(clipboard_page, window, cx)
-                    .unwrap();
-                let diagnostics = input.realization_diagnostics();
-                let current = diagnostics.current;
-                let ordered_custody = (
-                    current.response_custody_count,
-                    current.response_custody_bytes,
-                    current.response_custody_items,
-                    current.response_processing_bytes,
-                    current.response_processing_items,
-                    current.scheduled_continuations,
-                    current.dispatched_object_requests,
-                    current.clipboard_bytes,
-                    current.clipboard_items,
-                    diagnostics.high_water.response_processing_bytes,
-                    diagnostics.high_water.response_processing_items,
-                );
+                    request @ (RangeTextInputRequest::ReleasePage(_)
+                    | RangeTextInputRequest::ReleaseObjectPage(_)) => {
+                        match &request {
+                            RangeTextInputRequest::ReleaseObjectPage(key)
+                                if *key == first_clipboard_object_key =>
+                            {
+                                response_events.push(ResponseEvent::ClipboardSeedRelease)
+                            }
+                            RangeTextInputRequest::ReleaseObjectPage(key) => response_events
+                                .push(ResponseEvent::OtherObjectRelease(key.purpose())),
+                            RangeTextInputRequest::ReleasePage(key) => {
+                                response_events.push(match key.purpose() {
+                                    PagePurpose::Clipboard => ResponseEvent::ClipboardPageRelease,
+                                    PagePurpose::GeometryIndex => {
+                                        ResponseEvent::GeometryIndexPageRelease
+                                    }
+                                    PagePurpose::GeometryTarget => {
+                                        ResponseEvent::GeometryTargetPageRelease
+                                    }
+                                    purpose => ResponseEvent::OtherPageRelease(purpose),
+                                })
+                            }
+                            _ => unreachable!(),
+                        }
+                        staged_lifecycle.push(request)
+                    }
+                    other => panic!("unexpected clipboard-object setup request: {other:?}"),
+                }
+            };
+            let clipboard_object_key = clipboard_request.key();
+            let clipboard_page = restoration_object_page(clipboard_request, &facts, 89_003);
+            let processing_high_water_baseline = {
+                let high_water = input.realization_diagnostics().high_water;
                 (
-                    clipboard_object_key,
-                    seed_frame_remaining,
-                    processing_high_water_baseline,
-                    geometry_only_custody,
-                    ordered_custody,
-                    staged_lifecycle,
+                    high_water.response_processing_bytes,
+                    high_water.response_processing_items,
                 )
-            })
-        });
+            };
+
+            input
+                .deliver_object_page_in_window(geometry_page, window, cx)
+                .unwrap();
+            let diagnostics = input.realization_diagnostics();
+            let current = diagnostics.current;
+            let geometry_only_custody = (
+                current.response_custody_count,
+                current.response_custody_bytes,
+                current.response_custody_items,
+                current.response_processing_bytes,
+                current.response_processing_items,
+                current.scheduled_continuations,
+                current.dispatched_object_requests,
+                current.clipboard_bytes,
+                current.clipboard_items,
+                diagnostics.high_water.response_processing_bytes,
+                diagnostics.high_water.response_processing_items,
+            );
+
+            input
+                .deliver_object_page_in_window(clipboard_page, window, cx)
+                .unwrap();
+            let diagnostics = input.realization_diagnostics();
+            let current = diagnostics.current;
+            let ordered_custody = (
+                current.response_custody_count,
+                current.response_custody_bytes,
+                current.response_custody_items,
+                current.response_processing_bytes,
+                current.response_processing_items,
+                current.scheduled_continuations,
+                current.dispatched_object_requests,
+                current.clipboard_bytes,
+                current.clipboard_items,
+                diagnostics.high_water.response_processing_bytes,
+                diagnostics.high_water.response_processing_items,
+            );
+            (
+                clipboard_object_key,
+                seed_frame_remaining,
+                processing_high_water_baseline,
+                geometry_only_custody,
+                ordered_custody,
+                staged_lifecycle,
+            )
+        })
+    });
     lifecycle.extend(staged_lifecycle);
 
     cx.update(|window, app| window.draw(app).clear());
@@ -6985,9 +7000,18 @@ fn geometry_object_then_clipboard_object_custody_preserves_order_and_charge(
     assert_eq!(geometry_key.binding(), clipboard_key.binding());
     assert_eq!(geometry_key.revision(), clipboard_key.revision());
     assert_eq!(geometry_key.purpose(), ObjectPurpose::GeometryTarget);
-    assert_eq!(first_clipboard_object_key.binding(), clipboard_key.binding());
-    assert_eq!(first_clipboard_object_key.revision(), clipboard_key.revision());
-    assert_eq!(first_clipboard_object_key.purpose(), ObjectPurpose::Clipboard);
+    assert_eq!(
+        first_clipboard_object_key.binding(),
+        clipboard_key.binding()
+    );
+    assert_eq!(
+        first_clipboard_object_key.revision(),
+        clipboard_key.revision()
+    );
+    assert_eq!(
+        first_clipboard_object_key.purpose(),
+        ObjectPurpose::Clipboard
+    );
     assert_eq!(clipboard_object_key.binding(), clipboard_key.binding());
     assert_eq!(clipboard_object_key.revision(), clipboard_key.revision());
     assert_eq!(clipboard_object_key.purpose(), ObjectPurpose::Clipboard);
@@ -9122,11 +9146,8 @@ fn boundary_overlapping_object_pages_realize_wrapped_adjacent_objects_once(
                     }
                     Some(RangeTextInputRequest::ObjectPage(request)) => {
                         observed_quiescent = false;
-                        let page = restoration_object_page(
-                            request,
-                            &facts,
-                            request.key().id().get(),
-                        );
+                        let page =
+                            restoration_object_page(request, &facts, request.key().id().get());
                         $observed.push((
                             page.key(),
                             page.objects()
@@ -9185,8 +9206,9 @@ fn boundary_overlapping_object_pages_realize_wrapped_adjacent_objects_once(
 
     let mut initial_deliveries = Vec::new();
     drive_and_capture_object_pages!(initial_deliveries);
-    let pre_target_pages =
-        input.read_with(cx, |input, _| snapshot_pages(input.surface().unwrap().object_pages()));
+    let pre_target_pages = input.read_with(cx, |input, _| {
+        snapshot_pages(input.surface().unwrap().object_pages())
+    });
 
     cx.simulate_keystrokes("end");
     let mut terminal_deliveries = Vec::new();
@@ -9224,7 +9246,11 @@ fn boundary_overlapping_object_pages_realize_wrapped_adjacent_objects_once(
             .unwrap()
             .map(|presentation| {
                 let geometry = presentation.geometry();
-                (geometry.leading().byte_offset, geometry.order(), geometry.id())
+                (
+                    geometry.leading().byte_offset,
+                    geometry.order(),
+                    geometry.id(),
+                )
             })
             .collect::<Vec<_>>();
         let realized = surface.realized_objects();
@@ -9249,9 +9275,10 @@ fn boundary_overlapping_object_pages_realize_wrapped_adjacent_objects_once(
             .iter()
             .filter(|gap| gap.position() == shared)
             .collect::<Vec<_>>();
-        let shared_gap_matches_second_leading = shared_gaps.first().zip(realized.get(1)).map(
-            |(gap, second)| gap.caret_bounds() == second.leading_caret_bounds(),
-        );
+        let shared_gap_matches_second_leading = shared_gaps
+            .first()
+            .zip(realized.get(1))
+            .map(|(gap, second)| gap.caret_bounds() == second.leading_caret_bounds());
         (
             input.is_quiescent(),
             snapshot_pages(surface.object_pages()),
@@ -9295,8 +9322,7 @@ fn boundary_overlapping_object_pages_realize_wrapped_adjacent_objects_once(
             .iter()
             .flat_map(|(_, objects, _, _)| objects)
             .filter(|cursor| {
-                cursor.id() == InlineObjectId::new(221)
-                    || cursor.id() == InlineObjectId::new(222)
+                cursor.id() == InlineObjectId::new(221) || cursor.id() == InlineObjectId::new(222)
             })
             .count()
     };
@@ -9421,13 +9447,11 @@ fn boundary_overlapping_object_pages_realize_wrapped_adjacent_objects_once(
         "object pages were not published exactly once in each coherent surface",
     );
     assert_eq!(
-        fragment_cursors,
-        expected_object_cursors,
+        fragment_cursors, expected_object_cursors,
         "viewport-leading inline-object fragments were not published exactly once",
     );
     assert_eq!(
-        presentation_cursors,
-        expected_object_cursors,
+        presentation_cursors, expected_object_cursors,
         "viewport-leading object presentations were not published exactly once",
     );
     assert_eq!(
@@ -10708,7 +10732,10 @@ fn object_gap_platform_composition_is_not_collapsed_and_lifecycle_loss_is_once(
     assert!(input.read_with(cx, |input, _| input.is_semantically_quiescent()));
     assert_eq!(settlement_coordinator.retained_count(), 0);
     assert_eq!(
-        input.read_with(cx, |input, _| input.lease_host_operation().unwrap().operation()),
+        input.read_with(cx, |input, _| input
+            .lease_host_operation()
+            .unwrap()
+            .operation()),
         gpui_text_input::OperationId::new(1)
     );
     assert_eq!(settlement_coordinator.retained_count(), 0);
@@ -10769,29 +10796,32 @@ fn object_gap_platform_composition_is_not_collapsed_and_lifecycle_loss_is_once(
                 observed_quiescent = false;
                 assert_eq!(request.key().binding(), BindingId::new(17));
                 assert_eq!(request.key().revision(), SourceRevision::new(2));
-                let ownership = input.read_with(cx, |input, _| {
-                    input.realization_diagnostics().current
-                });
+                let ownership =
+                    input.read_with(cx, |input, _| input.realization_diagnostics().current);
                 assert_eq!(ownership.active_geometry_jobs, 1);
                 if request.key().purpose() == PagePurpose::GeometryTarget {
                     target_step.get_or_insert(step);
                 } else if request.key().purpose() == PagePurpose::GeometryIndex {
                     index_step.get_or_insert(step);
                 } else {
-                    panic!("unexpected direct-rebind page purpose: {:?}", request.key().purpose());
+                    panic!(
+                        "unexpected direct-rebind page purpose: {:?}",
+                        request.key().purpose()
+                    );
                 }
                 let page = page_for(source, request.key().id().get(), request);
                 cx.update(|window, app| {
-                    input.update(app, |input, cx| input.deliver_page(page, window, cx).unwrap())
+                    input.update(app, |input, cx| {
+                        input.deliver_page(page, window, cx).unwrap()
+                    })
                 });
             }
             Some(RangeTextInputRequest::ObjectPage(request)) => {
                 observed_quiescent = false;
                 assert_eq!(request.key().binding(), BindingId::new(17));
                 assert_eq!(request.key().revision(), SourceRevision::new(2));
-                let ownership = input.read_with(cx, |input, _| {
-                    input.realization_diagnostics().current
-                });
+                let ownership =
+                    input.read_with(cx, |input, _| input.realization_diagnostics().current);
                 assert_eq!(ownership.active_geometry_jobs, 1);
                 if request.key().purpose() == ObjectPurpose::GeometryTarget {
                     target_step.get_or_insert(step);
@@ -10806,7 +10836,9 @@ fn object_gap_platform_composition_is_not_collapsed_and_lifecycle_loss_is_once(
                 let page = restoration_object_page(request, &facts, request.key().id().get());
                 cx.update(|window, app| {
                     input.update(app, |input, cx| {
-                        input.deliver_object_page_in_window(page, window, cx).unwrap()
+                        input
+                            .deliver_object_page_in_window(page, window, cx)
+                            .unwrap()
                     })
                 });
             }
