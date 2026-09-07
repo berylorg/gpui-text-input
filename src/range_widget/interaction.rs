@@ -544,7 +544,21 @@ impl RangeTextInput {
         )?;
         let finish =
             MutationFinishInput::new(key, empty, proposal_finish, intended_extent, intended);
-        let begin = MutationBeginRequest::new(proposal, source_cursor, proposal_cursor);
+        let begin = MutationBeginRequest::new(proposal, source_cursor, proposal_cursor)
+            .with_replayable_producer(crate::MutationProducerIdentity::new(key.operation().get()));
+        if let Some(page) = &page {
+            let limits = self.config.mutation_limits;
+            if page.items().len() > limits.max_page_items() {
+                return Err(MutationError::PageItemLimitExceeded.into());
+            }
+            if page.totals().retained_bytes > limits.max_page_bytes() as u64 {
+                return Err(MutationError::PageByteLimitExceeded.into());
+            }
+            let (bytes, items) = page
+                .payload_allocation_charge()
+                .ok_or(RangeTextInputError::SurfaceCapacity)?;
+            self.check_mutation_payload_capacity(crate::RangeSurfaceCharge { bytes, items })?;
+        }
         self.edits.begin(begin)?;
         self.pending_local_mutation = Some(PendingLocalMutation { key, page, finish });
         self.push_request(RangeTextInputRequest::MutationBegin(begin), cx)?;
@@ -576,6 +590,9 @@ impl RangeTextInput {
             self.active_object
                 .map(|active| (active.anchor.object_id, active.anchor.order)),
         )?;
+        if self.edits.mutation_restart(key).is_ok() {
+            return Ok(());
+        }
         if let Some(pending) = self
             .pending_local_mutation
             .take()
@@ -645,7 +662,7 @@ impl RangeTextInput {
         Ok(())
     }
 
-    fn finish_local_mutation(
+    pub(super) fn finish_local_mutation(
         &mut self,
         key: MutationKey,
         outcome: MutationOutcome,

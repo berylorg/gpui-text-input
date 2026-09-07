@@ -47,6 +47,7 @@ pub use range_edit::{
     ActiveObjectEffect, AtomChange, MutationBeginRequest, MutationCancelRequest,
     MutationCancellation, MutationCommit, MutationCommitRequest, MutationCounts, MutationCursor,
     MutationDisposal, MutationError, MutationFinishInput, MutationIdentity, MutationKey,
+    MutationProducerIdentity, MutationPass, MutationPassKind, MutationEvidenceAcknowledgement,
     MutationKind, MutationLane, MutationLimits, MutationOutcome, MutationPage,
     MutationPageAcceptance, MutationPageItem, MutationPageKey, MutationPageRequest,
     MutationPositions, MutationProposal, MutationSettlement, MutationState, MutationStreamFinish,

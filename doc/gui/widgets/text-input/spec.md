@@ -373,6 +373,14 @@ item and byte ceilings, and an explicit authenticated `finish-input`. The widget
 only bounded current pages and fixed cumulative state; neither accumulates all fragments or treats a
 hardcoded 256- or 257-fragment total as end-of-input.
 
+A host may inspect the edit before admitting begin through the package's bounded evidence pass.
+The same immutable producer supplies evidence and staging under distinct transport pass identities;
+after exact evidence EOF and host admission it restarts at its initial cursors. Staging must match
+the complete frozen evidence closure before commit. The widget preserves the prior projection,
+caret, and directed selection throughout, retains no complete streamed edit, and rejects a changed
+producer or late response. Cancellation and unmount release unadmitted evidence; admitted work
+continues through exact ordinary settlement. Small edits may retain their single bounded page.
+
 Inserted UTF-8, source-covering atom changes, and source-zero-width object insertions, removals,
 replacements, or moves stream through those pages. Removed objects use predecessor positions;
 inserted and moved objects use authoritative successor-relative anchors and same-anchor order keys,

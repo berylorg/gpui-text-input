@@ -173,6 +173,30 @@ authenticated message that fixes the final cumulative identity and declared tota
 256 or 257 may stand in for it. Per-command, resident-page, queue, and per-frame limits remain
 fixed while total operation work and durable progress may grow.
 
+Before accepting begin, a host may request a bounded evidence pass over the same immutable edit
+producer. This pass grants no mutation or commit admission. It retains the original binding,
+operation, predecessor positions, replacement envelope, and producer identity. A host-managed
+producer retains an immutable replayable source handle and initial lane cursors; a local single-page
+edit may retain its one bounded page. A one-shot producer that cannot regenerate its pages reports
+typed unavailability before admission. Neither side buffers the complete edit to make it replayable.
+
+Evidence and staging have distinct transport pass identities while canonical operation, page,
+cursor, and cumulative identities remain unchanged. Evidence pages and their acknowledgements obey
+the same count, byte, ordering, and per-frame bounds as staging. Explicit evidence EOF freezes both
+lane frontiers, checked totals, intended successor extent, caret, and directed selection. Missing
+EOF cannot authorize admission. After the host accepts begin, an exact restart acknowledgement
+resets only canonical producer cursors and lane accumulation for staging; request allocation stays
+monotonic. Late evidence responses cannot advance staging, and another producer cannot replace the
+captured source. Host-managed producers service the typed restart through the public boundary.
+
+Staging must reproduce the frozen complete evidence closure before commit becomes available.
+A changed page, truncated lane, mismatched EOF, extent, or endpoint rejects the operation without
+adoption. Page payload is released at each pass's accepted frontier; only fixed closure and producer
+control state survives between passes. Cancellation, rejection, rebind, disposal, and generation
+loss release pre-admission producer and evidence custody; already admitted work retains its exact
+ordinary settlement obligations. Hosts needing no evidence may accept ordinary begin directly;
+requesting evidence makes its complete replay check mandatory for that operation.
+
 The protocol carries inserted UTF-8, source-covering atom changes, and source-zero-width object
 insertions, removals, replacements, or moves as bounded ordered fragments. Removal coordinates are
 exact predecessor positions. Every inserted or moved zero-width object carries its authoritative

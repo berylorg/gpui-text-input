@@ -5,8 +5,19 @@ impl RangeEditCoordinator {
         &mut self,
         page: MutationPage,
     ) -> Result<MutationPageAcceptance, MutationError> {
+        if self.active_for_key(page.key().key())?.evidence.is_some() {
+            return Err(MutationError::EvidenceRequired);
+        }
+        self.accept_page_in_state(page, MutationState::InputStreaming)
+    }
+
+    pub(super) fn accept_page_in_state(
+        &mut self,
+        page: MutationPage,
+        state: MutationState,
+    ) -> Result<MutationPageAcceptance, MutationError> {
         let key = page.key().key();
-        let result = self.accept_page_validated(&page);
+        let result = self.accept_page_validated(&page, state);
         if matches!(result, Err(MutationError::PageCollision)) {
             let _ = self.finish(key, MutationOutcome::Error, false);
         }
@@ -16,6 +27,7 @@ impl RangeEditCoordinator {
     fn accept_page_validated(
         &mut self,
         page: &MutationPage,
+        expected_state: MutationState,
     ) -> Result<MutationPageAcceptance, MutationError> {
         let limits = self.limits;
         let key = page.key();
@@ -26,7 +38,7 @@ impl RangeEditCoordinator {
         ) {
             return Err(MutationError::PostFinishInput);
         }
-        let active = self.active_mut(key.key(), MutationState::InputStreaming)?;
+        let active = self.active_mut(key.key(), expected_state)?;
         let lane = active.lane(key.lane());
 
         if key.ordinal() < lane.next_ordinal {
@@ -115,7 +127,18 @@ impl RangeEditCoordinator {
     }
 
     pub fn finish_input(&mut self, finish: MutationFinishInput) -> Result<(), MutationError> {
-        let active = self.active_mut(finish.key(), MutationState::InputStreaming)?;
+        if self.active_for_key(finish.key())?.evidence.is_some() {
+            return Err(MutationError::EvidenceRequired);
+        }
+        self.finish_input_in_state(finish, MutationState::InputStreaming)
+    }
+
+    pub(super) fn finish_input_in_state(
+        &mut self,
+        finish: MutationFinishInput,
+        state: MutationState,
+    ) -> Result<(), MutationError> {
+        let active = self.active_mut(finish.key(), state)?;
         if active.source.finish() != finish.source()
             || active.proposal_lane.finish() != finish.proposal()
             || expected_successor_extent(active)? != finish.intended_extent()
@@ -125,7 +148,9 @@ impl RangeEditCoordinator {
         validate_intended(active, finish.intended_extent(), finish.intended())?;
         active.intended = Some(finish.intended());
         active.intended_extent = Some(finish.intended_extent());
-        active.state = MutationState::FinishPending;
+        if state == MutationState::InputStreaming {
+            active.state = MutationState::FinishPending;
+        }
         Ok(())
     }
 

@@ -5,6 +5,10 @@ use std::num::NonZeroUsize;
 
 #[path = "range_widget/appearance.rs"]
 mod appearance;
+#[path = "range_widget/mutation_evidence.rs"]
+mod mutation_evidence;
+#[path = "range_widget/mutation_terminal_evidence.rs"]
+mod mutation_terminal_evidence;
 #[path = "range_widget/propagation.rs"]
 mod propagation;
 #[path = "range_widget/range_widget_legacy_contracts.rs"]

@@ -1,4 +1,6 @@
 use gpui::{Hsla, px};
+#[path = "range_mutations/evidence.rs"]
+mod evidence;
 use gpui_text_input::{
     BindingId, ByteOffset, ByteRange, InlineObjectFact, InlineObjectGap, InlineObjectId,
     InlineObjectOrder, InlineObjectPresentation, LogicalExtent, MutationBeginRequest,

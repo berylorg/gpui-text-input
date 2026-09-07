@@ -66,6 +66,8 @@ impl RangeEditCoordinator {
             sequence: MutationSequenceState::default(),
             tracked_active_object: None,
             active_object_effect: None,
+            producer: request.producer(),
+            evidence: None,
         });
         self.operation_high_water = Some(proposal.key().operation());
         self.high_water_begin_identity = Some(begin_identity);
@@ -79,6 +81,12 @@ impl RangeEditCoordinator {
         active_object: Option<(InlineObjectId, InlineObjectOrder)>,
     ) -> Result<(), MutationError> {
         let active = self.active_mut(key, MutationState::PreflightPending)?;
+        if let Some(evidence) = &mut active.evidence {
+            if evidence.closure.is_none() || evidence.phase != EvidencePhase::Complete {
+                return Err(MutationError::MissingFinishInput);
+            }
+            evidence.phase = EvidencePhase::RestartPending;
+        }
         active.tracked_active_object = active_object;
         active.state = MutationState::InputStreaming;
         Ok(())

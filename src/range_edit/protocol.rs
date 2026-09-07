@@ -333,6 +333,7 @@ pub struct MutationBeginRequest {
     proposal: MutationProposal,
     source_cursor: MutationCursor,
     proposal_cursor: MutationCursor,
+    producer: Option<MutationProducerIdentity>,
 }
 
 impl MutationBeginRequest {
@@ -345,7 +346,17 @@ impl MutationBeginRequest {
             proposal,
             source_cursor,
             proposal_cursor,
+            producer: None,
         }
+    }
+
+    pub const fn with_replayable_producer(mut self, producer: MutationProducerIdentity) -> Self {
+        self.producer = Some(producer);
+        self
+    }
+
+    pub const fn producer(self) -> Option<MutationProducerIdentity> {
+        self.producer
     }
 
     pub const fn proposal(self) -> MutationProposal {
@@ -364,6 +375,7 @@ impl MutationBeginRequest {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MutationPageRequest {
     page: MutationPage,
+    pass: Option<MutationPass>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -379,7 +391,16 @@ pub enum MutationPageAcceptance {
 
 impl MutationPageRequest {
     pub const fn new(page: MutationPage) -> Self {
-        Self { page }
+        Self { page, pass: None }
+    }
+
+    pub const fn with_pass(mut self, pass: MutationPass) -> Self {
+        self.pass = Some(pass);
+        self
+    }
+
+    pub const fn pass(&self) -> Option<MutationPass> {
+        self.pass
     }
 
     pub const fn page(&self) -> &MutationPage {

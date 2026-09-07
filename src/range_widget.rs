@@ -3,6 +3,7 @@ mod geometry;
 mod history;
 mod ime;
 mod interaction;
+mod mutation_evidence;
 mod keyboard;
 mod lifecycle;
 mod object_edit;

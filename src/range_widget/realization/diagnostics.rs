@@ -154,6 +154,9 @@ impl RangeTextInput {
             self.clipboard.current_provenance_page(),
         )
         .expect("admitted request payload fits usize");
+        let local_mutation = self
+            .local_mutation_payload_charge()
+            .expect("admitted local mutation payload fits usize");
         let deferred = self
             .deferred_geometry_response
             .as_ref()
@@ -226,6 +229,7 @@ impl RangeTextInput {
             owned_geometry_bytes,
             request_storage.bytes,
             request_payload.bytes,
+            local_mutation.bytes,
             deferred.bytes,
             response_custody.bytes,
             self.active_response_processing.bytes,
@@ -250,6 +254,7 @@ impl RangeTextInput {
             geometry.total_items(),
             request_storage.items,
             request_payload.items,
+            local_mutation.items,
             deferred.items,
             response_custody.items,
             self.active_response_processing.items,

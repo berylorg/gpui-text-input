@@ -5,6 +5,7 @@ use crate::{
 };
 
 mod coordinator;
+mod evidence;
 mod lifecycle;
 mod preflight;
 mod proof;
@@ -12,6 +13,7 @@ mod protocol;
 mod settlement;
 mod staging;
 
+pub use evidence::*;
 pub use proof::*;
 pub use protocol::*;
 
@@ -444,6 +446,12 @@ pub enum MutationError {
         actual: ByteRange,
     },
     MissingFinishInput,
+    EvidenceUnavailable,
+    EvidenceRequired,
+    EvidenceAcknowledgementPending,
+    EvidenceAcknowledgementMismatch,
+    WrongMutationPass,
+    ReplayMismatch,
     PostFinishInput,
     FinishMismatch,
     MissingTextBoundaryProof,
@@ -483,6 +491,8 @@ struct ActiveMutation {
     sequence: MutationSequenceState,
     tracked_active_object: Option<(InlineObjectId, InlineObjectOrder)>,
     active_object_effect: Option<ActiveObjectEffect>,
+    producer: Option<MutationProducerIdentity>,
+    evidence: Option<EvidenceState>,
 }
 
 #[derive(Clone, Copy, Debug)]
