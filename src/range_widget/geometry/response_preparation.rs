@@ -419,6 +419,28 @@ impl RangeTextInput {
                 )
             });
         }
+        if state.restoration.is_none()
+            && matches!(
+                state.desired.priority(),
+                crate::RangeRealizationPriority::Caret
+                    | crate::RangeRealizationPriority::Ime
+                    | crate::RangeRealizationPriority::DirectedSelection
+            )
+            && let Some(selection) = state.desired.source_selection
+            && selection.head.byte_offset.get() > 0
+            && selection.head.byte_offset.get() == state.binding.extent().byte_len()
+        {
+            let caret = super::super::surface::position_for_composite_fragments(
+                target.fragments(),
+                selection.head,
+            )
+            .ok_or(RangeTextInputError::IncompleteSurface)?;
+            let desired = &mut state.desired;
+            let realized_end = desired.realization_anchor_block + desired.realization_extent;
+            if caret.y < desired.realization_anchor_block || caret.y >= realized_end {
+                desired.realization_anchor_block = caret.y;
+            }
+        }
         let desired = state.desired;
         let required_anchor = match desired.priority() {
             crate::RangeRealizationPriority::Caret

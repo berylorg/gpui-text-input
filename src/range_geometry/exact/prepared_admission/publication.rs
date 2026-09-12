@@ -309,6 +309,18 @@ impl ExactGeometryOwner {
                 target.overscan(),
             );
             anchor = Some(document_selection.head);
+            if extent > 0 {
+                let predecessor =
+                    super::super::target::select_target_predecessor(&index, target, anchor, extent)
+                        .map_err(|error| {
+                            prepared_failure(error, ExactGeometryFailureStage::Publication, &budget)
+                        })?;
+                target = BlockTarget::new(
+                    predecessor.block_offset(),
+                    target.viewport_extent(),
+                    target.overscan(),
+                );
+            }
         }
         let prepared_target = self
             .prepare_target_replacement_from_index(

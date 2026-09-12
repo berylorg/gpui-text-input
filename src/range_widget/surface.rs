@@ -458,6 +458,15 @@ impl CoherentRangeSurface {
         };
         let scroll_position = if desired.preserve_scroll_anchor {
             preserved_scroll_position.unwrap_or_else(|| target.target_source())
+        } else if matches!(
+            desired.priority(),
+            RangeRealizationPriority::Caret
+                | RangeRealizationPriority::Ime
+                | RangeRealizationPriority::DirectedSelection
+        ) && selection.head.byte_offset.get() == binding.extent().byte_len()
+            && caret_geometry.is_some()
+        {
+            selection.head
         } else {
             target.target_source()
         };
@@ -1416,7 +1425,7 @@ fn first_last_bounds_for_fragment_maps(
     ordered.then_some(first.zip(last)).flatten()
 }
 
-fn position_for_composite_fragments(
+pub(in crate::range_widget) fn position_for_composite_fragments(
     fragments: &[StreamingLayoutFragment],
     position: SourcePosition,
 ) -> Option<Point<Pixels>> {

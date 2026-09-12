@@ -164,12 +164,13 @@ fn exact_priority_block(
         .iter()
         .rev()
         .find(|checkpoint| {
-            checkpoint
-                .source()
-                .compare_in_revision(anchor)
-                .is_some_and(|ordering| {
-                    ordering.is_lt() || (!include_preceding_object && ordering.is_eq())
-                })
+            !checkpoint.is_terminal()
+                && checkpoint
+                    .source()
+                    .compare_in_revision(anchor)
+                    .is_some_and(|ordering| {
+                        ordering.is_lt() || (!include_preceding_object && ordering.is_eq())
+                    })
         })
         .map(crate::ExactGeometryCheckpoint::block_offset)
 }
