@@ -25,6 +25,7 @@ pub(super) struct WidgetTransitionCandidate {
     residency_rebind: Option<PreparedResidencyRebind>,
     object_rebind: Option<PreparedObjectRebind>,
     clipboard_rebind: Option<crate::ClipboardCancellation>,
+    boundary_retirement: Option<crate::ObjectRequestKey>,
     replacement_edits: Option<crate::RangeEditCoordinator>,
     edit_disposal: Option<crate::MutationDisposal>,
     scrollbar_replacement: Option<(
@@ -114,6 +115,8 @@ pub(super) struct PreparedIndexResponseTarget {
 pub(super) struct ActiveObjectTransitionCandidate {
     active_object: Option<super::ActiveInlineObject>,
     enabled: bool,
+    boundary_cancellation: Option<crate::ObjectRequestKey>,
+    segmentation_cancellation: Option<crate::PageRequestKey>,
     pointer_anchor: Option<crate::SourcePosition>,
     events: Vec<RangeTextInputEvent>,
     admission_charge: crate::RangeSurfaceCharge,
@@ -353,6 +356,19 @@ impl RangeTextInput {
                 (Some(active), events)
             }
         };
+        let boundary_cancellation = (!enabled)
+            .then(|| self.boundary_move_request())
+            .flatten()
+            .filter(|key| self.dispatched_object_pages.contains(key));
+        let segmentation_cancellation = (!enabled)
+            .then(|| self.boundary_segmentation_request())
+            .flatten()
+            .filter(|key| self.dispatched_pages.contains(key));
+        let cancellations = usize::from(boundary_cancellation.is_some())
+            + usize::from(segmentation_cancellation.is_some());
+        if cancellations > self.requests.capacity() - self.requests.len() {
+            return Err(RangeTextInputError::SurfaceCapacity);
+        }
         let event_bytes = events
             .capacity()
             .checked_mul(size_of::<RangeTextInputEvent>())
@@ -382,6 +398,8 @@ impl RangeTextInput {
         Ok(ActiveObjectTransitionCandidate {
             active_object,
             enabled,
+            boundary_cancellation,
+            segmentation_cancellation,
             pointer_anchor,
             events,
             admission_charge,
@@ -395,6 +413,16 @@ impl RangeTextInput {
     ) {
         self.install_active_object(candidate.active_object);
         self.enabled = candidate.enabled;
+        if !self.enabled {
+            self.retire_boundary_move();
+            self.retire_boundary_segmentation();
+            if let Some(key) = candidate.boundary_cancellation {
+                self.commit_prepared_request(RangeTextInputRequest::CancelObjectPage(key));
+            }
+            if let Some(key) = candidate.segmentation_cancellation {
+                self.commit_prepared_request(RangeTextInputRequest::CancelPage(key));
+            }
+        }
         self.pointer_anchor = candidate.pointer_anchor;
         self.last_surface_admission = Some(candidate.admission_charge);
         for event in candidate.events {
@@ -815,6 +843,12 @@ impl RangeTextInput {
             Some(TransitionConfigUpdate::Rebind { binding, .. }) => Some(binding),
             _ => None,
         };
+        let boundary_retirement = matches!(
+            config_update,
+            Some(TransitionConfigUpdate::Presentation(_) | TransitionConfigUpdate::Rebind { .. })
+        )
+        .then(|| self.boundary_move_request())
+        .flatten();
         let settling_mutation = match &config_update {
             Some(TransitionConfigUpdate::Rebind {
                 settlement: Some((key, _)),
@@ -899,6 +933,9 @@ impl RangeTextInput {
             ),
             3,
         ])?;
+        let effect_capacity = effect_capacity
+            .checked_add(usize::from(boundary_retirement.is_some()))
+            .ok_or(RangeTextInputError::SurfaceCapacity)?;
         let mut effects = Vec::with_capacity(effect_capacity);
         for key in &geometry.release().pages {
             if self.dispatched_pages.contains(key) {
@@ -987,6 +1024,11 @@ impl RangeTextInput {
                     effects.push(RangeTextInputRequest::CancelObjectPage(*key));
                 }
             }
+        }
+        if let Some(key) = boundary_retirement
+            && self.dispatched_object_pages.contains(&key)
+            && !effects.iter().any(|effect| matches!(effect, RangeTextInputRequest::CancelObjectPage(existing) if *existing == key)) {
+            effects.push(RangeTextInputRequest::CancelObjectPage(key));
         }
         if let Some(history) = self.pending_history
             && !history.is_admitted()
@@ -1123,7 +1165,7 @@ impl RangeTextInput {
                     clipboard_rebind,
                     edit_disposal,
                     rebind_binding.is_some(),
-                )
+                ) && !matches!(request, RangeTextInputRequest::ObjectPage(page) if Some(page.key()) == boundary_retirement)
             })
             .count();
         let destination_capacity = surviving_requests
@@ -1278,6 +1320,7 @@ impl RangeTextInput {
             residency_rebind,
             object_rebind,
             clipboard_rebind,
+            boundary_retirement,
             replacement_edits,
             edit_disposal,
             scrollbar_replacement: None,
@@ -1331,6 +1374,7 @@ impl RangeTextInput {
             residency_rebind,
             object_rebind,
             clipboard_rebind,
+            boundary_retirement,
             replacement_edits,
             edit_disposal,
             scrollbar_replacement,
@@ -1355,7 +1399,8 @@ impl RangeTextInput {
                 clipboard_rebind,
                 edit_disposal,
                 rebind_binding_from_update(&config_update).is_some(),
-            ) {
+            ) && !matches!(&request, RangeTextInputRequest::ObjectPage(page) if Some(page.key()) == boundary_retirement)
+            {
                 destination_requests.push_back(request);
             }
         }
@@ -1393,9 +1438,11 @@ impl RangeTextInput {
                 self.config.style = style;
             }
             Some(TransitionConfigUpdate::Presentation(generation)) => {
+                self.retire_boundary_move();
                 self.config.presentation_generation = generation;
             }
             Some(TransitionConfigUpdate::Rebind { binding, .. }) => {
+                self.retire_boundary_move();
                 self.config.binding = binding;
                 self.pending_target_intent = None;
                 self.pending_layout_intent = None;

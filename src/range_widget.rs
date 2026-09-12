@@ -1,11 +1,12 @@
+mod boundary_navigation;
 mod clipboard;
 mod geometry;
 mod history;
 mod ime;
 mod interaction;
-mod mutation_evidence;
 mod keyboard;
 mod lifecycle;
+mod mutation_evidence;
 mod object_edit;
 mod object_surface;
 mod page_delivery;
@@ -104,6 +105,7 @@ pub struct RangeTextInput {
     surface_candidate: Option<SurfaceCandidate>,
     segmentation: Option<SegmentationContinuation>,
     segmentation_action: Option<interaction::PendingBoundaryAction>,
+    pending_boundary_move: Option<boundary_navigation::PendingBoundaryMove>,
     platform: Option<platform::PlatformReplay>,
     restoration: Option<restoration::RestorationValidation>,
     restoration_seed: Option<RangeRestorationSeed>,
@@ -499,6 +501,7 @@ impl RangeTextInput {
             surface_candidate: None,
             segmentation: None,
             segmentation_action: None,
+            pending_boundary_move: None,
             platform: None,
             restoration: None,
             restoration_seed: None,
@@ -715,6 +718,7 @@ impl RangeTextInput {
         self.replacement.is_none()
             && self.segmentation.is_none()
             && self.segmentation_action.is_none()
+            && self.pending_boundary_move.is_none()
             && self.platform.is_none()
             && self.pending_local_mutation.is_none()
             && self.prepared_local_operation.is_none()

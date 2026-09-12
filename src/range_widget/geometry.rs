@@ -422,6 +422,7 @@ impl RangeTextInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), RangeTextInputError> {
+        self.service_pending_boundary_move(cx)?;
         if self.requests.is_empty() && self.service_pending_index_intent(cx)? {
             self.last_realization_step.reached_external_boundary = true;
             return Ok(());

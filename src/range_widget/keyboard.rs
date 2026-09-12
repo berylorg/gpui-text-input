@@ -64,7 +64,11 @@ impl RangeTextInput {
         let _ = self.begin_boundary(
             kind,
             direction,
-            super::interaction::PendingBoundaryAction::Move { extend, direction },
+            super::interaction::PendingBoundaryAction::Move {
+                extend,
+                direction,
+                selection,
+            },
             window,
             cx,
         );

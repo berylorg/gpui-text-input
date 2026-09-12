@@ -597,6 +597,7 @@ impl RangeTextInput {
         self.active_geometry = None;
         self.segmentation = None;
         self.segmentation_action = None;
+        self.cancel_boundary_move();
         self.platform = None;
         self.restoration = None;
         self.restoration_seed = None;

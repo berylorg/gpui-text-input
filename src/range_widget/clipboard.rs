@@ -529,6 +529,10 @@ impl RangeTextInput {
                 self.dispatched_object_pages.remove(&key);
                 self.deliver_restoration_object_page(page, cx)
             }
+            crate::ObjectPurpose::Selection => {
+                self.dispatched_object_pages.remove(&key);
+                self.deliver_boundary_move_page(page, cx)
+            }
             crate::ObjectPurpose::GeometryIndex | crate::ObjectPurpose::GeometryTarget => {
                 unreachable!("geometry object purposes were routed before generic delivery")
             }
@@ -605,6 +609,7 @@ impl RangeTextInput {
                 self.reject_restoration(cx);
                 Ok(())
             }
+            crate::ObjectPurpose::Selection => self.fail_boundary_move_page(key),
             crate::ObjectPurpose::GeometryIndex | crate::ObjectPurpose::GeometryTarget => {
                 self.fail_geometry_object_page(key, failure, cx)
             }

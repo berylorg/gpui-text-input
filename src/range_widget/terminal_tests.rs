@@ -1,4 +1,5 @@
 mod admission;
+mod boundary_navigation;
 mod capacity;
 mod closure;
 mod continuations;

@@ -470,6 +470,9 @@ impl RangeTextInput {
         window: &mut gpui::Window,
         cx: &mut gpui::Context<Self>,
     ) -> ResponseCustodyProgress {
+        if self.boundary_response_waits_for_release_slot(cx) {
+            return ResponseCustodyProgress::Idle;
+        }
         if self.response_custody.is_empty() {
             if self.clipboard.has_prepared_work() {
                 if !self.try_spend_realization_credit(cx) {
@@ -621,6 +624,9 @@ impl RangeTextInput {
         &mut self,
         cx: &mut gpui::Context<Self>,
     ) -> ResponseCustodyProgress {
+        if self.boundary_response_waits_for_release_slot(cx) {
+            return ResponseCustodyProgress::Idle;
+        }
         if self.response_custody.is_empty() && self.clipboard.has_prepared_work() {
             if !self.try_spend_realization_credit(cx) {
                 return ResponseCustodyProgress::Idle;

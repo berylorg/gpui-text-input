@@ -23,6 +23,7 @@ pub(super) enum PendingBoundaryAction {
     Move {
         extend: bool,
         direction: SegmentationDirection,
+        selection: super::RangeSourceSelection,
     },
     Delete {
         direction: SegmentationDirection,
@@ -971,7 +972,10 @@ impl RangeTextInput {
         if !self.enabled {
             return Err(RangeTextInputError::Busy);
         }
-        if self.segmentation.is_some() || self.active_geometry.is_some() {
+        if self.segmentation.is_some()
+            || self.active_geometry.is_some()
+            || self.pending_boundary_move.is_some()
+        {
             return Err(RangeTextInputError::Busy);
         }
         self.interactive_surface()
@@ -1036,14 +1040,21 @@ impl RangeTextInput {
             return Err(RangeTextInputError::Busy);
         }
         match action {
-            PendingBoundaryAction::Move { extend, direction } => {
+            PendingBoundaryAction::Move {
+                extend,
+                direction,
+                selection: original,
+            } => {
                 let surface = self
                     .interactive_surface()
                     .ok_or(RangeTextInputError::Busy)?;
-                let anchor = surface.selection().anchor;
-                let position = surface
-                    .source_position_for_byte(offset, direction)
-                    .ok_or(RangeTextInputError::Pending)?;
+                if surface.selection() != original {
+                    return Err(RangeTextInputError::Stale);
+                }
+                let anchor = original.anchor;
+                let Some(position) = surface.source_position_for_byte(offset, direction) else {
+                    return self.retain_boundary_move(offset, direction, extend, original, cx);
+                };
                 let selection = if extend {
                     super::RangeSourceSelection {
                         anchor,

@@ -254,6 +254,9 @@ impl Element for RangeTextInputElement {
                 return;
             }
             input.begin_realization_frame();
+            if input.pending_boundary_move.is_some() {
+                input.defer_realization_continuation(window, cx);
+            }
             let _ = input.service_response_custody(window, cx);
             let _ = input.service_pending_configuration_intent(cx);
             let _ = input.service_pending_rebind_intent(window, cx);

@@ -172,6 +172,7 @@ fn resident_segmentation_advances_one_page_per_frame(cx: &mut gpui::TestAppConte
                     super::super::interaction::PendingBoundaryAction::Move {
                         extend: false,
                         direction: crate::SegmentationDirection::Forward,
+                        selection: input.surface().unwrap().selection(),
                     },
                     window,
                     cx,
