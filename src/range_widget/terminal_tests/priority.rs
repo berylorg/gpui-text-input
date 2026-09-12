@@ -424,10 +424,13 @@ fn equal_stable_ids_count_distinct_surface_and_residency_allocations_exactly(
         else {
             panic!("fresh equal-id object demand")
         };
+        let mut duplicate_facts =
+            Vec::with_capacity(input.realization_diagnostics().max_owned_objects + 1);
+        duplicate_facts.extend_from_slice(surface_object.objects());
         let duplicate_object = ObjectPage::new(
             surface_object.id(),
             object_request.key(),
-            surface_object.objects().to_vec(),
+            duplicate_facts,
             surface_object.preceding(),
             surface_object.following(),
             surface_object.complete(),
@@ -462,6 +465,20 @@ fn equal_stable_ids_count_distinct_surface_and_residency_allocations_exactly(
             .map(|page| page.retained_charge().bytes())
             .sum::<usize>();
         let diagnostics = input.realization_diagnostics();
+        let semantic_objects = surface
+            .object_pages()
+            .iter()
+            .map(|page| page.objects().len())
+            .sum::<usize>()
+            + input
+                .object_residency
+                .resident_pages()
+                .map(|page| page.objects().len())
+                .sum::<usize>();
+        assert!(semantic_objects <= diagnostics.max_owned_objects);
+        assert!(diagnostics.current.resident_objects > diagnostics.max_owned_objects);
+        assert!(diagnostics.current.owned_items <= diagnostics.max_surface_items);
+        assert!(diagnostics.current.owned_bytes <= diagnostics.max_surface_bytes);
         assert_eq!(diagnostics.current.resident_page_bytes, expected_text_bytes);
         assert_eq!(
             diagnostics.current.resident_object_bytes,
