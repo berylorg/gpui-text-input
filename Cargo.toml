@@ -9,8 +9,8 @@ rust-version = "1.92"
 version = "0.1.0"
 
 [workspace.dependencies]
-gpui = { git = "https://github.com/berylorg/zed-fork.git", rev = "19ef0796613226c123a3c9047865060e7639f713", default-features = false, features = ["windows-manifest"] }
-gpui-scrollbar = { git = "https://github.com/berylorg/gpui-scrollbar.git", rev = "1ca3bef5313117fc8edda88fc7aa2cb66e0cc013" }
+gpui = { git = "https://github.com/berylorg/zed-fork.git", rev = "85ae2daa8ed489bf0fc2813131b9f947ae63ad1e", default-features = false, features = ["windows-manifest"] }
+gpui-scrollbar = { git = "https://github.com/berylorg/gpui-scrollbar.git", rev = "1bb1ec7da68dfc38962452b8a45ff749286566d6" }
 unicode-segmentation = { git = "https://github.com/berylorg/unicode-segmentation-fork.git", rev = "2badf6af53c261e0f39da75bd25036d45e6278d2" }
 
 [package]
