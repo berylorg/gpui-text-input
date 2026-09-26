@@ -864,7 +864,7 @@ dependencies = [
 [[package]]
 name = "collections"
 version = "0.1.0"
-source = "git+https://github.com/berylorg/zed-fork.git?rev=936b801fff82e343124237608bf46e4d192f5177#936b801fff82e343124237608bf46e4d192f5177"
+source = "git+https://github.com/berylorg/zed-fork.git?rev=19ef0796613226c123a3c9047865060e7639f713#19ef0796613226c123a3c9047865060e7639f713"
 dependencies = [
  "indexmap",
  "rustc-hash 2.1.2",
@@ -1209,7 +1209,7 @@ dependencies = [
 [[package]]
 name = "derive_refineable"
 version = "0.1.0"
-source = "git+https://github.com/berylorg/zed-fork.git?rev=936b801fff82e343124237608bf46e4d192f5177#936b801fff82e343124237608bf46e4d192f5177"
+source = "git+https://github.com/berylorg/zed-fork.git?rev=19ef0796613226c123a3c9047865060e7639f713#19ef0796613226c123a3c9047865060e7639f713"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1970,7 +1970,7 @@ dependencies = [
 [[package]]
 name = "gpui"
 version = "0.2.2"
-source = "git+https://github.com/berylorg/zed-fork.git?rev=936b801fff82e343124237608bf46e4d192f5177#936b801fff82e343124237608bf46e4d192f5177"
+source = "git+https://github.com/berylorg/zed-fork.git?rev=19ef0796613226c123a3c9047865060e7639f713#19ef0796613226c123a3c9047865060e7639f713"
 dependencies = [
  "anyhow",
  "as-raw-xcb-connection",
@@ -2067,7 +2067,7 @@ dependencies = [
 [[package]]
 name = "gpui-scrollbar"
 version = "0.1.0"
-source = "git+https://github.com/berylorg/gpui-scrollbar.git?rev=d81b61231274246be1e65805efdfbf764e48d8e4#d81b61231274246be1e65805efdfbf764e48d8e4"
+source = "git+https://github.com/berylorg/gpui-scrollbar.git?rev=1ca3bef5313117fc8edda88fc7aa2cb66e0cc013#1ca3bef5313117fc8edda88fc7aa2cb66e0cc013"
 dependencies = [
  "gpui",
 ]
@@ -2084,7 +2084,7 @@ dependencies = [
 [[package]]
 name = "gpui_macros"
 version = "0.1.0"
-source = "git+https://github.com/berylorg/zed-fork.git?rev=936b801fff82e343124237608bf46e4d192f5177#936b801fff82e343124237608bf46e4d192f5177"
+source = "git+https://github.com/berylorg/zed-fork.git?rev=19ef0796613226c123a3c9047865060e7639f713#19ef0796613226c123a3c9047865060e7639f713"
 dependencies = [
  "heck 0.5.0",
  "proc-macro2",
@@ -2750,7 +2750,7 @@ dependencies = [
 [[package]]
 name = "media"
 version = "0.1.0"
-source = "git+https://github.com/berylorg/zed-fork.git?rev=936b801fff82e343124237608bf46e4d192f5177#936b801fff82e343124237608bf46e4d192f5177"
+source = "git+https://github.com/berylorg/zed-fork.git?rev=19ef0796613226c123a3c9047865060e7639f713#19ef0796613226c123a3c9047865060e7639f713"
 dependencies = [
  "anyhow",
  "bindgen",
@@ -3341,7 +3341,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 [[package]]
 name = "perf"
 version = "0.1.0"
-source = "git+https://github.com/berylorg/zed-fork.git?rev=936b801fff82e343124237608bf46e4d192f5177#936b801fff82e343124237608bf46e4d192f5177"
+source = "git+https://github.com/berylorg/zed-fork.git?rev=19ef0796613226c123a3c9047865060e7639f713#19ef0796613226c123a3c9047865060e7639f713"
 dependencies = [
  "collections",
  "serde",
@@ -3823,7 +3823,7 @@ dependencies = [
 [[package]]
 name = "refineable"
 version = "0.1.0"
-source = "git+https://github.com/berylorg/zed-fork.git?rev=936b801fff82e343124237608bf46e4d192f5177#936b801fff82e343124237608bf46e4d192f5177"
+source = "git+https://github.com/berylorg/zed-fork.git?rev=19ef0796613226c123a3c9047865060e7639f713#19ef0796613226c123a3c9047865060e7639f713"
 dependencies = [
  "derive_refineable",
 ]
@@ -4106,7 +4106,7 @@ checksum = "b12e76d157a900eb52e81bc6e9f3069344290341720e9178cde2407113ac8d89"
 [[package]]
 name = "semantic_version"
 version = "0.1.0"
-source = "git+https://github.com/berylorg/zed-fork.git?rev=936b801fff82e343124237608bf46e4d192f5177#936b801fff82e343124237608bf46e4d192f5177"
+source = "git+https://github.com/berylorg/zed-fork.git?rev=19ef0796613226c123a3c9047865060e7639f713#19ef0796613226c123a3c9047865060e7639f713"
 dependencies = [
  "anyhow",
  "serde",
@@ -4466,7 +4466,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 [[package]]
 name = "sum_tree"
 version = "0.1.0"
-source = "git+https://github.com/berylorg/zed-fork.git?rev=936b801fff82e343124237608bf46e4d192f5177#936b801fff82e343124237608bf46e4d192f5177"
+source = "git+https://github.com/berylorg/zed-fork.git?rev=19ef0796613226c123a3c9047865060e7639f713#19ef0796613226c123a3c9047865060e7639f713"
 dependencies = [
  "arrayvec",
  "log",
@@ -5122,7 +5122,7 @@ checksum = "b6c140620e7ffbb22c2dee59cafe6084a59b5ffc27a8859a5f0d494b5d52b6be"
 [[package]]
 name = "util"
 version = "0.1.0"
-source = "git+https://github.com/berylorg/zed-fork.git?rev=936b801fff82e343124237608bf46e4d192f5177#936b801fff82e343124237608bf46e4d192f5177"
+source = "git+https://github.com/berylorg/zed-fork.git?rev=19ef0796613226c123a3c9047865060e7639f713#19ef0796613226c123a3c9047865060e7639f713"
 dependencies = [
  "anyhow",
  "async-fs",
@@ -5160,7 +5160,7 @@ dependencies = [
 [[package]]
 name = "util_macros"
 version = "0.1.0"
-source = "git+https://github.com/berylorg/zed-fork.git?rev=936b801fff82e343124237608bf46e4d192f5177#936b801fff82e343124237608bf46e4d192f5177"
+source = "git+https://github.com/berylorg/zed-fork.git?rev=19ef0796613226c123a3c9047865060e7639f713#19ef0796613226c123a3c9047865060e7639f713"
 dependencies = [
  "perf",
  "quote",
