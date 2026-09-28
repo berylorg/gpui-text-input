@@ -4,11 +4,11 @@ Implement the capacity prerequisite for preserved resident adoption from
 [the package contract](design.md#range-backed-preserved-resident-adoption), coordinated by
 the Beryl root plan. Resident protection, accounting and publication remain separate work.
 
-# Phase 54: Derive Shared Output Capacity Allowances (finished)
+# Phase 55: Identify Shared Presentation Backing Before Scanner Metadata (finished)
 
-Mapped output allowances separate existing and prospective shared credit while preserving
-configured bounds and checked mapping representability. Independent review accepted the calculation;
-all 225 integration tests passed. Production remains zero-credit until ownership evidence is wired.
+Active scanner overlap now uses live GPUI fragment backing before target metadata exists, while
+retaining deferred-fact overlap. Independent resource review accepted the query; all 226 integration
+tests passed. Session credit propagation remains separate.
 
 # Phase 2: Enforce Capacity Throughout Preparation (pending)
 
@@ -29,6 +29,8 @@ derive live session baselines and per-observation credits, then consume those pe
 Zero-credit GPUI allowances now respect both mapped views, and actual continuation startup is
 explicitly admitted before invocation. Shared-output allowance derivation is accepted; connect
 per-observation ownership evidence before prospective display credits can be enabled.
+Active and returned inline overlap now derives from live fragments before metadata exists; avoid
+crediting duplicate returned/retained handles when their shared payload is charged only once.
 Carry it through pre-copy, detached custody, output before metadata and publication observations.
 Deferred presentation backing now shares correctly and participates in retained overlap queries.
 Explicit preparation admission now carries typed configured/enclosing refusal attribution.

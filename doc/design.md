@@ -721,7 +721,10 @@ of immutable response preparation. Its probe reports raw required capacity, opti
 observed enclosing peaks for prepared results and failures, and terminal/successor facts,
 can explicitly commit the prepared result, and can read an admitted session response's reserved
 successor identities. It can query current and prepared presentation overlap with supplied object
-pages without exposing allocation addresses, and distinguish explicit enclosing-only and configured
+pages without exposing allocation addresses, including returned GPUI inline fragments before
+target metadata exists. Shared-display test handles qualify exact backing identity against independent
+source clones; overlap counts charged fragment occurrences without multiplying repeated page references.
+The probes distinguish explicit enclosing-only and configured
 preparation admission refusals. It also qualifies the positive remaining-capacity reservation used
 before GPUI binding construction, and independently supplied configured/enclosing charge
 observations and their separate high-water marks, including nested transition admissions and

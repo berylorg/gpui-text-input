@@ -2,6 +2,17 @@ use super::*;
 
 pub use super::super::capacity_observation::CapacityObservations;
 
+pub fn fragment_presentation_overlap(
+    fragments: &[gpui::StreamingLayoutFragment],
+    pages: &[&ObjectPage],
+) -> Option<usize> {
+    super::super::accounting::fragment_presentation_overlap_bytes(fragments, pages.iter().copied())
+}
+
+pub fn shared_object_display(object: &crate::InlineObjectFact) -> gpui::SharedString {
+    object.presentation().shared_display()
+}
+
 pub struct PreparationCapacityProbe(super::super::capacity_observation::CapacityObservations);
 
 impl PreparationCapacityProbe {

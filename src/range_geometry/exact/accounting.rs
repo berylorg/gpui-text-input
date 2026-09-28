@@ -106,10 +106,7 @@ pub(super) fn active_presentation_overlap_bytes<'a>(
     active: &ActiveJob,
     pages: impl Iterator<Item = &'a crate::ObjectPage> + Clone,
 ) -> Option<usize> {
-    let output = super::types::presentation_overlap_bytes(
-        &active.scanner.object_presentations,
-        pages.clone(),
-    )?;
+    let output = fragment_presentation_overlap_bytes(&active.scanner.fragments, pages.clone())?;
     let deferred = active
         .scanner
         .deferred_object
@@ -126,6 +123,23 @@ pub(super) fn active_presentation_overlap_bytes<'a>(
             }
         });
     output.checked_add(deferred)
+}
+
+pub(super) fn fragment_presentation_overlap_bytes<'a>(
+    fragments: &[StreamingLayoutFragment],
+    pages: impl Iterator<Item = &'a crate::ObjectPage> + Clone,
+) -> Option<usize> {
+    fragments.iter().try_fold(0usize, |total, fragment| {
+        let StreamingLayoutFragment::InlineObject(fragment) = fragment else {
+            return Some(total);
+        };
+        let allocation = (fragment.presentation.as_ptr(), fragment.presentation.len());
+        let aliased = pages
+            .clone()
+            .flat_map(crate::ObjectPage::presentation_allocations)
+            .any(|candidate| candidate == allocation);
+        total.checked_add(if aliased { allocation.1 } else { 0 })
+    })
 }
 
 pub(super) fn fixed_bytes_without_active(owner: &ExactGeometryOwner) -> usize {

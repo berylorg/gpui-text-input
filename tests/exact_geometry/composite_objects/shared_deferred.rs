@@ -2,6 +2,129 @@ use super::*;
 use gpui_text_input::preparation_test_support::{owner_presentation_overlap, prepare_response};
 
 #[gpui::test]
+fn returned_inline_overlap_uses_live_backing_before_target_metadata(cx: &mut TestAppContext) {
+    use gpui_text_input::preparation_test_support::{
+        fragment_presentation_overlap, shared_object_display,
+    };
+    with_text_system(cx, |text_system| {
+        for display in ["", "shared é"] {
+            let fact = InlineObjectFact::new(
+                InlineObjectId::new(1),
+                ByteOffset::new(0),
+                InlineObjectOrder::new(1),
+                "fallback".repeat(64),
+                InlineObjectPresentation::new(1, display, px(80.), px(64.), px(40.), None, 1, true)
+                    .unwrap(),
+            );
+            let leading = SourcePosition::new(
+                ByteOffset::new(0),
+                InlineObjectGap::before(fact.cursor().neighbor()),
+            );
+            let trailing = SourcePosition::new(
+                ByteOffset::new(0),
+                InlineObjectGap::after(fact.cursor().neighbor()),
+            );
+            let mut input = layout(64, 10000.);
+            input.start_position = leading.into();
+            let mut owner = ExactGeometryOwner::new(
+                binding("", 1),
+                PresentationGeneration::new(1),
+                input.clone(),
+                style(),
+                ExactGeometryLimits::new(256, 32, 512 * 1024, 32 * 1024).unwrap(),
+            )
+            .unwrap();
+            let job = start_index(&mut owner, 1);
+            let text = page(&mut owner, job, "", 0, 0, 1);
+            owner.admit_page(job, &text, text_system).unwrap();
+            let objects = object_response(&mut owner, job, 1, vec![fact], true);
+            let independent = objects.clone();
+            let runs = || {
+                if display.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![TextRun {
+                        len: display.len(),
+                        font: font(".SystemUIFont"),
+                        color: black(),
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    }]
+                }
+            };
+            for shared in [false, true] {
+                let mut session = text_system.streaming_layout_session(input.clone()).unwrap();
+                let returned = session
+                    .admit_inline_object(gpui::StreamingInlineObject {
+                        input_id: input.input_id,
+                        segment_policy_id: input.segment_policy_id,
+                        ordinal: 0,
+                        id: objects.objects()[0].id().into(),
+                        order: objects.objects()[0].order().into(),
+                        leading: leading.into(),
+                        trailing: trailing.into(),
+                        presentation: if shared {
+                            shared_object_display(&objects.objects()[0])
+                        } else {
+                            SharedString::from(display.to_owned())
+                        },
+                        runs: runs(),
+                        width: px(80.),
+                        height: px(64.),
+                        baseline: px(40.),
+                        background: None,
+                    })
+                    .unwrap();
+                let expected = if shared { display.len() } else { 0 };
+                assert_eq!(
+                    fragment_presentation_overlap(&returned.fragments, &[&objects]),
+                    Some(expected)
+                );
+                assert_eq!(
+                    fragment_presentation_overlap(&returned.fragments, &[&objects, &objects]),
+                    Some(expected)
+                );
+                assert_eq!(
+                    fragment_presentation_overlap(&returned.fragments, &[&independent]),
+                    Some(0)
+                );
+                assert_eq!(
+                    fragment_presentation_overlap(&returned.fragments, &[]),
+                    Some(0)
+                );
+                let mut charged_twice = returned.fragments.to_vec();
+                charged_twice.extend(returned.fragments.iter().cloned());
+                assert_eq!(
+                    fragment_presentation_overlap(&charged_twice, &[&objects]),
+                    Some(expected * 2)
+                );
+                assert_eq!(owner_presentation_overlap(&owner, &[&objects]), Some(0));
+            }
+            if !display.is_empty() {
+                input.start_position = StreamingLayoutPosition::at(0);
+                let mut session = text_system.streaming_layout_session(input.clone()).unwrap();
+                let returned = session
+                    .admit_text(gpui::StreamingTextSegment {
+                        input_id: input.input_id,
+                        segment_policy_id: input.segment_policy_id,
+                        ordinal: 0,
+                        logical_range: StreamingLayoutPosition::at(0)
+                            ..StreamingLayoutPosition::at(display.len() as u64),
+                        text: shared_object_display(&objects.objects()[0]),
+                        runs: runs(),
+                    })
+                    .unwrap();
+                assert_eq!(
+                    fragment_presentation_overlap(&returned.fragments, &[&objects]),
+                    Some(0)
+                );
+            }
+        }
+    });
+}
+
+#[gpui::test]
 fn deferred_presentations_share_admitted_backing_through_preparation(cx: &mut TestAppContext) {
     with_text_system(cx, |text_system| {
         for index in [false, true] {
