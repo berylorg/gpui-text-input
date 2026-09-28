@@ -4,11 +4,12 @@ Implement the capacity prerequisite for preserved resident adoption from
 [the package contract](design.md#range-backed-preserved-resident-adoption), coordinated by
 the Beryl root plan. Resident protection, accounting and publication remain separate work.
 
-# Phase 86: Reconcile Terminal Target Capacity Fixture (finished)
+# Phase 87: Reconcile Detached History Restoration Fixture (finished)
 
-Reconciled fixed resident and transition byte charges. Both corrected capacity tests pass,
-including separate exact byte/item caps and one-under atomic refusal; independent resource
-review accepted the correction. No production change. Three older unit failures remain open.
+Corrected the history fixture to distinguish live admitted history from detached host custody.
+The focused test passes, including exhaustion, successor restoration, exact slot reuse and
+drainage. Independent lifecycle/resource review accepted the change. No production behavior
+changed; two priority unit failures and overall preparation remain open.
 
 # Phase 2: Enforce Capacity Throughout Preparation (pending)
 
@@ -44,7 +45,7 @@ Complete object pages also carry retained output credit through nonterminal forw
 Text responses cannot retain deferred custody and need no deferred-display credit.
 Deferred presentation backing now shares correctly and participates in retained overlap queries.
 Explicit preparation admission now carries typed configured/enclosing refusal attribution.
-Do not infer host attribution from ambiguous GPUI errors. Three older baseline unit failures remain
+Do not infer host attribution from ambiguous GPUI errors. Two older baseline unit failures remain
 recorded in the Beryl capacity failure note and require authority reconciliation.
 Returned GPUI custody now uses the geometry budget before invocation.
 Transient inline style runs remain charged through the layout call and output coexistence.
@@ -57,7 +58,7 @@ Dependency-private shaping scratch is outside this reservation; retain finite la
 
 Candidate, Ready and adoption charges are now admitted before custody transfer. Startup owner
 admission and the shared-environment/transfer-coexistence audits are accepted. Overall preparation
-closure and the three remaining baseline test failures still require final reconciliation.
+closure and the two remaining baseline test failures still require final reconciliation.
 Phase 79 removes the candidate configuration copy and qualifies shared placeholder ownership.
 Phase 78 proves buffered effects cannot coexist with candidate preparation under current scheduling;
 accepted component checks alone do not close the preparation boundary.

@@ -3851,15 +3851,19 @@ fn history_custody_capacity_exhaustion_releases_and_reuses_exact_slots(
         })
     });
     input.read_with(window_cx, |input, _| {
-        assert_eq!(input.config.settlement_coordinator.retained_count(), 2)
-    });
-    rebind_revision(&input, window_cx, 4);
-    drive_initial_surface(&input, window_cx);
-    input.read_with(window_cx, |input, _| {
+        assert_eq!(input.config.settlement_coordinator.retained_count(), 2);
         assert!(matches!(
             input.export_restoration(None),
             Err(RangeTextInputError::NotQuiescent)
         ));
+    });
+    rebind_revision(&input, window_cx, 4);
+    drive_initial_surface(&input, window_cx);
+    input.read_with(window_cx, |input, _| {
+        assert_eq!(input.config.settlement_coordinator.retained_count(), 2);
+        let seed = input.export_restoration(None).unwrap();
+        assert_eq!(seed.binding, input.config.binding);
+        assert_eq!(seed.binding.revision(), SourceRevision::new(4));
     });
 
     let mut oldest = h2;
