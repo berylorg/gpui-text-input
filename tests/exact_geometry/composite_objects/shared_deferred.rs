@@ -1,8 +1,8 @@
 use super::*;
 use gpui_text_input::preparation_test_support::{
     enclosing_failure_peak, is_enclosing_capacity_refusal, owner_presentation_overlap,
-    prepare_continuation_copy, prepare_deferred_tail, prepare_detached_inline, prepare_response,
-    prepare_response_with_enclosing,
+    prepare_continuation_copy, prepare_deferred_tail, prepare_detached_inline, prepare_object_scan,
+    prepare_response, prepare_response_with_enclosing,
 };
 
 fn check_continuation_copy(
@@ -133,7 +133,7 @@ fn check_detached_inline(
     assert_eq!(raw, identity);
     for current in [(0, 0), (baseline.0 + 8192, baseline.1 + 32)] {
         let mapped = (
-            current.0 + raw.0 - baseline.0 - display_bytes,
+            current.0 + raw.0 - baseline.0 - 2 * display_bytes,
             current.1 + raw.1 - baseline.1,
         );
         for _ in 0..2 {
@@ -158,6 +158,69 @@ fn check_detached_inline(
         let failure = probe(Some(current), (usize::MAX, usize::MAX)).unwrap_err();
         assert!(!is_enclosing_capacity_refusal(&failure));
         assert_eq!(enclosing_failure_peak(&failure), Some((0, 0)));
+        assert_eq!(failure.release(), &ExactGeometryRelease::default());
+        assert_eq!(owner.counts(), before);
+    }
+}
+
+fn check_object_scan(
+    owner: &ExactGeometryOwner,
+    job: GeometryJobKey,
+    index: bool,
+    text: &RangePage,
+    objects: &ObjectPage,
+    text_system: &gpui::WindowTextSystem,
+    display_bytes: usize,
+) {
+    let before = owner.counts();
+    let probe = |current, limit| {
+        prepare_object_scan(
+            owner,
+            job,
+            index,
+            text,
+            objects,
+            text_system,
+            current,
+            limit,
+        )
+    };
+    let (raw, identity, baseline) = probe(None, (usize::MAX, usize::MAX)).unwrap();
+    assert_eq!(raw, identity);
+    for current in [(0, 0), (baseline.0 + 8192, baseline.1 + 32)] {
+        let (enclosing_raw, mapped, _) = probe(Some(current), (usize::MAX, usize::MAX)).unwrap();
+        assert_eq!(enclosing_raw, raw);
+        assert_eq!(mapped.1, current.1 + raw.1 - baseline.1);
+        let savings = current.0 + raw.0 - baseline.0 - mapped.0;
+        assert_eq!(savings, display_bytes * if index { 1 } else { 2 });
+        for _ in 0..2 {
+            assert_eq!(
+                probe(Some(current), mapped).unwrap(),
+                (raw, mapped, baseline)
+            );
+            assert_eq!(owner.counts(), before);
+        }
+        for limit in [(mapped.0 - 1, mapped.1), (mapped.0, mapped.1 - 1)] {
+            let failure = probe(Some(current), limit).unwrap_err();
+            if is_enclosing_capacity_refusal(&failure) {
+                let attempted = enclosing_failure_peak(&failure).unwrap();
+                assert!(attempted.0 > limit.0 || attempted.1 > limit.1);
+            } else {
+                assert_eq!(
+                    failure.error(),
+                    &ExactGeometryError::Layout(gpui::StreamingLayoutError::CapacityExceeded(
+                        gpui::StreamingLayoutComponent::Total
+                    ))
+                );
+            }
+            assert_eq!(failure.release(), &ExactGeometryRelease::default());
+            assert_eq!(owner.counts(), before);
+            assert!(probe(Some(current), mapped).is_ok());
+        }
+    }
+    for current in [(usize::MAX, 0), (0, usize::MAX)] {
+        let failure = probe(Some(current), (usize::MAX, usize::MAX)).unwrap_err();
+        assert!(!is_enclosing_capacity_refusal(&failure));
         assert_eq!(failure.release(), &ExactGeometryRelease::default());
         assert_eq!(owner.counts(), before);
     }
@@ -357,7 +420,26 @@ fn deferred_presentations_share_admitted_backing_through_preparation(cx: &mut Te
             };
             let text = page(&mut owner, job, "x", 0, 1, 10);
             owner.admit_page(job, &text, text_system).unwrap();
-            let objects = object_response(&mut owner, job, 10, vec![first], false);
+            let objects = object_response_with_limit(&mut owner, job, 10, 3, vec![first], false);
+            let complete = ObjectPage::new(
+                ObjectPageId::new(11),
+                objects.key(),
+                vec![fact(1), fact(2)],
+                ObjectPageEdgeFact::EnvelopeBoundary,
+                ObjectPageEdgeFact::EnvelopeBoundary,
+                true,
+                None,
+            )
+            .unwrap();
+            check_object_scan(
+                &owner,
+                job,
+                index,
+                &text,
+                &complete,
+                text_system,
+                display.len(),
+            );
             let independent = objects.clone();
             let prepare = |owner: &ExactGeometryOwner, objects: &ObjectPage, id| {
                 prepare_response(

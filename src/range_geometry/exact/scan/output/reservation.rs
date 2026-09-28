@@ -6,6 +6,7 @@ pub(super) fn binding(
     next_position: gpui::StreamingLayoutPosition,
     transient_bytes: usize,
     transient_items: usize,
+    prospective_display_bytes: usize,
     budget: &mut AdmissionBudget,
 ) -> Result<StreamingLayoutBinding, ExactGeometryError> {
     budget.observe(job, 0, 0)?;
@@ -31,7 +32,8 @@ pub(super) fn binding(
         (occupied_bytes, occupied_items),
         job.scanner.continuation.next_position,
     )?;
-    let (bytes, items) = budget.remaining_capacity(occupied_bytes, occupied_items)?;
+    let (bytes, items) =
+        budget.output_capacity(occupied_bytes, occupied_items, prospective_display_bytes)?;
     let mut reserved = binding.clone();
     reserved.limits.retained_bytes = reserved.limits.retained_bytes.min(bytes);
     reserved.limits.retained_items = reserved.limits.retained_items.min(items);

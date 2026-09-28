@@ -231,6 +231,7 @@ pub(super) fn process_object_page(
             limits,
             source_len,
             budget,
+            credit_deferred_display,
         )?;
         index += 1;
     }
@@ -297,6 +298,7 @@ pub(super) fn admit_deferred_object(
             limits,
             source_len,
             budget,
+            credit_display,
         )
     })
 }
@@ -343,6 +345,7 @@ fn admit_inline_object(
     limits: ExactGeometryLimits,
     source_len: u64,
     budget: &mut AdmissionBudget,
+    credit_display: bool,
 ) -> Result<(), ExactGeometryError> {
     let leading = SourcePosition::try_from(job.scanner.continuation.next_position)
         .map_err(|_| ExactGeometryError::SourceContract)?;
@@ -464,6 +467,7 @@ fn admit_inline_object(
         budget,
         trailing.into(),
         input.runs.len(),
+        credit_display.then(|| object.presentation_allocation()),
         |session| session.admit_inline_object(input),
     )?;
     if retained {
@@ -568,6 +572,7 @@ fn complete_grapheme(
             budget,
             end_position.into(),
             0,
+            None,
             |session| session.finalize_logical_line(finalization),
         )?;
     } else if let Some(grapheme) = job.scanner.grapheme_text.as_ref() {
@@ -696,6 +701,7 @@ fn admit_text_segment(
         budget,
         end_position.into(),
         0,
+        None,
         |session| session.admit_text(segment),
     )?;
     Ok(())
@@ -759,6 +765,7 @@ fn admit_compact_atom(
         budget,
         end_position.into(),
         atom.runs.len(),
+        None,
         |session| session.admit_oversize_atom(atom),
     )?;
     Ok(())
@@ -820,6 +827,7 @@ pub(super) fn finalize_source(
         budget,
         end.position,
         0,
+        None,
         |session| session.end_source(end),
     )?;
     super::target_output::finish_target_source(job);

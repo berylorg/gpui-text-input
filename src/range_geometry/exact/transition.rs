@@ -819,6 +819,7 @@ impl ExactGeometryOwner {
         };
         let mut budget = AdmissionBudget {
             detached_display_bytes: 0,
+            output_display_bytes: 0,
             observations: None,
             refused_capacity: None,
             fixed_bytes: coexisting

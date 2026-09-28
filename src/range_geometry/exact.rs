@@ -236,6 +236,7 @@ struct ActiveJob {
 }
 
 struct AdmissionBudget {
+    output_display_bytes: usize,
     detached_display_bytes: usize,
     observations: Option<capacity_observation::CapacityObservations>,
     refused_capacity: Option<(usize, usize)>,
@@ -319,10 +320,11 @@ impl AdmissionBudget {
         self.admit_counts(bytes, items)
     }
 
-    fn remaining_capacity(
+    fn output_capacity(
         &mut self,
         occupied_bytes: usize,
         occupied_items: usize,
+        prospective_display_bytes: usize,
     ) -> Result<(usize, usize), ExactGeometryError> {
         self.clear_refusal();
         let bytes = occupied_bytes
@@ -335,8 +337,13 @@ impl AdmissionBudget {
         if let Some(observations) = &self.observations {
             return observations.output_capacity(
                 (occupied_bytes, occupied_items),
-                (self.detached_display_bytes, 0),
-                (0, 0),
+                (
+                    self.detached_display_bytes
+                        .checked_add(self.output_display_bytes)
+                        .ok_or(ExactGeometryError::CapacityExceeded)?,
+                    0,
+                ),
+                (prospective_display_bytes, 0),
             );
         }
         Ok((
@@ -397,6 +404,7 @@ impl AdmissionBudget {
         if let Some(observations) = &mut self.observations {
             let shared_bytes = shared_bytes
                 .checked_add(self.detached_display_bytes)
+                .and_then(|bytes| bytes.checked_add(self.output_display_bytes))
                 .ok_or(ExactGeometryError::CapacityExceeded)?;
             return observations
                 .observe_preparation((bytes, items), (shared_bytes, 0))

@@ -647,8 +647,9 @@ impl ExactGeometryOwner {
             source_end,
             &mut budget,
             matches!(capacity, ResponseCapacity::Enclosing { .. }),
-        )
-        .map_err(|error| {
+        );
+        budget.output_display_bytes = 0;
+        let scan = scan.map_err(|error| {
             prepared_failure(
                 error,
                 budget

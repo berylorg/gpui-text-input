@@ -35,6 +35,54 @@ pub fn prepare_continuation_copy(
 pub struct PreparationCapacityProbe(super::super::capacity_observation::CapacityObservations);
 
 #[allow(clippy::too_many_arguments)]
+pub fn prepare_object_scan(
+    owner: &ExactGeometryOwner,
+    key: crate::GeometryJobKey,
+    index: bool,
+    text: &RangePage,
+    objects: &ObjectPage,
+    text_system: &WindowTextSystem,
+    current: Option<(usize, usize)>,
+    limit: (usize, usize),
+) -> Result<((usize, usize), (usize, usize), (usize, usize)), ExactGeometryFailure> {
+    let (mut candidate, mut budget, baseline) =
+        object_scan_budget(owner, key, index, text, objects, current, limit)?;
+    super::super::scan::process_object_page(
+        &mut candidate,
+        text,
+        objects,
+        text_system,
+        owner.inputs.as_deref().unwrap(),
+        owner.limits,
+        owner.inputs.as_deref().unwrap().binding.extent().byte_len(),
+        &mut budget,
+        current.is_some(),
+    )
+    .map_err(|error| prepared_failure(error, ExactGeometryFailureStage::Scan, &budget))?;
+    if index || current.is_none() {
+        assert_eq!(budget.output_display_bytes, 0);
+    } else {
+        let expected = candidate
+            .scanner
+            .fragments
+            .iter()
+            .map(|fragment| match fragment {
+                gpui::StreamingLayoutFragment::InlineObject(fragment) => {
+                    fragment.presentation.len()
+                }
+                _ => 0,
+            })
+            .sum::<usize>();
+        assert_eq!(budget.output_display_bytes, expected);
+    }
+    Ok((
+        (budget.peak_bytes, budget.peak_items),
+        budget.observations.as_ref().unwrap().enclosing_peak,
+        baseline,
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn prepare_detached_inline(
     owner: &ExactGeometryOwner,
     key: crate::GeometryJobKey,
@@ -45,24 +93,8 @@ pub fn prepare_detached_inline(
     current: Option<(usize, usize)>,
     limit: (usize, usize),
 ) -> Result<((usize, usize), (usize, usize), (usize, usize)), ExactGeometryFailure> {
-    let active = owner.response_active(key, index)?;
-    let capacity = current.map_or(ResponseCapacity::Geometry(limit), |current| {
-        ResponseCapacity::Enclosing { current, limit }
-    });
-    let page_bytes = text
-        .retained_charge()
-        .bytes()
-        .checked_add(objects.retained_charge().bytes())
-        .ok_or_else(|| owner.prepared_validation_failure(ExactGeometryError::CapacityExceeded))?;
-    let page_items = text
-        .retained_charge()
-        .items()
-        .checked_add(objects.retained_charge().allocated_items())
-        .and_then(|items| items.checked_add(1))
-        .ok_or_else(|| owner.prepared_validation_failure(ExactGeometryError::CapacityExceeded))?;
-    let identity = ResponseCapacity::Geometry((usize::MAX, usize::MAX));
-    let mut copy_budget = owner.prepared_budget(page_bytes, page_items, identity)?;
-    let (mut candidate, _) = prepare_response_continuation(&mut copy_budget, active, identity)?;
+    let (mut candidate, mut budget, baseline) =
+        object_scan_budget(owner, key, index, text, objects, current, limit)?;
     let deferred = candidate
         .scanner
         .deferred_object
@@ -72,15 +104,10 @@ pub fn prepare_detached_inline(
         .objects()
         .first()
         .ok_or_else(|| owner.prepared_validation_failure(ExactGeometryError::SourceContract))?;
-    let mut budget = owner.prepared_budget(page_bytes, page_items, capacity)?;
     let prior = (
         budget.fixed_bytes,
         budget.fixed_items,
         budget.detached_display_bytes,
-    );
-    let baseline = (
-        budget.fixed_bytes + page_bytes,
-        budget.fixed_items + page_items,
     );
     let result = super::super::scan::admit_deferred_object(
         &mut candidate,
@@ -108,6 +135,42 @@ pub fn prepare_detached_inline(
         budget.observations.as_ref().unwrap().enclosing_peak,
         baseline,
     ))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn object_scan_budget(
+    owner: &ExactGeometryOwner,
+    key: crate::GeometryJobKey,
+    index: bool,
+    text: &RangePage,
+    objects: &ObjectPage,
+    current: Option<(usize, usize)>,
+    limit: (usize, usize),
+) -> Result<(Box<ActiveJob>, AdmissionBudget, (usize, usize)), ExactGeometryFailure> {
+    let active = owner.response_active(key, index)?;
+    let capacity = current.map_or(ResponseCapacity::Geometry(limit), |current| {
+        ResponseCapacity::Enclosing { current, limit }
+    });
+    let page_bytes = text
+        .retained_charge()
+        .bytes()
+        .checked_add(objects.retained_charge().bytes())
+        .ok_or_else(|| owner.prepared_validation_failure(ExactGeometryError::CapacityExceeded))?;
+    let page_items = text
+        .retained_charge()
+        .items()
+        .checked_add(objects.retained_charge().allocated_items())
+        .and_then(|items| items.checked_add(1))
+        .ok_or_else(|| owner.prepared_validation_failure(ExactGeometryError::CapacityExceeded))?;
+    let identity = ResponseCapacity::Geometry((usize::MAX, usize::MAX));
+    let mut copy_budget = owner.prepared_budget(page_bytes, page_items, identity)?;
+    let (candidate, _) = prepare_response_continuation(&mut copy_budget, active, identity)?;
+    let budget = owner.prepared_budget(page_bytes, page_items, capacity)?;
+    let baseline = (
+        budget.fixed_bytes + page_bytes,
+        budget.fixed_items + page_items,
+    );
+    Ok((candidate, budget, baseline))
 }
 
 pub fn prepare_deferred_tail(
@@ -235,6 +298,7 @@ impl PreparationCapacityProbe {
     fn into_budget(self) -> AdmissionBudget {
         AdmissionBudget {
             detached_display_bytes: 0,
+            output_display_bytes: 0,
             peak_bytes: self.0.configured_peak.0,
             peak_items: self.0.configured_peak.1,
             observations: Some(self.0),
@@ -298,6 +362,7 @@ pub fn preparation_remaining_capacity_with_baselines(
 ) -> Result<(usize, usize), ExactGeometryFailure> {
     let mut budget = AdmissionBudget {
         detached_display_bytes: 0,
+        output_display_bytes: 0,
         observations: Some(CapacityObservations::with_baselines(
             configured,
             enclosing,
@@ -316,7 +381,7 @@ pub fn preparation_remaining_capacity_with_baselines(
         failure_stage: None,
     };
     budget
-        .remaining_capacity(occupied.0, occupied.1)
+        .output_capacity(occupied.0, occupied.1, 0)
         .map_err(|error| prepared_failure(error, ExactGeometryFailureStage::Finalize, &budget))
 }
 

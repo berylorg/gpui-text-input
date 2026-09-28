@@ -741,6 +741,15 @@ GPUI reservation. The original remains borrowed. The full fact charge stays in t
 the credit applies only to that existing copy, never prospective GPUI output or continuation startup
 allocations. Temporary charge and credit are restored on success and error before further work.
 
+During enclosing object-page scans, GPUI inline output receives prospective allowance only for the
+known shared input display, after continuation startup has been admitted with existing credit alone.
+Returned fragments establish exact backing identity before their display credit enters observations.
+One stack budget counter carries credited output through destination reservation, retained fragments,
+metadata and subsequent layout calls. Returned and retained handles share one charged payload and
+receive one credit. Discarded output loses its credit when its returned custody is dropped. Scanner
+credit is cleared before subsequent response finalization/publication; those boundaries still require
+separate ownership mapping. Direct and geometry-relative admission retain raw charges throughout.
+
 The optional `test-support` feature exposes `preparation_test_support` for integration qualification
 of immutable response preparation. Its probe reports raw required capacity, optional independently
 observed enclosing peaks for prepared results and failures, and terminal/successor facts,
@@ -763,6 +772,9 @@ The deferred-tail probe prepares a continuation under configured limits, then is
 tail admission with a fresh observer and returns its raw/enclosing peaks and owner/page baseline.
 The detached-inline probe likewise isolates actual deferred layout after copying, checks restoration
 of temporary raw charges and credit on every returned result, and drops the copy without commit.
+The object-scan probe isolates actual page scanning after a configured continuation copy, reports
+both peaks and the baseline, and checks credited retained output against its live fragments. These
+scan probes do not establish fully credited whole-response or session admission.
 The remaining-capacity probe also qualifies mapped headroom with distinct baselines and no
 prospective output credit before GPUI startup. The startup probe admits the prior continuation's
 actual byte/item charge independently of output allowance and qualifies it against GPUI accounting.

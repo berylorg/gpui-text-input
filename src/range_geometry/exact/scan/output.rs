@@ -11,6 +11,7 @@ pub(super) fn admit_layout(
     budget: &mut AdmissionBudget,
     next_position: gpui::StreamingLayoutPosition,
     transient_runs: usize,
+    shared_display: Option<(*const u8, usize)>,
     admit: impl FnOnce(
         &mut gpui::StreamingLayoutSession<'_>,
     ) -> Result<gpui::StreamingLayoutAdmission, gpui::StreamingLayoutError>,
@@ -25,6 +26,7 @@ pub(super) fn admit_layout(
         next_position,
         transient_run_bytes,
         transient_runs,
+        shared_display.map_or(0, |allocation| allocation.1),
         budget,
     )?;
     let (admission, session_item_charge) = {
@@ -46,6 +48,26 @@ pub(super) fn admit_layout(
         .item_charge
         .total()?
         .checked_add(admission.fragments.len())
+        .ok_or(ExactGeometryError::CapacityExceeded)?;
+    let shared_bytes = admission
+        .fragments
+        .iter()
+        .try_fold(0usize, |bytes, fragment| {
+            let gpui::StreamingLayoutFragment::InlineObject(fragment) = fragment else {
+                return Ok(bytes);
+            };
+            let allocation = (fragment.presentation.as_ptr(), fragment.presentation.len());
+            bytes
+                .checked_add(if Some(allocation) == shared_display {
+                    allocation.1
+                } else {
+                    0
+                })
+                .ok_or(ExactGeometryError::CapacityExceeded)
+        })?;
+    let prior_display_bytes = budget.output_display_bytes;
+    budget.output_display_bytes = prior_display_bytes
+        .checked_add(shared_bytes)
         .ok_or(ExactGeometryError::CapacityExceeded)?;
     budget.observe(
         job,
@@ -165,6 +187,10 @@ pub(super) fn admit_layout(
             budget.failure_stage = Some(super::super::ExactGeometryFailureStage::Checkpoint);
             error
         })?;
+    }
+    drop(admission);
+    if !retained {
+        budget.output_display_bytes = prior_display_bytes;
     }
     budget.observe(job, 0, 0)?;
     Ok(retained)
