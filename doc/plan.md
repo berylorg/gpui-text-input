@@ -57,5 +57,6 @@ Carry prepared transition peak evidence through enclosing host admission before 
 Dependency-private shaping scratch is outside this reservation; retain finite layout input limits.
 
 Candidate, Ready and adoption charges are now admitted before custody transfer. Overall closure
-requires a bounded audit including placeholder ownership before preparation and enclosing effects
-and transition coexistence; accepted component checks alone do not close the preparation boundary.
+requires a bounded audit including placeholder ownership before preparation and transfer coexistence.
+Phase 78 proves buffered effects cannot coexist with candidate preparation under current scheduling;
+accepted component checks alone do not close the preparation boundary.
