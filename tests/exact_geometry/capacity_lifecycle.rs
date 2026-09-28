@@ -171,7 +171,9 @@ fn layout_replacement_accounts_old_and_candidate_inputs_concurrently(cx: &mut Te
 }
 
 #[gpui::test]
-fn pending_text_requests_enforce_exact_item_caps_atomically(cx: &mut TestAppContext) {
+fn index_startup_and_pending_text_requests_enforce_exact_item_caps_atomically(
+    cx: &mut TestAppContext,
+) {
     with_text_system(cx, |_| {
         let mut text_probe =
             owner_with_retained_items("a", 8, 64., 4, 256 * 1024, usize::MAX, style()).unwrap();
@@ -192,11 +194,10 @@ fn pending_text_requests_enforce_exact_item_caps_atomically(cx: &mut TestAppCont
         let mut text_under =
             owner_with_retained_items("a", 8, 64., 4, 256 * 1024, text_required - 1, style())
                 .unwrap();
-        let under_job = start_index(&mut text_under, 1);
         let before = text_under.counts();
         assert_eq!(
-            text_under.request_page(under_job, PageRequestId::new(1)),
-            Err(ExactGeometryError::CapacityExceeded)
+            text_under.start_index(GeometryJobId::new(1)).unwrap_err(),
+            ExactGeometryError::CapacityExceeded
         );
         assert_eq!(text_under.counts(), before);
     });

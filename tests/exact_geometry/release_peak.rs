@@ -124,10 +124,17 @@ fn borrowed_page_and_checkpoint_peaks_report_direct_exact_cap_and_release(cx: &m
 #[gpui::test]
 fn borrowed_page_payload_can_fail_initial_combined_live_peak(cx: &mut TestAppContext) {
     with_text_system(cx, |text_system| {
-        let source = format!("a{}b", "\u{301}".repeat(100));
-        let first_end = 127;
+        let source = format!("a{}b", "\u{301}".repeat(600));
+        let first_end = 1023;
         let exercise = |cap: usize| {
-            let mut owner = owner(&source, 8, 8, cap, 16);
+            let mut owner = ExactGeometryOwner::new(
+                binding(&source, 1),
+                PresentationGeneration::new(1),
+                layout(8, 24.),
+                style(),
+                ExactGeometryLimits::new(2048, 8, cap, 16 * 1024).unwrap(),
+            )
+            .unwrap();
             let base = owner.counts();
             let job = start_index(&mut owner, 1);
             let next = page(&mut owner, job, &source, 0, first_end, 1);

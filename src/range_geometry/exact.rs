@@ -109,6 +109,15 @@ struct ActiveAtom {
 
 impl Scanner {
     fn origin(binding: &StreamingLayoutBinding, source_len: usize) -> Self {
+        let (mut scanner, origin) = Self::origin_unallocated(binding, source_len);
+        scanner.checkpoints = VecDeque::from([origin]);
+        scanner
+    }
+
+    fn origin_unallocated(
+        binding: &StreamingLayoutBinding,
+        source_len: usize,
+    ) -> (Self, ExactGeometryCheckpoint) {
         let continuation = StreamingLayoutContinuation {
             input_id: binding.input_id,
             segment_policy_id: binding.segment_policy_id,
@@ -135,7 +144,7 @@ impl Scanner {
             false,
         )
         .expect("origin checkpoint is coherent");
-        Self {
+        let scanner = Self {
             cursor: cursor.clone(),
             cursor_origin,
             grapheme_start_cursor: cursor,
@@ -148,7 +157,7 @@ impl Scanner {
             grapheme_start: 0,
             read_position: 0,
             active_atom: None,
-            checkpoints: VecDeque::from([origin]),
+            checkpoints: VecDeque::new(),
             fragments: Vec::new(),
             object_presentations: Vec::new(),
             output_charge: StreamingLayoutCharge::default(),
@@ -160,7 +169,8 @@ impl Scanner {
             first_object_cursor: None,
             object_cursor: None,
             deferred_object: None,
-        }
+        };
+        (scanner, origin)
     }
 
     fn from_checkpoint(checkpoint: &ExactGeometryCheckpoint) -> Self {

@@ -341,6 +341,8 @@ mod checkpoint_growth;
 mod composite_objects;
 #[path = "exact_geometry/continuation_growth.rs"]
 mod continuation_growth;
+#[path = "exact_geometry/index_startup.rs"]
+mod index_startup;
 #[path = "exact_geometry/output_growth.rs"]
 mod output_growth;
 #[path = "exact_geometry/precontext.rs"]

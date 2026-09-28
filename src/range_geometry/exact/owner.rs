@@ -128,6 +128,7 @@ impl ExactGeometryOwner {
             .max_retained_bytes
             .checked_sub(fixed)
             .ok_or(ExactGeometryError::CapacityExceeded)?;
+        let (scanner, origin) = Scanner::origin_unallocated(&inputs.layout, source_len);
         let mut active = ActiveJob {
             key,
             kind: ActiveKind::Index,
@@ -138,19 +139,36 @@ impl ExactGeometryOwner {
             text_page: None,
             window_identity: None,
             retained_capacity,
-            scanner: Scanner::origin(&inputs.layout, source_len),
+            scanner,
         };
-        accounting::ensure_active(&mut active)?;
-        let start_items = accounting::fixed_counts_without_active(self)
-            .total_items()
-            .saturating_add(accounting::active_counts(&active).total_items());
-        if start_items > self.limits.max_retained_items {
-            return Err(ExactGeometryError::CapacityExceeded);
-        }
+        let mut budget = AdmissionBudget {
+            fixed_bytes: fixed,
+            fixed_items: accounting::fixed_counts_without_active(self).total_items(),
+            page_payload_bytes: 0,
+            page_items: 0,
+            max_bytes: self.limits.max_retained_bytes,
+            max_items: self.limits.max_retained_items,
+            peak_bytes: 0,
+            peak_items: 0,
+            failure_stage: None,
+        };
+        checkpoint::retain_scanner_checkpoint(
+            &mut active,
+            origin,
+            self.limits.max_checkpoints,
+            &mut budget,
+            0,
+            0,
+        )?;
         self.active = Some(Box::new(active));
         self.highest_job = Some(id);
         self.observe_current();
-        Ok(self.start_result(key, ExactGeometryProgress::Scanning))
+        self.high_water_bytes = self.high_water_bytes.max(budget.peak_bytes);
+        self.high_water_items = self.high_water_items.max(budget.peak_items);
+        let mut result = self.start_result(key, ExactGeometryProgress::Scanning);
+        result.admission_required_bytes = budget.peak_bytes;
+        result.admission_required_items = budget.peak_items;
+        Ok(result)
     }
 
     pub fn request_page(
