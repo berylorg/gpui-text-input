@@ -337,6 +337,8 @@ mod canonical;
 mod capacity_lifecycle;
 #[path = "exact_geometry/composite_objects.rs"]
 mod composite_objects;
+#[path = "exact_geometry/continuation_growth.rs"]
+mod continuation_growth;
 #[path = "exact_geometry/precontext.rs"]
 mod precontext;
 #[path = "exact_geometry/precontext_atoms.rs"]

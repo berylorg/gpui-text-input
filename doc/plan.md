@@ -4,12 +4,11 @@ Implement the capacity prerequisite for preserved resident adoption from
 [the package contract](design.md#range-backed-preserved-resident-adoption), coordinated by
 the Beryl root plan. Resident protection, accounting and publication remain separate work.
 
-# Phase 3: Admit Exact Geometry Text Buffer Growth (finished)
+# Phase 4: Admit Scanner Cross-Page Continuation Storage (finished)
 
-Scanner text growth now admits destination and coexistence charges before reservation and
-rechecks after rollover retains geometry. All 65 geometry/prepublication tests passed, including
-tight capacity and cross-page growth; independent resource review accepted the local boundary.
-Whole-session preparation accounting remains phase 2.
+Active-atom and deferred-object storage admits byte/item capacity before allocation and payload
+cloning. All 67 geometry/prepublication tests passed, including exact-fit and refusal cleanup;
+independent resource review accepted this local boundary. Whole-session preparation remains phase 2.
 
 # Phase 2: Enforce Capacity Throughout Preparation (pending)
 

@@ -135,6 +135,7 @@ pub(super) fn process_page_range(
                 budget,
             )?;
         } else if end == page.range().end().get() {
+            budget.observe(job, std::mem::size_of::<ActiveAtom>(), 1)?;
             job.scanner.active_atom = Some(Box::new(ActiveAtom {
                 id: atom.id(),
                 global_range: range,
@@ -214,6 +215,11 @@ pub(super) fn process_object_page(
             if job.scanner.deferred_object.is_some() {
                 return Err(ExactGeometryError::SourceContract);
             }
+            let bytes = std::mem::size_of::<DeferredObject>()
+                .checked_sub(std::mem::size_of::<InlineObjectFact>())
+                .and_then(|bytes| bytes.checked_add(object.retained_bytes().ok()?))
+                .ok_or(ExactGeometryError::CapacityExceeded)?;
+            budget.observe(job, bytes, 4)?;
             job.scanner.deferred_object = Some(Box::new(DeferredObject {
                 binding: inputs.binding,
                 presentation_generation: inputs.presentation_generation,
