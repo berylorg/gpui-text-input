@@ -454,6 +454,11 @@ impl RangeResidency {
         self.resident.drain(..).collect()
     }
 
+    pub(crate) fn discard_resident_pages(&mut self) {
+        self.resident.clear();
+        self.resident_bytes = 0;
+    }
+
     pub(crate) fn take_resident_pages_into(
         &mut self,
         mut destination: Vec<RangePage>,

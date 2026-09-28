@@ -408,8 +408,8 @@ impl RangePrepublicationSession {
         self.geometry_job = Some(key);
         if index_complete {
             self.release_all_resident_custody();
-            drop(self.residency.take_resident_pages());
-            drop(self.object_residency.take_resident_pages());
+            self.residency.discard_resident_pages();
+            self.object_residency.discard_resident_pages();
             self.stage = SessionStage::Target;
         }
         match progress {

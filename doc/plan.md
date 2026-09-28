@@ -4,13 +4,17 @@ Implement the capacity prerequisite for preserved resident adoption from
 [the package contract](design.md#range-backed-preserved-resident-adoption), coordinated by
 the Beryl root plan. Resident protection, accounting and publication remain separate work.
 
-# Phase 89: Reconcile Successive Edit Object Ownership Fixture (finished)
+# Phase 90: Discard Retired Session Pages Without Transfer Allocation (finished)
 
-Corrected the fixture to count initialized object facts separately from allocation slots.
-All 115 unit tests pass, including every reconciled baseline failure. Independent review
-accepted the retained exact-gap and insertion-admission checks. Production behavior is unchanged.
-Overall preparation acceptance remains pending.
+Retirement drops pages in place without transfer vectors, preserving pending requests and cleanup.
+All 43 prepublication tests pass; independent review accepted the change. Initial index admission
+remains a separate prerequisite.
 
+# Phase 91: Admit Initial Session Index Preparation (pending)
+
+Apply the enclosing session budget before initial index preparation, without advancing identity
+or releasing validation custody on retryable refusal. Verify byte/item shortages, retry and cleanup
+with independent review before overall phase 2 acceptance.
 # Phase 2: Enforce Capacity Throughout Preparation (pending)
 
 Apply the admitted budget before geometry scan growth and candidate preparation allocations,

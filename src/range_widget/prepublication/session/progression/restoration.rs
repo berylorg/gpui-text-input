@@ -85,8 +85,8 @@ impl RangePrepublicationSession {
             }
             RestorationValidationNext::Complete => {
                 self.release_all_resident_custody();
-                drop(self.residency.take_resident_pages());
-                drop(self.object_residency.take_resident_pages());
+                self.residency.discard_resident_pages();
+                self.object_residency.discard_resident_pages();
                 let id = GeometryJobId::new(self.next_id()?);
                 let start = self
                     .geometry
