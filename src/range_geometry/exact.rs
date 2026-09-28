@@ -302,6 +302,16 @@ impl AdmissionBudget {
         transient_bytes: usize,
         transient_items: usize,
     ) -> Result<(), ExactGeometryError> {
+        self.observe_with_credit(active, transient_bytes, transient_items, 0)
+    }
+
+    fn observe_with_credit(
+        &mut self,
+        active: &ActiveJob,
+        transient_bytes: usize,
+        transient_items: usize,
+        shared_bytes: usize,
+    ) -> Result<(), ExactGeometryError> {
         self.clear_refusal();
         let counts = accounting::active_counts(active);
         let bytes = self
@@ -319,7 +329,7 @@ impl AdmissionBudget {
             self.peak_items = usize::MAX;
             return Err(ExactGeometryError::CapacityExceeded);
         };
-        self.admit_counts(bytes, items)
+        self.admit_counts_with_credit(bytes, items, shared_bytes)
     }
 
     fn admit_counts(&mut self, bytes: usize, items: usize) -> Result<(), ExactGeometryError> {

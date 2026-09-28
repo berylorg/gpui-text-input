@@ -1,7 +1,8 @@
 use super::*;
 use gpui_text_input::preparation_test_support::{
     enclosing_failure_peak, is_enclosing_capacity_refusal, owner_presentation_overlap,
-    prepare_continuation_copy, prepare_response,
+    prepare_continuation_copy, prepare_deferred_tail, prepare_response,
+    prepare_response_with_enclosing,
 };
 
 fn check_continuation_copy(
@@ -41,6 +42,64 @@ fn check_continuation_copy(
         let failure =
             prepare_continuation_copy(owner, job, index, Some(current), (usize::MAX, usize::MAX))
                 .unwrap_err();
+        assert!(!is_enclosing_capacity_refusal(&failure));
+        assert_eq!(enclosing_failure_peak(&failure), Some((0, 0)));
+        assert_eq!(failure.release(), &ExactGeometryRelease::default());
+        assert_eq!(owner.counts(), before);
+    }
+}
+
+fn check_deferred_tail(
+    owner: &ExactGeometryOwner,
+    job: GeometryJobKey,
+    index: bool,
+    objects: &ObjectPage,
+    display_bytes: usize,
+) {
+    let before = owner.counts();
+    let (raw, identity, baseline) =
+        prepare_deferred_tail(owner, job, index, objects, None, (usize::MAX, usize::MAX)).unwrap();
+    assert_eq!(raw, identity);
+    for current in [(0, 0), (baseline.0 + 8192, baseline.1 + 32)] {
+        let mapped = (
+            current.0 + raw.0 - baseline.0 - display_bytes,
+            current.1 + raw.1 - baseline.1,
+        );
+        for _ in 0..2 {
+            assert_eq!(
+                prepare_deferred_tail(owner, job, index, objects, Some(current), mapped).unwrap(),
+                (raw, mapped, baseline)
+            );
+            assert_eq!(owner.counts(), before);
+        }
+        for limit in [(mapped.0 - 1, mapped.1), (mapped.0, mapped.1 - 1)] {
+            let failure = prepare_deferred_tail(owner, job, index, objects, Some(current), limit)
+                .unwrap_err();
+            assert!(is_enclosing_capacity_refusal(&failure));
+            assert_eq!(enclosing_failure_peak(&failure), Some(mapped));
+            assert_eq!(failure.release(), &ExactGeometryRelease::default());
+            assert_eq!(owner.counts(), before);
+            assert!(
+                prepare_deferred_tail(owner, job, index, objects, Some(current), mapped).is_ok()
+            );
+        }
+    }
+    for limit in [(raw.0 - 1, raw.1), (raw.0, raw.1 - 1)] {
+        let failure = prepare_deferred_tail(owner, job, index, objects, None, limit).unwrap_err();
+        assert!(is_enclosing_capacity_refusal(&failure));
+        assert_eq!(enclosing_failure_peak(&failure), Some(raw));
+        assert_eq!(owner.counts(), before);
+    }
+    for current in [(usize::MAX, 0), (0, usize::MAX)] {
+        let failure = prepare_deferred_tail(
+            owner,
+            job,
+            index,
+            objects,
+            Some(current),
+            (usize::MAX, usize::MAX),
+        )
+        .unwrap_err();
         assert!(!is_enclosing_capacity_refusal(&failure));
         assert_eq!(enclosing_failure_peak(&failure), Some((0, 0)));
         assert_eq!(failure.release(), &ExactGeometryRelease::default());
@@ -265,6 +324,35 @@ fn deferred_presentations_share_admitted_backing_through_preparation(cx: &mut Te
             };
             let before = owner.counts();
             check_continuation_copy(&owner, job, index, 0);
+            check_deferred_tail(&owner, job, index, &objects, display.len());
+            let enclosing = prepare_response_with_enclosing(
+                &owner,
+                job,
+                &text,
+                Some(&objects),
+                text_system,
+                false,
+                index,
+                (
+                    GeometryJobId::new(20),
+                    PageRequestId::new(20),
+                    ObjectRequestId::new(20),
+                ),
+                target,
+                (8192, 32),
+                (usize::MAX, usize::MAX),
+            )
+            .unwrap();
+            assert_eq!(
+                enclosing.presentation_overlap(&[&objects]),
+                Some(display.len())
+            );
+            assert_eq!(
+                enclosing.required_capacity(),
+                prepare(&owner, &objects, 20).required_capacity()
+            );
+            assert_eq!(owner.counts(), before);
+            drop(enclosing);
             for _ in 0..2 {
                 let prepared = prepare(&owner, &objects, 20);
                 assert_eq!(

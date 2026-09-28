@@ -185,6 +185,7 @@ pub(super) fn process_object_page(
     limits: ExactGeometryLimits,
     source_len: u64,
     budget: &mut AdmissionBudget,
+    credit_deferred_display: bool,
 ) -> Result<PageScan, ExactGeometryError> {
     let objects = object_page.objects();
     let mut index = 0usize;
@@ -232,21 +233,7 @@ pub(super) fn process_object_page(
         }
         let is_deferred_tail = !object_page.complete() && index + 1 == objects.len();
         if is_deferred_tail {
-            if job.scanner.deferred_object.is_some() {
-                return Err(ExactGeometryError::SourceContract);
-            }
-            let bytes = std::mem::size_of::<DeferredObject>()
-                .checked_sub(std::mem::size_of::<InlineObjectFact>())
-                .and_then(|bytes| bytes.checked_add(object.retained_bytes().ok()?))
-                .ok_or(ExactGeometryError::CapacityExceeded)?;
-            budget.observe(job, bytes, 4)?;
-            job.scanner.deferred_object = Some(Box::new(DeferredObject {
-                binding: inputs.binding,
-                presentation_generation: inputs.presentation_generation,
-                fact: object.clone_for_geometry(),
-            }));
-            job.scanner.object_cursor = Some(object.cursor());
-            budget.observe(job, 0, 0)?;
+            defer_object(job, object, inputs, budget, credit_deferred_display)?;
             break;
         }
         let next = objects.get(index + 1);
@@ -300,6 +287,36 @@ pub(super) fn process_object_page(
         source_len,
         budget,
     )
+}
+
+pub(super) fn defer_object(
+    job: &mut ActiveJob,
+    object: &InlineObjectFact,
+    inputs: &OwnerInputs,
+    budget: &mut AdmissionBudget,
+    credit_display: bool,
+) -> Result<(), ExactGeometryError> {
+    budget.clear_refusal();
+    if job.scanner.deferred_object.is_some() {
+        return Err(ExactGeometryError::SourceContract);
+    }
+    let bytes = std::mem::size_of::<DeferredObject>()
+        .checked_sub(std::mem::size_of::<InlineObjectFact>())
+        .and_then(|bytes| bytes.checked_add(object.retained_bytes().ok()?))
+        .ok_or(ExactGeometryError::CapacityExceeded)?;
+    let shared_bytes = if credit_display {
+        object.presentation_allocation().1
+    } else {
+        0
+    };
+    budget.observe_with_credit(job, bytes, 4, shared_bytes)?;
+    job.scanner.deferred_object = Some(Box::new(DeferredObject {
+        binding: inputs.binding,
+        presentation_generation: inputs.presentation_generation,
+        fact: object.clone_for_geometry(),
+    }));
+    job.scanner.object_cursor = Some(object.cursor());
+    budget.observe_with_credit(job, 0, 0, shared_bytes)
 }
 
 #[allow(clippy::too_many_arguments)]

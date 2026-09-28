@@ -729,6 +729,12 @@ both observations. Copied fallback text and all ownership records retain their f
 geometry and geometry-relative ceilings retain the complete raw copy charge. Later scanner and
 publication observations still require their own ownership evidence before receiving shared credit.
 
+Deferred-tail creation in enclosing response preparation also credits the new deferred fact's display
+at pre-allocation and immediate retained observations. The borrowed object page remains included in
+the baseline and `clone_for_geometry` shares that display backing. Copied fallback text and all
+records/items retain full charges. Direct admission and geometry-relative preparation remain raw.
+This credit covers only that boundary; detached custody, GPUI output and publication remain separate.
+
 The optional `test-support` feature exposes `preparation_test_support` for integration qualification
 of immutable response preparation. Its probe reports raw required capacity, optional independently
 observed enclosing peaks for prepared results and failures, and terminal/successor facts,
@@ -747,6 +753,8 @@ Actual text and object response probes also accept an enclosing current charge a
 the derived baseline through scanner and nested publication observations.
 The continuation-copy probe executes the same pre-copy and post-copy admission as both response
 paths, returns both peaks, and drops the prepared copy without changing the original owner.
+The deferred-tail probe prepares a continuation under configured limits, then isolates the production
+tail admission with a fresh observer and returns its raw/enclosing peaks and owner/page baseline.
 The remaining-capacity probe also qualifies mapped headroom with distinct baselines and no
 prospective output credit before GPUI startup. The startup probe admits the prior continuation's
 actual byte/item charge independently of output allowance and qualifies it against GPUI accounting.

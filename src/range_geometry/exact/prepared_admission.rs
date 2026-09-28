@@ -646,6 +646,7 @@ impl ExactGeometryOwner {
             self.limits,
             source_end,
             &mut budget,
+            matches!(capacity, ResponseCapacity::Enclosing { .. }),
         )
         .map_err(|error| {
             prepared_failure(

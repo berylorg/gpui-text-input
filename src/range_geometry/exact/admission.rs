@@ -246,6 +246,7 @@ impl ExactGeometryOwner {
             self.limits,
             source_end,
             &mut budget,
+            false,
         ) {
             Ok(scan) => scan,
             Err(error) => {

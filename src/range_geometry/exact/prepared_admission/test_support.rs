@@ -34,6 +34,59 @@ pub fn prepare_continuation_copy(
 
 pub struct PreparationCapacityProbe(super::super::capacity_observation::CapacityObservations);
 
+pub fn prepare_deferred_tail(
+    owner: &ExactGeometryOwner,
+    key: crate::GeometryJobKey,
+    index: bool,
+    objects: &ObjectPage,
+    current: Option<(usize, usize)>,
+    limit: (usize, usize),
+) -> Result<((usize, usize), (usize, usize), (usize, usize)), ExactGeometryFailure> {
+    let active = owner.response_active(key, index)?;
+    let capacity = current.map_or(ResponseCapacity::Geometry(limit), |current| {
+        ResponseCapacity::Enclosing { current, limit }
+    });
+    let page_bytes = objects.retained_charge().bytes();
+    let page_items = objects
+        .retained_charge()
+        .allocated_items()
+        .checked_add(1)
+        .ok_or_else(|| owner.prepared_validation_failure(ExactGeometryError::CapacityExceeded))?;
+    let mut copy_budget = owner.prepared_budget(
+        page_bytes,
+        page_items,
+        ResponseCapacity::Geometry((usize::MAX, usize::MAX)),
+    )?;
+    let (mut candidate, _) = prepare_response_continuation(
+        &mut copy_budget,
+        active,
+        ResponseCapacity::Geometry((usize::MAX, usize::MAX)),
+    )?;
+    let mut budget = owner.prepared_budget(page_bytes, page_items, capacity)?;
+    let baseline = (
+        budget.fixed_bytes + page_bytes,
+        budget.fixed_items + page_items,
+    );
+    let object = objects
+        .objects()
+        .last()
+        .filter(|_| !objects.complete())
+        .ok_or_else(|| owner.prepared_validation_failure(ExactGeometryError::SourceContract))?;
+    super::super::scan::defer_object(
+        &mut candidate,
+        object,
+        owner.inputs.as_deref().unwrap(),
+        &mut budget,
+        current.is_some(),
+    )
+    .map_err(|error| prepared_failure(error, ExactGeometryFailureStage::Scan, &budget))?;
+    Ok((
+        (budget.peak_bytes, budget.peak_items),
+        budget.observations.as_ref().unwrap().enclosing_peak,
+        baseline,
+    ))
+}
+
 impl PreparationCapacityProbe {
     pub fn with_baselines(
         configured: (usize, usize),
