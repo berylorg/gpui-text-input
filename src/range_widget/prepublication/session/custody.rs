@@ -12,6 +12,15 @@ pub(in crate::range_widget) struct ObjectCustody {
     pub(in crate::range_widget) cleanup: RangePrepublicationCleanupToken,
 }
 
+pub(super) fn storage_charge(text: usize, objects: usize) -> Option<RangeSurfaceCharge> {
+    Some(RangeSurfaceCharge {
+        bytes: text
+            .checked_mul(std::mem::size_of::<TextCustody>())?
+            .checked_add(objects.checked_mul(std::mem::size_of::<ObjectCustody>())?)?,
+        items: text.checked_add(objects)?,
+    })
+}
+
 impl RangePrepublicationSession {
     pub(super) fn retain_text_custody(
         &mut self,
@@ -51,21 +60,7 @@ impl RangePrepublicationSession {
     }
 
     pub(super) fn custody_storage_charge(&self) -> Option<RangeSurfaceCharge> {
-        Some(RangeSurfaceCharge {
-            bytes: self
-                .text_custody
-                .capacity()
-                .checked_mul(std::mem::size_of::<TextCustody>())?
-                .checked_add(
-                    self.object_custody
-                        .capacity()
-                        .checked_mul(std::mem::size_of::<ObjectCustody>())?,
-                )?,
-            items: self
-                .text_custody
-                .capacity()
-                .checked_add(self.object_custody.capacity())?,
-        })
+        storage_charge(self.text_custody.capacity(), self.object_custody.capacity())
     }
 
     fn release_replaced_text_custody(&mut self, page: PageId) {

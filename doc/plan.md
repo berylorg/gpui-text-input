@@ -4,11 +4,12 @@ Implement the capacity prerequisite for preserved resident adoption from
 [the package contract](design.md#range-backed-preserved-resident-adoption), coordinated by
 the Beryl root plan. Resident protection, accounting and publication remain separate work.
 
-# Phase 80: Remove Redundant Startup Configuration Ownership (finished)
+# Phase 81: Admit Startup Custody Reservations (finished)
 
-Session construction now borrows configuration, removing its redundant oversize style-run copy.
-All 43 prepublication tests, default-feature compilation and independent resource review passed.
-Startup allocation admission, shared environment accounting and transfer coexistence remain pending.
+Custody startup admits requested combined storage before allocation, actual text capacity before
+object reservation, and actual combined capacity before acceptance. All 43 prepublication tests,
+default compilation and independent resource review passed. Geometry/residency startup allocation,
+shared environment accounting and transfer coexistence remain pending.
 
 # Phase 2: Enforce Capacity Throughout Preparation (pending)
 

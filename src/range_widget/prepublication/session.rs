@@ -197,14 +197,6 @@ impl RangePrepublicationSession {
             bytes: capacity.bytes.min(configured.bytes),
             items: capacity.items.min(configured.items),
         };
-        let mut text_custody = Vec::new();
-        text_custody
-            .try_reserve_exact(config.residency_limits.max_resident_pages())
-            .map_err(|_| RangePrepublicationFailure::InitialCapacityDenied)?;
-        let mut object_custody = Vec::new();
-        object_custody
-            .try_reserve_exact(config.object_residency_limits.max_resident_pages())
-            .map_err(|_| RangePrepublicationFailure::InitialCapacityDenied)?;
         let mut session = Self {
             generation,
             environment: environment.clone(),
@@ -224,14 +216,38 @@ impl RangePrepublicationSession {
             delivered: None,
             admitted_geometry: None,
             candidate: None,
-            text_custody,
-            object_custody,
+            text_custody: Vec::new(),
+            object_custody: Vec::new(),
             next_id: 1,
             capacity_ceiling: limit,
             available: limit,
             high_water: RangeSurfaceCharge::default(),
             ledger_blocked: false,
         };
+        let baseline = session
+            .current_charge()
+            .ok_or(RangePrepublicationFailure::Arithmetic)?;
+        let text_slots = config.residency_limits.max_resident_pages();
+        let object_slots = config.object_residency_limits.max_resident_pages();
+        let admit = |text, objects| {
+            let storage = custody::storage_charge(text, objects)
+                .ok_or(RangePrepublicationFailure::Arithmetic)?;
+            let charge = add_charge(baseline, storage)?;
+            if !charge_fits(charge, limit) {
+                return Err(RangePrepublicationFailure::InitialCapacityDenied);
+            }
+            Ok(())
+        };
+        admit(text_slots, object_slots)?;
+        session
+            .text_custody
+            .try_reserve_exact(text_slots)
+            .map_err(|_| RangePrepublicationFailure::InitialCapacityDenied)?;
+        admit(session.text_custody.capacity(), object_slots)?;
+        session
+            .object_custody
+            .try_reserve_exact(object_slots)
+            .map_err(|_| RangePrepublicationFailure::InitialCapacityDenied)?;
         let initial = session
             .current_charge()
             .ok_or(RangePrepublicationFailure::Arithmetic)?;
