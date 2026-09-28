@@ -4,12 +4,11 @@ Implement the capacity prerequisite for preserved resident adoption from
 [the package contract](design.md#range-backed-preserved-resident-adoption), coordinated by
 the Beryl root plan. Resident protection, accounting and publication remain separate work.
 
-# Phase 60: Credit Shared Inline Output During Object Scanning (finished)
+# Phase 61: Credit Shared Display During Active Object Response Publication (finished)
 
-GPUI inline output now receives proven shared-display credit through reservation, returned/retained
-custody, metadata and subsequent object-page scans. Startup and configured limits stay independent;
-publication remains separate. All 226 integration tests passed; independent resource review found no
-blocking issues.
+Active object-response successor and destination admission now credit candidate display shared
+with borrowed inputs/original custody. Configured charges stay raw. All 226 integration tests
+passed and independent resource review found no blocking issues.
 
 # Phase 2: Enforce Capacity Throughout Preparation (pending)
 
@@ -38,8 +37,9 @@ Carry it through pre-copy, detached custody, output before metadata and publicat
 Continuation pre-copy and immediate copy coexistence credit the deferred display shared with the
 original. Deferred-tail pre-allocation and immediate retention also credit display shared with the
 borrowed page. Detached custody carries existing credit through scanner admission and reservation;
-GPUI inline output now carries credit through object-page scanning; subsequent source finalization
-and publication still require their own credits.
+GPUI inline output now carries credit through object-page scanning and active object-response
+publication. Source finalization, terminal/nested publication and text-response deferred custody
+still require their own credits.
 Deferred presentation backing now shares correctly and participates in retained overlap queries.
 Explicit preparation admission now carries typed configured/enclosing refusal attribution.
 Do not infer host attribution from ambiguous GPUI errors. Five older baseline unit failures remain

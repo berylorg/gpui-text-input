@@ -747,8 +747,14 @@ Returned fragments establish exact backing identity before their display credit 
 One stack budget counter carries credited output through destination reservation, retained fragments,
 metadata and subsequent layout calls. Returned and retained handles share one charged payload and
 receive one credit. Discarded output loses its credit when its returned custody is dropped. Scanner
-credit is cleared before subsequent response finalization/publication; those boundaries still require
-separate ownership mapping. Direct and geometry-relative admission retain raw charges throughout.
+credit is cleared before subsequent response finalization/publication; those boundaries use their
+own ownership mapping. Direct and geometry-relative admission retain raw charges throughout.
+
+Active object-response publication derives candidate-only display credit from retained scanner
+output and deferred backing shared with the borrowed page or original continuation. That credit
+applies through successor-record and destination admission while those owners remain live. It
+does not discount existing owner payload again or relax configured geometry limits. Terminal
+publication and source finalization require separate ownership mapping.
 
 The optional `test-support` feature exposes `preparation_test_support` for integration qualification
 of immutable response preparation. Its probe reports raw required capacity, optional independently

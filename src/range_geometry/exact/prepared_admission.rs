@@ -456,6 +456,7 @@ impl ExactGeometryOwner {
                 ExactGeometryProgress::Scanning,
                 consumed_page_release(expected),
                 shared,
+                0,
                 budget,
                 successor,
             );
@@ -471,6 +472,7 @@ impl ExactGeometryOwner {
             ExactGeometryProgress::NeedObjects,
             consumed_page_release(expected),
             shared,
+            0,
             budget,
             successor,
         )
@@ -648,6 +650,7 @@ impl ExactGeometryOwner {
             &mut budget,
             matches!(capacity, ResponseCapacity::Enclosing { .. }),
         );
+        let output_display_bytes = budget.output_display_bytes;
         budget.output_display_bytes = 0;
         let scan = scan.map_err(|error| {
             prepared_failure(
@@ -670,12 +673,27 @@ impl ExactGeometryOwner {
                 replay,
             };
             candidate.text_page = None;
-            observe_prepared(&mut budget, &candidate, 0, 0)?;
+            let display_bytes = object_continuation_display_bytes(
+                &candidate,
+                active,
+                object_page,
+                capacity,
+                output_display_bytes,
+                &budget,
+            )?;
+            observe_prepared_counts_with_credit(
+                &mut budget,
+                accounting::active_counts(&candidate),
+                0,
+                0,
+                display_bytes,
+            )?;
             return self.finish_active_target_response(
                 candidate,
                 ExactGeometryProgress::Scanning,
                 release,
                 shared,
+                display_bytes,
                 budget,
                 successor,
             );
@@ -712,12 +730,27 @@ impl ExactGeometryOwner {
             );
         }
         if !object_page.complete() {
-            observe_prepared(&mut budget, &candidate, 0, 0)?;
+            let display_bytes = object_continuation_display_bytes(
+                &candidate,
+                active,
+                object_page,
+                capacity,
+                output_display_bytes,
+                &budget,
+            )?;
+            observe_prepared_counts_with_credit(
+                &mut budget,
+                accounting::active_counts(&candidate),
+                0,
+                0,
+                display_bytes,
+            )?;
             return self.finish_active_target_response(
                 candidate,
                 ExactGeometryProgress::NeedObjects,
                 release,
                 shared,
+                display_bytes,
                 budget,
                 successor,
             );
@@ -733,6 +766,43 @@ impl ExactGeometryOwner {
             successor,
         )
     }
+}
+
+fn object_continuation_display_bytes(
+    candidate: &ActiveJob,
+    original: &ActiveJob,
+    page: &ObjectPage,
+    capacity: ResponseCapacity,
+    output_bytes: usize,
+    budget: &AdmissionBudget,
+) -> Result<usize, ExactGeometryFailure> {
+    if matches!(capacity, ResponseCapacity::Geometry(_)) {
+        return Ok(0);
+    }
+    let deferred = candidate
+        .scanner
+        .deferred_object
+        .as_deref()
+        .map_or(0, |object| {
+            let allocation = object.fact.presentation_allocation();
+            let original_allocation = original
+                .scanner
+                .deferred_object
+                .as_deref()
+                .map(|object| object.fact.presentation_allocation());
+            if original_allocation == Some(allocation)
+                || page
+                    .presentation_allocations()
+                    .any(|other| other == allocation)
+            {
+                allocation.1
+            } else {
+                0
+            }
+        });
+    output_bytes
+        .checked_add(deferred)
+        .ok_or_else(|| prepared_capacity_failure(budget))
 }
 
 fn prepare_response_continuation(

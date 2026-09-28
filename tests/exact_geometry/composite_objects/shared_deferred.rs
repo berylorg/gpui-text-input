@@ -5,6 +5,92 @@ use gpui_text_input::preparation_test_support::{
     prepare_response, prepare_response_with_enclosing,
 };
 
+#[allow(clippy::too_many_arguments)]
+fn check_active_object_response(
+    owner: &ExactGeometryOwner,
+    job: GeometryJobKey,
+    index: bool,
+    text: &RangePage,
+    objects: &ObjectPage,
+    text_system: &gpui::WindowTextSystem,
+    target: BlockTarget,
+    display_bytes: usize,
+) {
+    let before = owner.counts();
+    let (_, _, baseline) = prepare_object_scan(
+        owner,
+        job,
+        index,
+        text,
+        objects,
+        text_system,
+        None,
+        (usize::MAX, usize::MAX),
+    )
+    .unwrap();
+    let ids = (
+        GeometryJobId::new(40),
+        PageRequestId::new(40),
+        ObjectRequestId::new(40),
+    );
+    let raw = prepare_response(
+        owner,
+        job,
+        text,
+        Some(objects),
+        text_system,
+        false,
+        index,
+        ids,
+        target,
+        (usize::MAX, usize::MAX),
+    )
+    .unwrap()
+    .required_capacity();
+    for current in [(0, 0), (baseline.0 + 8192, baseline.1 + 32)] {
+        let probe = |limit| {
+            prepare_response_with_enclosing(
+                owner,
+                job,
+                text,
+                Some(objects),
+                text_system,
+                false,
+                index,
+                ids,
+                target,
+                current,
+                limit,
+            )
+        };
+        let prepared = probe((usize::MAX, usize::MAX)).unwrap();
+        let peak = prepared.enclosing_peak().unwrap();
+        assert_eq!(prepared.required_capacity(), raw);
+        assert!(prepared.object_request().is_some());
+        assert!(!prepared.terminal_index() && !prepared.terminal_target());
+        assert_eq!(peak.1, current.1 + raw.1 - baseline.1);
+        let uncredited = current.0 + raw.0 - baseline.0;
+        assert!(peak.0 <= uncredited);
+        if display_bytes > 0 {
+            assert!(peak.0 < uncredited, "{peak:?} {raw:?} {baseline:?}");
+        }
+        drop(prepared);
+        for _ in 0..2 {
+            assert_eq!(probe(peak).unwrap().enclosing_peak(), Some(peak));
+            assert_eq!(owner.counts(), before);
+        }
+        for limit in [(peak.0 - 1, peak.1), (peak.0, peak.1 - 1)] {
+            let failure = probe(limit).unwrap_err();
+            assert!(is_enclosing_capacity_refusal(&failure), "{failure:?}");
+            let attempted = enclosing_failure_peak(&failure).unwrap();
+            assert!(attempted.0 > limit.0 || attempted.1 > limit.1);
+            assert_eq!(failure.release(), &ExactGeometryRelease::default());
+            assert_eq!(owner.counts(), before);
+            assert!(probe(peak).is_ok());
+        }
+    }
+}
+
 fn check_continuation_copy(
     owner: &ExactGeometryOwner,
     job: GeometryJobKey,
@@ -463,6 +549,16 @@ fn deferred_presentations_share_admitted_backing_through_preparation(cx: &mut Te
             let before = owner.counts();
             check_continuation_copy(&owner, job, index, 0);
             check_deferred_tail(&owner, job, index, &objects, display.len());
+            check_active_object_response(
+                &owner,
+                job,
+                index,
+                &text,
+                &objects,
+                text_system,
+                target,
+                display.len(),
+            );
             let enclosing = prepare_response_with_enclosing(
                 &owner,
                 job,
@@ -529,6 +625,16 @@ fn deferred_presentations_share_admitted_backing_through_preparation(cx: &mut Te
             .unwrap();
             let before = owner.counts();
             let expected = display.len() * if index { 1 } else { 2 };
+            check_active_object_response(
+                &owner,
+                job,
+                index,
+                &text,
+                &following,
+                text_system,
+                target,
+                display.len(),
+            );
             check_detached_inline(
                 &owner,
                 job,

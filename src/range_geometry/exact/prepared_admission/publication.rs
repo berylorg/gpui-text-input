@@ -71,6 +71,7 @@ impl ExactGeometryOwner {
                 ExactGeometryProgress::Scanning,
                 release,
                 shared,
+                0,
                 budget,
                 successor,
             );
@@ -491,12 +492,14 @@ impl ExactGeometryOwner {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn finish_active_target_response(
         &self,
         mut delta: Box<ActiveJob>,
         progress: ExactGeometryProgress,
         release: ExactGeometryRelease,
         shared: SharedOutput,
+        display_bytes: usize,
         mut budget: AdmissionBudget,
         successor: TargetResponseSuccessor,
     ) -> Result<PreparedTargetResponse, ExactGeometryFailure> {
@@ -507,7 +510,13 @@ impl ExactGeometryOwner {
             PendingInput::Text(_) => size_of::<PageRequestKey>(),
             PendingInput::Object(_) => size_of::<ObjectRequestKey>(),
         };
-        observe_prepared(&mut budget, &delta, pending_bytes, 1)?;
+        observe_prepared_counts_with_credit(
+            &mut budget,
+            accounting::active_counts(&delta),
+            pending_bytes,
+            1,
+            display_bytes,
+        )?;
         delta.pending = Some(Box::new(pending));
         let is_index = matches!(delta.kind, ActiveKind::Index);
         let current = self.response_active(delta.key, is_index)?;
@@ -547,7 +556,13 @@ impl ExactGeometryOwner {
             .checked_add(checkpoint_capacity)
             .and_then(|items| items.checked_add(presentation_capacity))
             .ok_or_else(|| prepared_capacity_failure(&budget))?;
-        observe_prepared(&mut budget, &delta, destination_bytes, destination_items)?;
+        observe_prepared_counts_with_credit(
+            &mut budget,
+            accounting::active_counts(&delta),
+            destination_bytes,
+            destination_items,
+            display_bytes,
+        )?;
         let fragments = Vec::with_capacity(fragment_capacity);
         let object_presentations = Vec::with_capacity(presentation_capacity);
         let checkpoints = VecDeque::with_capacity(checkpoint_capacity);
