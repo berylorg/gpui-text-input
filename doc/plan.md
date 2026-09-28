@@ -4,12 +4,12 @@ Implement the capacity prerequisite for preserved resident adoption from
 [the package contract](design.md#range-backed-preserved-resident-adoption), coordinated by
 the Beryl root plan. Resident protection, accounting and publication remain separate work.
 
-# Phase 88: Reconcile Active Interaction Priority Fixture (finished)
+# Phase 89: Reconcile Successive Edit Object Ownership Fixture (finished)
 
-Initialized the priority fixture before requesting its active interaction. All six applicable
-priority cases pass; the separate successive-edit baseline failure remains open. Independent
-review accepted the scheduling interpretation and unchanged priority/object assertions.
-No production behavior changed; overall preparation remains pending.
+Corrected the fixture to count initialized object facts separately from allocation slots.
+All 115 unit tests pass, including every reconciled baseline failure. Independent review
+accepted the retained exact-gap and insertion-admission checks. Production behavior is unchanged.
+Overall preparation acceptance remains pending.
 
 # Phase 2: Enforce Capacity Throughout Preparation (pending)
 
@@ -45,8 +45,7 @@ Complete object pages also carry retained output credit through nonterminal forw
 Text responses cannot retain deferred custody and need no deferred-display credit.
 Deferred presentation backing now shares correctly and participates in retained overlap queries.
 Explicit preparation admission now carries typed configured/enclosing refusal attribution.
-Do not infer host attribution from ambiguous GPUI errors. One older baseline unit failure remains
-recorded in the Beryl capacity failure note and require authority reconciliation.
+Do not infer host attribution from ambiguous GPUI errors. All baseline unit failures are reconciled in the Beryl capacity failure note; overall preparation acceptance remains pending.
 Returned GPUI custody now uses the geometry budget before invocation.
 Transient inline style runs remain charged through the layout call and output coexistence.
 Direct response admission accepts enclosing ceilings; host derivation and peak propagation remain
@@ -57,8 +56,7 @@ Carry prepared transition peak evidence through enclosing host admission before 
 Dependency-private shaping scratch is outside this reservation; retain finite layout input limits.
 
 Candidate, Ready and adoption charges are now admitted before custody transfer. Startup owner
-admission and the shared-environment/transfer-coexistence audits are accepted. Overall preparation
-closure and the remaining successive-edit baseline test failure still require final reconciliation.
+admission and the shared-environment/transfer-coexistence audits are accepted. All baseline unit failures are reconciled; overall preparation closure still requires final acceptance.
 Phase 79 removes the candidate configuration copy and qualifies shared placeholder ownership.
 Phase 78 proves buffered effects cannot coexist with candidate preparation under current scheduling;
 accepted component checks alone do not close the preparation boundary.

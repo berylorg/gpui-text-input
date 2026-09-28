@@ -846,7 +846,16 @@ fn exact_priority_after_end_object_retains_proof_for_successive_edit(
             input.surface().unwrap().selection(),
             RangeSourceSelection::caret(gap)
         );
-        assert_eq!(input.realization_diagnostics().current.resident_objects, 1);
+        assert_eq!(
+            input
+                .surface()
+                .unwrap()
+                .object_pages()
+                .iter()
+                .map(|page| page.objects().len())
+                .sum::<usize>(),
+            1
+        );
     });
     input.update(cx, |input, cx| {
         input
