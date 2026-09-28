@@ -11,6 +11,15 @@ identity and custody on retry. Independent review accepted the boundary; all 264
 115 unit tests plus default-feature checks pass. Overall phase 2 and object preparation review
 remain pending. Detailed evidence and limitations are in Beryl's capacity failure record.
 
+# Phase 93: Admit Delivered Object Preparation (pending)
+
+Admit proof-vector and object residency bookkeeping coexistence before allocating, checking both
+requested and actual capacities. Keep the delivered response, waiting identity and cleanup custody
+until preparation succeeds; preserve configured precedence, attempted peaks, anchor deduplication,
+reconciliation and eviction. Verify accumulated empty pages and nonempty anchors under repeated
+byte/item refusal, exact continuation and drop cleanup. Independent review precedes overall phase 2
+acceptance; Beryl root 838 coordinates this bounded prerequisite.
+
 # Phase 2: Enforce Capacity Throughout Preparation (pending)
 
 Complete overall review of startup, restoration and geometry request/response preparation,
