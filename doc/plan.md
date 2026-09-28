@@ -4,14 +4,13 @@ Implement the capacity prerequisite for preserved resident adoption from
 [the package contract](design.md#range-backed-preserved-resident-adoption), coordinated by
 the Beryl root plan. Resident protection, accounting and publication remain separate work.
 
-# Phase 69: Admit Candidate Surface Page Ordering (finished)
+# Phase 70: Admit Candidate Fragment Map Collection (finished)
 
-Candidate surface page ordering now admits requested and actual capacity before use, with checked
-box-conversion coexistence. In-place sorting preserves equal-position input order. Retryable refusal
-retains resident/geometry custody and releases the temporary cleanup reservation. All 235 integration
-tests, the default-feature check and independent semantic/resource review passed. Remaining surface
-collections and transitions stay pending; see the Beryl capacity evidence note.
-
+Owned fragment maps now admit requested and actual capacity with retained page ordering included.
+Adjacent-position deduplication and object-gap identity remain unchanged. Host refusal preserves
+resident/geometry custody and releases temporary cleanup. The 237-test suite, all three final
+focused cases, default-feature check and independent semantic/resource review passed. Remaining
+geometry collections and transitions stay pending; see the Beryl capacity evidence note.
 # Phase 2: Enforce Capacity Throughout Preparation (pending)
 
 Apply the admitted budget before geometry scan growth and candidate preparation allocations,

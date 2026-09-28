@@ -1,3 +1,4 @@
+pub(in crate::range_widget) mod fragment_maps;
 pub(in crate::range_widget) mod page_order;
 
 use gpui::{
@@ -259,6 +260,7 @@ impl CoherentRangeSurface {
         wrap_width: Pixels,
         placeholder: SharedString,
         page_order: Box<[SurfacePageIndex]>,
+        owned_maps: Vec<StreamingLayoutMap>,
     ) -> Result<PreparedCoherentRangeSurface, crate::RangeTextInputError> {
         let viewport = ByteRange::new(
             target.target_source().byte_offset,
@@ -332,7 +334,7 @@ impl CoherentRangeSurface {
                 return Err(crate::RangeTextInputError::IncompleteSurface);
             }
         }
-        let owned_maps = collect_owned_fragment_maps(target.fragments())?;
+
         let temporary_map_bytes = owned_maps
             .capacity()
             .checked_mul(std::mem::size_of::<StreamingLayoutMap>())
@@ -1200,64 +1202,6 @@ fn gap_bounds(
     .ok()
     .and_then(|index| gaps.get(index))
     .map(|gap| gap.caret_bounds)
-}
-
-fn collect_owned_fragment_maps(
-    fragments: &[StreamingLayoutFragment],
-) -> Result<Vec<StreamingLayoutMap>, crate::RangeTextInputError> {
-    let mut count = 0usize;
-    let mut previous = None;
-    for fragment in fragments {
-        for_each_owned_fragment_map(fragment, &mut |map| {
-            if previous != Some(map.logical_position) {
-                count = count.checked_add(1).unwrap_or(usize::MAX);
-                previous = Some(map.logical_position);
-            }
-        });
-    }
-    if count == usize::MAX {
-        return Err(crate::RangeTextInputError::SurfaceCapacity);
-    }
-    let mut maps = Vec::with_capacity(count);
-    previous = None;
-    for fragment in fragments {
-        for_each_owned_fragment_map(fragment, &mut |map| {
-            if previous != Some(map.logical_position) {
-                maps.push(map);
-                previous = Some(map.logical_position);
-            }
-        });
-    }
-    Ok(maps)
-}
-
-fn for_each_owned_fragment_map(
-    fragment: &StreamingLayoutFragment,
-    visit: &mut impl FnMut(StreamingLayoutMap),
-) {
-    match fragment {
-        StreamingLayoutFragment::Text(fragment) => fragment
-            .maps()
-            .iter()
-            .copied()
-            .take(fragment.maps().len().saturating_sub(1))
-            .for_each(visit),
-        StreamingLayoutFragment::OversizeAtom(fragment) => {
-            fragment.maps().first().copied().into_iter().for_each(visit)
-        }
-        StreamingLayoutFragment::InlineObject(fragment) => {
-            fragment.maps().iter().copied().for_each(visit)
-        }
-        StreamingLayoutFragment::Boundary(fragment) => match fragment.kind {
-            StreamingBoundaryKind::LogicalLine if fragment.maps().len() > 1 => {
-                fragment.maps().first().copied().into_iter().for_each(visit)
-            }
-            StreamingBoundaryKind::EndOfSource => {
-                fragment.maps().first().copied().into_iter().for_each(visit)
-            }
-            StreamingBoundaryKind::LogicalLine => {}
-        },
-    }
 }
 
 fn bounds_for_owned_fragment_maps(

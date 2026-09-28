@@ -1,5 +1,6 @@
 use std::sync::Weak;
 
+mod fragment_maps;
 mod page_order;
 mod transfer;
 
@@ -177,6 +178,37 @@ impl RangePrepublicationSession {
             self.ledger_blocked = true;
             return Ok(());
         };
+        let map_baseline = add_charge(
+            surface_baseline,
+            RangeSurfaceCharge {
+                bytes: page_order
+                    .len()
+                    .checked_mul(std::mem::size_of::<
+                        crate::range_widget::surface::SurfacePageIndex,
+                    >())
+                    .ok_or(RangePrepublicationFailure::Arithmetic)?,
+                items: page_order.len(),
+            },
+        )?;
+        let fragments = self
+            .geometry
+            .as_ref()
+            .and_then(|geometry| geometry.target())
+            .ok_or(RangePrepublicationFailure::DeterministicGeometry)?
+            .fragments();
+        let owned_maps = fragment_maps::prepare(
+            crate::range_widget::surface::fragment_maps::owned_maps(fragments),
+            map_baseline,
+            configured_capacity(&config),
+            self.available,
+            &mut surface_peak,
+        );
+        self.observe_charge(surface_peak);
+        let Some(owned_maps) = owned_maps? else {
+            let _ = self.environment.cleanup().complete(cleanup);
+            self.ledger_blocked = true;
+            return Ok(());
+        };
         let geometry = self
             .geometry
             .as_ref()
@@ -218,6 +250,7 @@ impl RangePrepublicationSession {
             config.layout.wrap_width,
             config.placeholder.clone(),
             page_order,
+            owned_maps,
         )
         .map_err(classify_widget_error)?;
         let preparation_allocation = [

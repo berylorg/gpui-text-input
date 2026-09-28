@@ -29,6 +29,9 @@ mod admitted_response;
 #[cfg(feature = "test-support")]
 mod candidate_transfer;
 
+#[path = "prepublication/candidate_fragment_maps.rs"]
+#[cfg(feature = "test-support")]
+mod candidate_fragment_maps;
 #[path = "prepublication/candidate_page_order.rs"]
 #[cfg(feature = "test-support")]
 mod candidate_page_order;

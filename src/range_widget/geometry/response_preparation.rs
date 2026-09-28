@@ -509,6 +509,11 @@ impl RangeTextInput {
                 |_| true,
             )
             .map_err(|_| RangeTextInputError::SurfaceCapacity)?,
+            super::super::surface::fragment_maps::prepare(
+                super::super::surface::fragment_maps::owned_maps(target.fragments()),
+                |_| true,
+            )
+            .map_err(|_| RangeTextInputError::SurfaceCapacity)?,
         )?;
         if let Some(seed) = state.restoration
             && (surface.binding() != seed.binding
