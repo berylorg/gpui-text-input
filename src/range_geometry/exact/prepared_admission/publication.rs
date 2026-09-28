@@ -1,5 +1,5 @@
-use super::*;
 use super::release::{ReleaseKey, push_release_key};
+use super::*;
 
 impl ExactGeometryOwner {
     #[allow(clippy::too_many_arguments)]
@@ -358,7 +358,7 @@ impl ExactGeometryOwner {
             }
         }
         let delta_counts = accounting::active_counts(&delta);
-        let capacity = super::super::transition::PreparationCapacity {
+        let mut capacity = super::super::transition::PreparationCapacity {
             bytes: budget
                 .fixed_bytes
                 .checked_add(budget.page_payload_bytes)
@@ -375,21 +375,28 @@ impl ExactGeometryOwner {
                 .ok_or_else(|| prepared_capacity_failure(&budget))?,
             max_bytes: budget.max_bytes.min(self.limits.max_retained_bytes),
             max_items: budget.max_items.min(self.limits.max_retained_items),
+            peak_bytes: 0,
+            peak_items: 0,
         };
-        let prepared_target = self
-            .prepare_target_replacement_from_index(
-                &index,
-                successor.target_job_id,
-                successor.page_id,
-                target,
-                anchor,
-                capacity,
-            )
-            .map_err(|error| {
-                prepared_failure(error, ExactGeometryFailureStage::Publication, &budget)
-            })?;
-        budget.peak_bytes = budget.peak_bytes.max(prepared_target.admission_required_bytes());
-        budget.peak_items = budget.peak_items.max(prepared_target.admission_required_items());
+        let prepared_target = self.prepare_target_replacement_from_index(
+            &index,
+            successor.target_job_id,
+            successor.page_id,
+            target,
+            anchor,
+            &mut capacity,
+        );
+        budget.peak_bytes = budget.peak_bytes.max(capacity.peak_bytes);
+        budget.peak_items = budget.peak_items.max(capacity.peak_items);
+        let prepared_target = prepared_target.map_err(|error| {
+            prepared_failure(error, ExactGeometryFailureStage::Publication, &budget)
+        })?;
+        budget.peak_bytes = budget
+            .peak_bytes
+            .max(prepared_target.admission_required_bytes());
+        budget.peak_items = budget
+            .peak_items
+            .max(prepared_target.admission_required_items());
         let additional_bytes = publication_bytes
             .checked_add(prepared_target.retained_bytes())
             .ok_or_else(|| prepared_capacity_failure(&budget))?;

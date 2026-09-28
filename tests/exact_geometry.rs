@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use gpui_text_input::{ExactGeometryCounts, ObjectRequestKey, PageRequestKey};
 
 use gpui::{
     FontFallbacks, FontFeatures, SharedString, StreamingBoundaryKind, StreamingLayoutBinding,
@@ -358,5 +359,7 @@ mod request_capacity;
 
 #[path = "exact_geometry/resident_admission.rs"]
 mod resident_admission;
+#[path = "exact_geometry/preparation_capacity.rs"]
+mod preparation_capacity;
 #[path = "exact_geometry/text_growth.rs"]
 mod text_growth;

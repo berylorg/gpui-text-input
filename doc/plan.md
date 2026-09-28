@@ -4,12 +4,11 @@ Implement the capacity prerequisite for preserved resident adoption from
 [the package contract](design.md#range-backed-preserved-resident-adoption), coordinated by
 the Beryl root plan. Resident protection, accounting and publication remain separate work.
 
-# Phase 36: Gate Resident Geometry Requests On Session Capacity (finished)
+# Phase 38: Preserve Nested Preparation Refusal Peaks (finished)
 
-Resident pending request allocation now checks session custody plus temporary demand storage.
-Refusal preserves custody/pending/effects; restored capacity resumes authenticated resident reuse.
-Independent review accepted the change; all 204 regression tests passed. Response scan and
-candidate host-budget propagation remain pending.
+Nested successor and cleanup preparation now retain attempted peaks through refusal and success.
+Enclosing failures merge that evidence before construction. Independent review accepted the change;
+all 207 regression tests passed. Transactional session integration remains pending.
 
 # Phase 2: Enforce Capacity Throughout Preparation (pending)
 

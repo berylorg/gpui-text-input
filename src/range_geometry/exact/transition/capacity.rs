@@ -1,27 +1,36 @@
 use super::ExactGeometryError;
 
-#[derive(Clone, Copy)]
 pub(crate) struct PreparationCapacity {
     pub(crate) bytes: usize,
     pub(crate) items: usize,
     pub(crate) max_bytes: usize,
     pub(crate) max_items: usize,
+    pub(crate) peak_bytes: usize,
+    pub(crate) peak_items: usize,
 }
 
 impl PreparationCapacity {
     pub(super) fn admit(
-        self,
+        &mut self,
         bytes: usize,
         items: usize,
     ) -> Result<(usize, usize), ExactGeometryError> {
-        let bytes = self
-            .bytes
-            .checked_add(bytes)
-            .ok_or(ExactGeometryError::CapacityExceeded)?;
-        let items = self
-            .items
-            .checked_add(items)
-            .ok_or(ExactGeometryError::CapacityExceeded)?;
+        self.admit_from(self.bytes, self.items, bytes, items)
+    }
+
+    pub(super) fn admit_from(
+        &mut self,
+        base_bytes: usize,
+        base_items: usize,
+        bytes: usize,
+        items: usize,
+    ) -> Result<(usize, usize), ExactGeometryError> {
+        let bytes = base_bytes.checked_add(bytes);
+        let items = base_items.checked_add(items);
+        self.peak_bytes = self.peak_bytes.max(bytes.unwrap_or(usize::MAX));
+        self.peak_items = self.peak_items.max(items.unwrap_or(usize::MAX));
+        let bytes = bytes.ok_or(ExactGeometryError::CapacityExceeded)?;
+        let items = items.ok_or(ExactGeometryError::CapacityExceeded)?;
         if bytes > self.max_bytes || items > self.max_items {
             return Err(ExactGeometryError::CapacityExceeded);
         }
