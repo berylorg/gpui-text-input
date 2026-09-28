@@ -724,7 +724,9 @@ pages without exposing allocation addresses, and distinguish explicit enclosing-
 preparation admission refusals. It also qualifies the positive remaining-capacity reservation used
 before GPUI binding construction, and independently supplied configured/enclosing charge
 observations and their separate high-water marks, including nested transition admissions and
-unattributed arithmetic failure. The feature exposes the observation type for source-backed
+unattributed arithmetic failure. Its baseline-mapping probe qualifies checked conversion from
+raw preparation growth to enclosing custody with observation-specific incremental shared credit.
+The feature exposes the observation type for source-backed
 transition integration fixtures. It delegates to ordinary preparation and commit;
 it is absent without the feature and does not define a production host admission interface.
 

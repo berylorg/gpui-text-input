@@ -308,7 +308,7 @@ impl AdmissionBudget {
         self.peak_items = self.peak_items.max(items);
         if let Some(observations) = &mut self.observations {
             return observations
-                .observe((bytes, items), (bytes, items))
+                .observe_preparation((bytes, items), (0, 0))
                 .inspect_err(|_| {
                     self.refused_capacity = Some((bytes, items));
                 });

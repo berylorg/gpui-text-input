@@ -5,6 +5,97 @@ use gpui_text_input::preparation_test_support::{
 };
 
 #[test]
+fn preparation_maps_each_peak_without_discounting_configured_custody() {
+    let mut probe =
+        PreparationCapacityProbe::with_baselines((200, 20), (150, 15), (100, 10), (80, 8));
+    probe.observe_preparation((200, 20), (40, 4)).unwrap();
+    assert_eq!(probe.peaks(), ((200, 20), (140, 14)));
+    probe.observe_preparation((170, 17), (0, 0)).unwrap();
+    assert_eq!(probe.peaks(), ((200, 20), (150, 15)));
+    probe.observe_preparation((100, 10), (0, 0)).unwrap();
+    assert_eq!(probe.peaks(), ((200, 20), (150, 15)));
+
+    for (configured, enclosing, configured_refusal) in [
+        ((199, 20), (140, 14), true),
+        ((200, 19), (140, 14), true),
+        ((200, 20), (139, 14), false),
+        ((200, 20), (140, 13), false),
+        ((199, 20), (140, 13), true),
+        ((200, 19), (139, 14), true),
+    ] {
+        let mut probe =
+            PreparationCapacityProbe::with_baselines(configured, enclosing, (100, 10), (80, 8));
+        assert_eq!(
+            probe.observe_preparation((200, 20), (40, 4)),
+            Err(ExactGeometryError::CapacityExceeded)
+        );
+        assert_eq!(probe.configured_refusal(), configured_refusal);
+        assert_eq!(probe.enclosing_refusal(), !configured_refusal);
+        assert_eq!(probe.peaks(), ((200, 20), (140, 14)));
+        probe.observe_preparation((100, 10), (0, 0)).unwrap();
+        assert!(!probe.configured_refusal());
+        assert!(!probe.enclosing_refusal());
+    }
+}
+
+#[test]
+fn preparation_mapping_arithmetic_cannot_credit_existing_custody() {
+    let maximum = (usize::MAX, usize::MAX);
+    for (baseline, current, raw, credit) in [
+        ((100, 10), (80, 8), (99, 10), (0, 0)),
+        ((100, 10), (80, 8), (100, 9), (0, 0)),
+        ((100, 10), (80, 8), (120, 12), (21, 0)),
+        ((100, 10), (80, 8), (120, 12), (0, 3)),
+        ((0, 0), (1, 0), (usize::MAX, 0), (1, 0)),
+        ((0, 0), (0, 1), (0, usize::MAX), (0, 1)),
+    ] {
+        let mut probe =
+            PreparationCapacityProbe::with_baselines(maximum, (0, 0), baseline, current);
+        assert!(probe.observe((1, 1), (1, 1)).is_err());
+        assert!(probe.enclosing_refusal());
+        assert_eq!(
+            probe.observe_preparation(raw, credit),
+            Err(ExactGeometryError::CapacityExceeded)
+        );
+        assert!(!probe.configured_refusal());
+        assert!(!probe.enclosing_refusal());
+        assert_eq!(probe.peaks(), ((1, 1), (1, 1)));
+    }
+    let mut probe = PreparationCapacityProbe::with_baselines(maximum, maximum, maximum, maximum);
+    probe.observe_preparation(maximum, (0, 0)).unwrap();
+    assert_eq!(probe.peaks(), (maximum, maximum));
+    let mut probe = PreparationCapacityProbe::with_baselines(maximum, (0, 0), (0, 0), (0, 0));
+    probe.observe_preparation(maximum, maximum).unwrap();
+    assert_eq!(probe.peaks(), (maximum, (0, 0)));
+}
+
+#[test]
+fn nested_preparation_keeps_enclosing_baseline_and_prior_credit_peaks() {
+    let mut probe =
+        PreparationCapacityProbe::with_baselines((200, 20), (130, 13), (100, 10), (80, 8));
+    probe.observe_preparation((200, 20), (60, 6)).unwrap();
+    assert_eq!(probe.observe_nested((100, 10), (50, 5)).unwrap(), (150, 15));
+    assert_eq!(probe.peaks(), ((200, 20), (130, 13)));
+    for additional in [(51, 5), (50, 6)] {
+        assert_eq!(
+            probe.observe_nested((100, 10), additional),
+            Err(ExactGeometryError::CapacityExceeded)
+        );
+        assert!(probe.enclosing_refusal());
+        assert!(!probe.configured_refusal());
+    }
+    assert_eq!(probe.peaks(), ((200, 20), (131, 14)));
+    assert_eq!(
+        probe.observe_nested((99, 10), (0, 0)),
+        Err(ExactGeometryError::CapacityExceeded)
+    );
+    assert!(!probe.enclosing_refusal());
+    assert!(!probe.configured_refusal());
+    assert_eq!(probe.peaks(), ((200, 20), (131, 14)));
+    probe.observe_nested((100, 10), (0, 0)).unwrap();
+}
+
+#[test]
 fn nested_preparation_preserves_observations_and_clears_overflow_attribution() {
     for (configured, enclosing, configured_refusal) in [
         ((149, 15), (150, 15), true),

@@ -5,6 +5,28 @@ pub use super::super::capacity_observation::CapacityObservations;
 pub struct PreparationCapacityProbe(super::super::capacity_observation::CapacityObservations);
 
 impl PreparationCapacityProbe {
+    pub fn with_baselines(
+        configured: (usize, usize),
+        enclosing: (usize, usize),
+        preparation: (usize, usize),
+        current: (usize, usize),
+    ) -> Self {
+        Self(CapacityObservations::with_baselines(
+            configured,
+            enclosing,
+            preparation,
+            current,
+        ))
+    }
+
+    pub fn observe_preparation(
+        &mut self,
+        raw: (usize, usize),
+        shared_credit: (usize, usize),
+    ) -> Result<(), ExactGeometryError> {
+        self.0.observe_preparation(raw, shared_credit)
+    }
+
     pub fn new(configured: (usize, usize), enclosing: (usize, usize)) -> Self {
         Self(super::super::capacity_observation::CapacityObservations::new(configured, enclosing))
     }

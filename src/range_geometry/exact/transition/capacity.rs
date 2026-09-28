@@ -39,7 +39,7 @@ impl PreparationCapacity {
         let items = items.ok_or(ExactGeometryError::CapacityExceeded)?;
         if let Some(observations) = &mut self.observations {
             observations
-                .observe((bytes, items), (bytes, items))
+                .observe_preparation((bytes, items), (0, 0))
                 .inspect_err(|_| {
                     self.refused_capacity = Some((bytes, items));
                 })?;

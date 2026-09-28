@@ -4,11 +4,12 @@ Implement the capacity prerequisite for preserved resident adoption from
 [the package contract](design.md#range-backed-preserved-resident-adoption), coordinated by
 the Beryl root plan. Resident protection, accounting and publication remain separate work.
 
-# Phase 49: Observe Nested Preparation At Admission (finished)
+# Phase 50: Map Preparation Observations To Enclosing Ownership (finished)
 
-Nested target preparation now observes each checked admission directly. Independent review
-accepted the corrected feature gate; all 215 integration tests and the ordinary exact-geometry
-target check passed. Shared presentation credits and host-session propagation remain pending.
+Checked per-observation translation preserves configured charges and bounds incremental shared
+credit; nested admissions retain both baselines. Independent review accepted the scoped change,
+with all 218 integration tests passing. Production identity mapping remains until session and
+credit propagation are ready.
 
 # Phase 2: Enforce Capacity Throughout Preparation (pending)
 
