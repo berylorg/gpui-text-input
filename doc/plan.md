@@ -4,11 +4,11 @@ Implement the capacity prerequisite for preserved resident adoption from
 [the package contract](design.md#range-backed-preserved-resident-adoption), coordinated by
 the Beryl root plan. Resident protection, accounting and publication remain separate work.
 
-# Phase 13: Admit Response Continuation Copies Before Allocation (finished)
+# Phase 14: Admit Terminal Prepared Targets Before Allocation (finished)
 
-Text and object response preparation admits copied scanner storage alongside current geometry and
-delivered response custody before cloning buffers or boxes. Independent review accepted accounting,
-allocation ordering and refusal custody; all 188 geometry, prepublication and range-widget tests passed.
+Terminal target preparation checks current geometry plus publication storage before allocating
+the publication. Independent review accepted charge equivalence, allocation ordering and unchanged
+refusal custody; all 188 geometry, prepublication and range-widget tests passed.
 
 # Phase 2: Enforce Capacity Throughout Preparation (pending)
 
