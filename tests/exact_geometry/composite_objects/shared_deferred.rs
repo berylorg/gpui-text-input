@@ -705,6 +705,17 @@ fn deferred_presentations_share_admitted_backing_through_preparation(cx: &mut Te
                 owner_presentation_overlap(&owner, &[&objects, &following]),
                 Some(expected)
             );
+            let before = owner.counts();
+            assert!(owner.target().is_none());
+            let projected =
+                gpui_text_input::preparation_test_support::owner_retained_without_target(
+                    &owner,
+                    &[&objects, &following],
+                )
+                .unwrap();
+            assert_eq!(projected.bytes, before.total_bytes() - expected);
+            assert_eq!(projected.items, before.total_items());
+            assert_eq!(owner.counts(), before);
         }
     });
 }

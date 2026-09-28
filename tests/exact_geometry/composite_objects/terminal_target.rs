@@ -201,6 +201,30 @@ fn terminal_target_publication_retains_shared_inline_credit(cx: &mut TestAppCont
                     BlockTarget::new(px(0.), px(10000.), px(32.)),
                     credited * display.len(),
                 );
+                owner
+                    .admit_object_page(job, &text, &objects, text_system)
+                    .unwrap();
+                let before = owner.counts();
+                let projected =
+                    gpui_text_input::preparation_test_support::owner_retained_without_target(
+                        &owner,
+                        &[&objects],
+                    )
+                    .unwrap();
+                assert_eq!(owner.counts(), before);
+                let target = owner.take_target().unwrap();
+                assert_eq!(
+                    projected.bytes,
+                    owner.counts().total_bytes()
+                        - gpui_text_input::preparation_test_support::owner_presentation_overlap(
+                            &owner,
+                            &[&objects]
+                        )
+                        .unwrap()
+                );
+                assert_eq!(projected.items, owner.counts().total_items());
+                assert!(projected.bytes < before.total_bytes());
+                assert!(!target.fragments().is_empty());
             }
         }
     });

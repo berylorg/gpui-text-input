@@ -9,6 +9,26 @@ use crate::{
 use super::*;
 
 impl ExactGeometryOwner {
+    pub(crate) fn retained_without_target<'a>(
+        &self,
+        pages: impl Iterator<Item = &'a crate::ObjectPage> + Clone,
+    ) -> Option<crate::RangeSurfaceCharge> {
+        let counts = accounting::counts(
+            self.inputs.as_deref(),
+            self.active.as_deref(),
+            self.desired_target.as_deref(),
+            self.index.as_deref(),
+            None,
+        );
+        let overlap = self.active.as_deref().map_or(Some(0), |active| {
+            accounting::active_presentation_overlap_bytes(active, pages)
+        })?;
+        Some(crate::RangeSurfaceCharge {
+            bytes: counts.total_bytes().checked_sub(overlap)?,
+            items: counts.total_items(),
+        })
+    }
+
     pub(crate) fn presentation_overlap_bytes<'a>(
         &self,
         pages: impl Iterator<Item = &'a crate::ObjectPage> + Clone,

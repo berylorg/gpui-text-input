@@ -4,13 +4,13 @@ Implement the capacity prerequisite for preserved resident adoption from
 [the package contract](design.md#range-backed-preserved-resident-adoption), coordinated by
 the Beryl root plan. Resident protection, accounting and publication remain separate work.
 
-# Phase 75: Admit Surface Residuals Before Highlights (finished)
+# Phase 76: Admit Candidate Ownership Before Transfer (finished)
 
-Caret and placeholder residual charges now participate in every highlight allocation admission.
-Final retained and conversion charges remain unchanged. All 247 integration tests, default-feature
-compilation and independent semantic/resource review passed. Actual residual-induced early refusal
-is source-reviewed; existing tight-budget helper tests cover admission routing. Candidate/Ready/
-adoption transitions remain pending.
+Candidate storage is derived immutably and admitted against configured and host capacity before
+page, target or cleanup custody moves. Geometry projection tests cover terminal removal and active
+shared presentation custody. All 247 integration tests, the added focused assertion, default-feature
+compilation and independent review passed. Exact live-session candidate refusal is source-reviewed.
+Ready/adoption coexistence and overall preparation acceptance remain pending.
 # Phase 2: Enforce Capacity Throughout Preparation (pending)
 
 Apply the admitted budget before geometry scan growth and candidate preparation allocations,

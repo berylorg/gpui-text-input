@@ -463,6 +463,13 @@ pub fn owner_presentation_overlap(
     owner.presentation_overlap_bytes(pages.iter().copied())
 }
 
+pub fn owner_retained_without_target(
+    owner: &ExactGeometryOwner,
+    pages: &[&ObjectPage],
+) -> Option<crate::RangeSurfaceCharge> {
+    owner.retained_without_target(pages.iter().copied())
+}
+
 pub fn session_response_successor_ids(
     session: &crate::RangePrepublicationSession,
 ) -> Option<[u64; 3]> {

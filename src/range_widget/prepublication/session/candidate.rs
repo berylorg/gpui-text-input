@@ -339,45 +339,37 @@ impl RangePrepublicationSession {
             self.ledger_blocked = true;
             return Ok(());
         }
-        let pages = self.residency.take_resident_pages_into(pages);
-        let object_pages = self.object_residency.take_resident_pages_into(object_pages);
-        let geometry = self
+        let geometry_charge = self
             .geometry
-            .as_mut()
-            .ok_or(RangePrepublicationFailure::Stale)?;
-        let target = geometry
-            .take_target()
-            .ok_or(RangePrepublicationFailure::DeterministicGeometry)?;
-        let geometry_charge = geometry.counts();
-        let presentation_overlap = geometry
-            .presentation_overlap_bytes(object_pages.iter())
+            .as_ref()
+            .ok_or(RangePrepublicationFailure::Stale)?
+            .retained_without_target(self.object_residency.resident_page_iter())
             .ok_or(RangePrepublicationFailure::Arithmetic)?;
         let unused_surface_slots = RangeSurfaceCharge {
             bytes: pages
                 .capacity()
-                .checked_sub(pages.len())
+                .checked_sub(self.residency.counts().resident_pages)
                 .and_then(|count| count.checked_mul(std::mem::size_of::<RangePage>()))
                 .and_then(|bytes| {
                     object_pages
                         .capacity()
-                        .checked_sub(object_pages.len())
+                        .checked_sub(self.object_residency.counts().resident_pages)
                         .and_then(|count| count.checked_mul(std::mem::size_of::<ObjectPage>()))
                         .and_then(|object_bytes| bytes.checked_add(object_bytes))
                 })
                 .ok_or(RangePrepublicationFailure::Arithmetic)?,
             items: pages
                 .capacity()
-                .checked_sub(pages.len())
+                .checked_sub(self.residency.counts().resident_pages)
                 .and_then(|items| {
                     object_pages
                         .capacity()
-                        .checked_sub(object_pages.len())
+                        .checked_sub(self.object_residency.counts().resident_pages)
                         .and_then(|object_items| items.checked_add(object_items))
                 })
                 .ok_or(RangePrepublicationFailure::Arithmetic)?,
         };
         let surface_charge = add_charge(prepared.charge(), unused_surface_slots)?;
-        let surface = CoherentRangeSurface::commit_prepared(prepared, pages, object_pages, target);
         let candidate_charge = [
             RangeSurfaceCharge {
                 bytes: std::mem::size_of::<RangePrepublicationCandidate>(),
@@ -385,17 +377,8 @@ impl RangePrepublicationSession {
             },
             nested_owner_charge(surface_charge, std::mem::size_of::<CoherentRangeSurface>())
                 .ok_or(RangePrepublicationFailure::Arithmetic)?,
-            nested_owner_charge(
-                RangeSurfaceCharge {
-                    bytes: geometry_charge
-                        .total_bytes()
-                        .checked_sub(presentation_overlap)
-                        .ok_or(RangePrepublicationFailure::Arithmetic)?,
-                    items: geometry_charge.total_items(),
-                },
-                std::mem::size_of::<ExactGeometryOwner>(),
-            )
-            .ok_or(RangePrepublicationFailure::Arithmetic)?,
+            nested_owner_charge(geometry_charge, std::mem::size_of::<ExactGeometryOwner>())
+                .ok_or(RangePrepublicationFailure::Arithmetic)?,
             self.custody_storage_charge()
                 .ok_or(RangePrepublicationFailure::Arithmetic)?,
             multiply_charge(
@@ -413,9 +396,24 @@ impl RangePrepublicationSession {
             add_charge(total, charge).ok()
         })
         .ok_or(RangePrepublicationFailure::Arithmetic)?;
+        self.observe_charge(candidate_charge);
         if !charge_fits(candidate_charge, configured) {
             return Err(RangePrepublicationFailure::TerminalCapacity);
         }
+        if !charge_fits(candidate_charge, self.available) {
+            let _ = self.environment.cleanup().complete(cleanup);
+            self.ledger_blocked = true;
+            return Ok(());
+        }
+        let pages = self.residency.take_resident_pages_into(pages);
+        let object_pages = self.object_residency.take_resident_pages_into(object_pages);
+        let target = self
+            .geometry
+            .as_mut()
+            .ok_or(RangePrepublicationFailure::Stale)?
+            .take_target()
+            .ok_or(RangePrepublicationFailure::DeterministicGeometry)?;
+        let surface = CoherentRangeSurface::commit_prepared(prepared, pages, object_pages, target);
         let validation = self
             .accepted_validation
             .ok_or(RangePrepublicationFailure::Stale)?;
