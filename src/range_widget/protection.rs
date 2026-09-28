@@ -1,5 +1,8 @@
 use super::*;
 
+mod reservation;
+pub use reservation::RangeResidentReservation;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RangeResidentProtection {
     entity: gpui::EntityId,

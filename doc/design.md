@@ -858,6 +858,15 @@ are charged once; moving them neither duplicates charges nor creates an uncharge
 Capacity refusal must leave the predecessor paintable. It cannot evict that surface to make room
 or raise the configured limits implicitly.
 
+This combined envelope bounds content working sets and preparation that can grow with source
+input, together with their existing cleanup custody. It is an operational byte/item budget, not
+an exact inventory of every allocation reachable from an environment. Ordinary host-supplied UI
+configuration, static labels, font handles and fixed control records need no additional allocation
+identity registry or byte accounting. Settlement slots and cleanup slots retain their configured
+count limits and explicit release/acknowledgement rules. The host bounds simultaneous preparation
+flights; retries cannot accumulate abandoned sessions, candidates or unsettled cleanup. Content
+must not be routed through configuration fields to bypass content working-set limits.
+
 `RangePrepublicationSession::new_with_admission_capacity` accepts an initial byte/item admission
 ceiling, bounded by the environment's configured limits. It rejects insufficient initial ownership
 before issuing source effects or realizing a candidate. Later availability updates may shrink and
@@ -866,6 +875,15 @@ configured ceiling. This API constrains the session's existing admission checks;
 itself bound every geometry or candidate preparation allocation. Full preparation accounting is
 required before it can support the combined reservation above. It neither measures nor protects a
 predecessor itself; preserved-resident admission owns that measurement and reservation.
+
+`RangeTextInput::prepare_resident_successor` checks the protected cut and preserved source positions,
+measures the resident with its existing working-set counters, and subtracts that charge from the
+host's combined byte/item capacity. It returns an ordinary session with that remainder as its
+fixed ceiling, clamped to successor configuration, and a non-cloneable `RangeResidentReservation`
+identifying the exact protection cut and session generation. Shortage refuses before source effects
+without changing the predecessor. The host owns at most one preparation flight per resident and
+settles the previous flight and cleanup before retry; the reservation is no process-wide governor.
+Final adoption consumes and rechecks the reservation with its matching candidate and live resident.
 
 Success consumes the candidate once and publishes its coherent binding, geometry, caret,
 selection, scroll and exact history frontier together through the ordinary staged-publication

@@ -26,7 +26,7 @@ mod transition;
 mod types;
 
 pub use prepublication::*;
-pub use protection::RangeResidentProtection;
+pub use protection::{RangeResidentProtection, RangeResidentReservation};
 pub use surface::{
     CoherentRangeSurface, RangeSurfaceCharge, RangeSurfaceFiller, RangeSurfaceHit,
     RealizedInlineObjectGeometry, RealizedInlineObjectPresentation, RealizedObjectGapGeometry,

@@ -4,16 +4,13 @@ Implement preserved resident adoption from
 [the package contract](design.md#range-backed-preserved-resident-adoption), coordinated by
 the Beryl root plan. Resident protection, accounting and publication have separate acceptance boundaries.
 
-# Phase 97: Protect A Quiescent Resident During Adoption Preparation (finished)
+# Phase 98: Reserve Combined Resident Adoption Capacity (finished)
 
-Protected admission, callback suppression, invalidation and exact release are accepted after
-independent lifecycle/resource review. All 295 integration and 120 unit tests plus default-feature
-checks pass. Beryl's `doc/failures/resident-protection.md` records corrections and evidence limits.
-
-# Phase 98: Reserve Combined Resident Adoption Capacity (pending)
-
-Coordinate Beryl root 842: account protected ownership and reserve finite combined capacity before
-ordinary successor preparation; verify exact fit, refusal, cancellation and cleanup.
+Combined admission reuses protected resident working-set measurements and fixed successor session
+ceilings, retaining exact protection/session association. All 55 prepublication integration tests
+and default compilation pass; independent lifecycle/resource review accepted. The exhaustive
+infrastructure-accounting detour was removed; Beryl records the correction in
+`doc/failures/shared-infrastructure.md`. Final adoption and host single-flight control remain pending.
 
 # Phase 96: Implement Preserved Resident Widget Adoption (pending)
 

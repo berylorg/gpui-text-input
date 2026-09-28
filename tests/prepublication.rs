@@ -522,6 +522,9 @@ mod candidate_cases;
 #[path = "prepublication/resident_protection.rs"]
 mod resident_protection;
 
+#[path = "prepublication/resident_reservation.rs"]
+mod resident_reservation;
+
 #[path = "prepublication/cleanup_capacity_cases.rs"]
 mod cleanup_capacity_cases;
 
