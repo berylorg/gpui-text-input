@@ -270,6 +270,9 @@ impl AdmissionBudget {
             .checked_add(1)
             .ok_or(ExactGeometryError::CapacityExceeded)?;
         self.admit_counts(bytes, items)?;
+        if let Some(observations) = &self.observations {
+            return observations.remaining_capacity((occupied_bytes, occupied_items));
+        }
         Ok((
             self.max_bytes - occupied_bytes,
             self.max_items - occupied_items,

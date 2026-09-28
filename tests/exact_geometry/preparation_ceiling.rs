@@ -1,8 +1,107 @@
 use super::*;
 use gpui_text_input::preparation_test_support::{
     PreparationCapacityProbe, enclosing_failure_peak, is_configured_capacity_refusal,
-    is_enclosing_capacity_refusal, preparation_remaining_capacity, prepare_response,
+    is_enclosing_capacity_refusal, preparation_remaining_capacity,
+    preparation_remaining_capacity_with_baselines, prepare_response,
 };
+
+#[test]
+fn pre_shaping_allowance_uses_mapped_headroom_without_future_credit() {
+    for (current, enclosing, expected) in [
+        ((80, 8), (150, 15), (20, 2)),
+        ((180, 18), (250, 25), (20, 2)),
+        ((0, 0), (70, 7), (20, 2)),
+        ((80, 8), (1000, 100), (50, 5)),
+        ((80, 8), (180, 14), (50, 1)),
+        ((80, 8), (131, 18), (1, 5)),
+    ] {
+        let occupied = (150, 15);
+        let configured = (200, 20);
+        let baseline = (100, 10);
+        let remaining = preparation_remaining_capacity_with_baselines(
+            occupied, configured, enclosing, baseline, current,
+        )
+        .unwrap();
+        assert_eq!(remaining, expected);
+        let mut probe =
+            PreparationCapacityProbe::with_baselines(configured, enclosing, baseline, current);
+        let exact = (occupied.0 + remaining.0, occupied.1 + remaining.1);
+        probe.observe_preparation(exact, (0, 0)).unwrap();
+        assert!(
+            probe
+                .observe_preparation((exact.0 + 1, exact.1), (0, 0))
+                .is_err()
+        );
+        assert!(
+            probe
+                .observe_preparation((exact.0, exact.1 + 1), (0, 0))
+                .is_err()
+        );
+    }
+    for (configured, enclosing, configured_refusal) in [
+        ((200, 20), (130, 18), false),
+        ((200, 20), (180, 13), false),
+        ((150, 20), (130, 18), true),
+        ((200, 15), (180, 13), true),
+    ] {
+        let failure = preparation_remaining_capacity_with_baselines(
+            (150, 15),
+            configured,
+            enclosing,
+            (100, 10),
+            (80, 8),
+        )
+        .unwrap_err();
+        assert_eq!(is_configured_capacity_refusal(&failure), configured_refusal);
+        assert_eq!(is_enclosing_capacity_refusal(&failure), !configured_refusal);
+        assert_eq!(enclosing_failure_peak(&failure), Some((131, 14)));
+        assert_eq!(failure.release(), &ExactGeometryRelease::default());
+    }
+}
+
+#[test]
+fn pre_shaping_mapped_allowance_checks_arithmetic_boundaries() {
+    let max = (usize::MAX, usize::MAX);
+    for (occupied, baseline, current) in [
+        ((usize::MAX, 10), (100, 10), (80, 8)),
+        ((100, usize::MAX), (100, 10), (80, 8)),
+        ((100, 10), (100, 10), (usize::MAX, 8)),
+        ((100, 10), (100, 10), (80, usize::MAX)),
+        ((98, 10), (100, 10), (80, 8)),
+        ((100, 8), (100, 10), (80, 8)),
+        ((99, 10), (100, 10), (80, 8)),
+        ((100, 9), (100, 10), (80, 8)),
+    ] {
+        let failure =
+            preparation_remaining_capacity_with_baselines(occupied, max, max, baseline, current)
+                .unwrap_err();
+        assert_eq!(failure.error(), &ExactGeometryError::CapacityExceeded);
+        assert!(!is_configured_capacity_refusal(&failure));
+        assert!(!is_enclosing_capacity_refusal(&failure));
+    }
+    assert_eq!(
+        preparation_remaining_capacity_with_baselines(
+            (usize::MAX - 1, usize::MAX - 1),
+            max,
+            max,
+            (usize::MAX - 1, usize::MAX - 1),
+            (0, 0),
+        )
+        .unwrap(),
+        (1, 1)
+    );
+    assert_eq!(
+        preparation_remaining_capacity_with_baselines(
+            (100, 10),
+            max,
+            max,
+            (100, 10),
+            (usize::MAX - 1, usize::MAX - 1),
+        )
+        .unwrap(),
+        (1, 1)
+    );
+}
 
 #[test]
 fn prepared_failure_retains_independent_enclosing_peak_evidence() {

@@ -4,12 +4,11 @@ Implement the capacity prerequisite for preserved resident adoption from
 [the package contract](design.md#range-backed-preserved-resident-adoption), coordinated by
 the Beryl root plan. Resident protection, accounting and publication remain separate work.
 
-# Phase 51: Retain Enclosing Preparation Peak Evidence (finished)
+# Phase 52: Derive GPUI Allowances From Both Capacity Views (finished)
 
-Prepared results and failures now preserve optional independent enclosing peaks. Validation and
-direct paths without an observer report none. Independent review accepted the scoped change after
-the fixed metadata-size snapshot correction; all 219 integration tests passed. Session consumption
-and full host admission remain pending.
+Observed GPUI startup allowances use checked configured and mapped enclosing headroom without
+prospective output credit. Independent review accepted the change; all 221 integration tests passed.
+Live session mapping and separate startup/output credit admission remain pending.
 
 # Phase 2: Enforce Capacity Throughout Preparation (pending)
 
@@ -27,7 +26,8 @@ correct earlier peaks. Prospective display credit must not subsidize GPUI contin
 The independent observer now follows actual nested admissions, supports checked baseline mapping,
 and reports enclosing peaks in prepared results and failures. Production still uses identity mapping;
 derive live session baselines and per-observation credits, then consume those peaks in the session.
-Remaining GPUI allowances must respect both mapped views before credits can be enabled.
+Zero-credit GPUI allowances now respect both mapped views. Separate startup/output admission
+remains necessary before prospective display credits can be enabled.
 Carry it through pre-copy, detached custody, output before metadata and publication observations.
 Deferred presentation backing now shares correctly and participates in retained overlap queries.
 Explicit preparation admission now carries typed configured/enclosing refusal attribution.

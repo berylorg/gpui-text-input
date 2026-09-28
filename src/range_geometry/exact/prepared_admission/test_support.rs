@@ -97,10 +97,23 @@ pub fn preparation_remaining_capacity(
     configured: (usize, usize),
     enclosing: (usize, usize),
 ) -> Result<(usize, usize), ExactGeometryFailure> {
+    preparation_remaining_capacity_with_baselines(occupied, configured, enclosing, (0, 0), (0, 0))
+}
+
+pub fn preparation_remaining_capacity_with_baselines(
+    occupied: (usize, usize),
+    configured: (usize, usize),
+    enclosing: (usize, usize),
+    preparation: (usize, usize),
+    current: (usize, usize),
+) -> Result<(usize, usize), ExactGeometryFailure> {
     let mut budget = AdmissionBudget {
-        observations: Some(
-            super::super::capacity_observation::CapacityObservations::new(configured, enclosing),
-        ),
+        observations: Some(CapacityObservations::with_baselines(
+            configured,
+            enclosing,
+            preparation,
+            current,
+        )),
         refused_capacity: None,
         fixed_bytes: 0,
         fixed_items: 0,

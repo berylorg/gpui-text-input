@@ -36,6 +36,39 @@ impl CapacityObservations {
         self.refusal = None;
     }
 
+    pub(super) fn remaining_capacity(
+        &self,
+        occupied: (usize, usize),
+    ) -> Result<(usize, usize), ExactGeometryError> {
+        let remaining =
+            |raw: usize, baseline: usize, current: usize, configured: usize, enclosing: usize| {
+                let mapped = current.checked_add(raw.checked_sub(baseline)?)?;
+                Some(
+                    configured
+                        .checked_sub(raw)?
+                        .min(enclosing.checked_sub(mapped)?),
+                )
+            };
+        Ok((
+            remaining(
+                occupied.0,
+                self.preparation_baseline.0,
+                self.enclosing_baseline.0,
+                self.configured_limit.0,
+                self.enclosing_limit.0,
+            )
+            .ok_or(ExactGeometryError::CapacityExceeded)?,
+            remaining(
+                occupied.1,
+                self.preparation_baseline.1,
+                self.enclosing_baseline.1,
+                self.configured_limit.1,
+                self.enclosing_limit.1,
+            )
+            .ok_or(ExactGeometryError::CapacityExceeded)?,
+        ))
+    }
+
     pub fn observe_preparation(
         &mut self,
         raw: (usize, usize),
