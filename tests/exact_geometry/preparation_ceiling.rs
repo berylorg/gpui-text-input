@@ -5,6 +5,93 @@ use gpui_text_input::preparation_test_support::{
     preparation_remaining_capacity_with_baselines, prepare_response,
 };
 
+#[gpui::test]
+fn continuation_startup_admission_matches_gpui_and_preserves_capacity_views(
+    cx: &mut TestAppContext,
+) {
+    with_text_system(cx, |text_system| {
+        use gpui::{StreamingObjectGap, StreamingObjectId, StreamingObjectOrder};
+        for (gap, item_count) in [
+            (StreamingObjectGap::no_objects(), 3),
+            (
+                StreamingObjectGap::before(StreamingObjectId(1), StreamingObjectOrder(1)),
+                5,
+            ),
+            (
+                StreamingObjectGap::between(
+                    StreamingObjectId(1),
+                    StreamingObjectOrder(1),
+                    StreamingObjectId(2),
+                    StreamingObjectOrder(2),
+                ),
+                7,
+            ),
+        ] {
+            let mut position = StreamingLayoutPosition::at(0);
+            position.gap = gap;
+            let mut binding = layout(64, 100.);
+            binding.start_position = position;
+            let session = text_system.streaming_layout_session(binding).unwrap();
+            let startup = (
+                session.retained_charge().total().unwrap(),
+                session.retained_item_charge().total().unwrap(),
+            );
+            assert_eq!(
+                startup,
+                (
+                    std::mem::size_of::<gpui::StreamingLayoutContinuation>(),
+                    item_count
+                )
+            );
+            let raw = (150 + startup.0, 15 + startup.1);
+            let mapped = (130 + startup.0, 13 + startup.1);
+            for (configured, enclosing, expected) in [
+                (raw, mapped, None),
+                (raw, (mapped.0 - 1, mapped.1), Some(false)),
+                (raw, (mapped.0, mapped.1 - 1), Some(false)),
+                ((raw.0 - 1, raw.1), mapped, Some(true)),
+                ((raw.0, raw.1 - 1), mapped, Some(true)),
+                ((raw.0 - 1, raw.1), (mapped.0, mapped.1 - 1), Some(true)),
+            ] {
+                let mut probe = PreparationCapacityProbe::with_baselines(
+                    configured,
+                    enclosing,
+                    (100, 10),
+                    (80, 8),
+                );
+                let result = probe.observe_startup((150, 15), position);
+                assert_eq!(probe.peaks(), (raw, mapped));
+                assert_eq!(result.is_err(), expected.is_some());
+                assert_eq!(probe.configured_refusal(), expected == Some(true));
+                assert_eq!(probe.enclosing_refusal(), expected == Some(false));
+                if let Err(error) = result {
+                    let failure = probe.into_failure(error);
+                    assert_eq!(failure.release(), &ExactGeometryRelease::default());
+                    assert_eq!(enclosing_failure_peak(&failure), Some(mapped));
+                }
+            }
+        }
+    });
+}
+
+#[test]
+fn continuation_startup_overflow_clears_prior_refusal_without_peak_fabrication() {
+    let position = StreamingLayoutPosition::at(0);
+    for occupied in [(usize::MAX, 10), (100, usize::MAX)] {
+        let mut probe = PreparationCapacityProbe::new((100, 10), (100, 10));
+        assert!(probe.observe_startup((100, 10), position).is_err());
+        assert!(probe.configured_refusal());
+        let peaks = probe.peaks();
+        assert_eq!(
+            probe.observe_startup(occupied, position),
+            Err(ExactGeometryError::CapacityExceeded)
+        );
+        assert!(!probe.configured_refusal());
+        assert!(!probe.enclosing_refusal());
+        assert_eq!(probe.peaks(), peaks);
+    }
+}
+
 #[test]
 fn pre_shaping_allowance_uses_mapped_headroom_without_future_credit() {
     for (current, enclosing, expected) in [

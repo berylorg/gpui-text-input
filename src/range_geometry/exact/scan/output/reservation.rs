@@ -27,6 +27,10 @@ pub(super) fn binding(
         .and_then(|items| items.checked_add(continuation_items.max(job.scanner.continuation_items)))
         .and_then(|items| items.checked_add(1))
         .ok_or(ExactGeometryError::CapacityExceeded)?;
+    budget.admit_layout_startup(
+        (occupied_bytes, occupied_items),
+        job.scanner.continuation.next_position,
+    )?;
     let (bytes, items) = budget.remaining_capacity(occupied_bytes, occupied_items)?;
     let mut reserved = binding.clone();
     reserved.limits.retained_bytes = reserved.limits.retained_bytes.min(bytes);

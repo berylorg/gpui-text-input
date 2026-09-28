@@ -44,7 +44,27 @@ impl PreparationCapacityProbe {
     }
 
     pub fn into_failure(self, error: ExactGeometryError) -> ExactGeometryFailure {
-        let budget = AdmissionBudget {
+        prepared_failure(
+            error,
+            ExactGeometryFailureStage::Finalize,
+            &self.into_budget(),
+        )
+    }
+
+    pub fn observe_startup(
+        &mut self,
+        occupied: (usize, usize),
+        position: gpui::StreamingLayoutPosition,
+    ) -> Result<(), ExactGeometryError> {
+        let prior = std::mem::replace(self, Self::new((0, 0), (0, 0)));
+        let mut budget = prior.into_budget();
+        let result = budget.admit_layout_startup(occupied, position);
+        self.0 = budget.observations.take().unwrap();
+        result
+    }
+
+    fn into_budget(self) -> AdmissionBudget {
+        AdmissionBudget {
             peak_bytes: self.0.configured_peak.0,
             peak_items: self.0.configured_peak.1,
             observations: Some(self.0),
@@ -56,8 +76,7 @@ impl PreparationCapacityProbe {
             max_bytes: usize::MAX,
             max_items: usize::MAX,
             failure_stage: None,
-        };
-        prepared_failure(error, ExactGeometryFailureStage::Finalize, &budget)
+        }
     }
 
     pub fn observe_nested(

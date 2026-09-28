@@ -728,7 +728,8 @@ observations and their separate high-water marks, including nested transition ad
 unattributed arithmetic failure. Its baseline-mapping probe qualifies checked conversion from
 raw preparation growth to enclosing custody with observation-specific incremental shared credit.
 The remaining-capacity probe also qualifies mapped headroom with distinct baselines and no
-prospective output credit before GPUI startup.
+prospective output credit before GPUI startup. The startup probe admits the prior continuation's
+actual byte/item charge independently of output allowance and qualifies it against GPUI accounting.
 The feature exposes the observation type for source-backed
 transition integration fixtures. It delegates to ordinary preparation and commit;
 it is absent without the feature and does not define a production host admission interface.

@@ -206,8 +206,10 @@ fn inline_style_storage_is_admitted_before_layout(cx: &mut TestAppContext) {
                         .unwrap_err();
                     let peak = if attempt <= 1 || attempt >= 4 {
                         (
-                            expected.0 + std::mem::size_of::<StreamingLayoutFragment>() + 1,
-                            expected.1 + 2 + 2 * usize::from(deferred),
+                            expected.0
+                                + std::mem::size_of::<StreamingLayoutFragment>()
+                                + std::mem::size_of::<gpui::StreamingLayoutContinuation>(),
+                            expected.1 + 6 + 2 * usize::from(deferred),
                         )
                     } else {
                         expected

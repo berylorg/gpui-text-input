@@ -257,6 +257,23 @@ impl AdmissionBudget {
         }
     }
 
+    fn admit_layout_startup(
+        &mut self,
+        occupied: (usize, usize),
+        position: gpui::StreamingLayoutPosition,
+    ) -> Result<(), ExactGeometryError> {
+        self.clear_refusal();
+        let bytes = occupied
+            .0
+            .checked_add(std::mem::size_of::<gpui::StreamingLayoutContinuation>())
+            .ok_or(ExactGeometryError::CapacityExceeded)?;
+        let items = occupied
+            .1
+            .checked_add(accounting::continuation_items(position))
+            .ok_or(ExactGeometryError::CapacityExceeded)?;
+        self.admit_counts(bytes, items)
+    }
+
     fn remaining_capacity(
         &mut self,
         occupied_bytes: usize,
