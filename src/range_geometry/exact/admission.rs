@@ -302,8 +302,14 @@ impl ExactGeometryOwner {
                             return Err(failure);
                         }
                     };
-                if let Err(error) = budget.observe(&active, size_of::<ExactGeometryCheckpoint>(), 1)
-                {
+                if let Err(error) = checkpoint::retain_scanner_checkpoint(
+                    &mut active,
+                    terminal,
+                    self.limits.max_checkpoints,
+                    &mut budget,
+                    0,
+                    0,
+                ) {
                     let mut failure = self.terminal_failure(
                         error,
                         ExactGeometryFailureStage::Checkpoint,
@@ -313,11 +319,6 @@ impl ExactGeometryOwner {
                     failure.release = merge_release(release, failure.release);
                     return Err(failure);
                 }
-                checkpoint::retain_checkpoint(
-                    &mut active.scanner.checkpoints,
-                    terminal,
-                    self.limits.max_checkpoints,
-                );
             }
         }
         active.page_use = ActivePageUse::Traverse { anchor: page_end };

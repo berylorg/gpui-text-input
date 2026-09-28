@@ -49,17 +49,17 @@ impl ExactGeometryOwner {
                 .map_err(|error| {
                     prepared_failure(error, ExactGeometryFailureStage::Checkpoint, &budget)
                 })?;
-                observe_prepared(
-                    &mut budget,
-                    &candidate,
-                    size_of::<ExactGeometryCheckpoint>(),
-                    1,
-                )?;
-                super::super::checkpoint::retain_checkpoint(
-                    &mut candidate.scanner.checkpoints,
+                super::super::checkpoint::retain_scanner_checkpoint(
+                    &mut candidate,
                     terminal,
                     self.limits.max_checkpoints,
-                );
+                    &mut budget,
+                    0,
+                    0,
+                )
+                .map_err(|error| {
+                    prepared_failure(error, ExactGeometryFailureStage::Checkpoint, &budget)
+                })?;
             }
         }
         candidate.page_use = ActivePageUse::Traverse { anchor: page_end };

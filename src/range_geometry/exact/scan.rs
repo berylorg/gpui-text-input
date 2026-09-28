@@ -10,8 +10,8 @@ use crate::{
 };
 
 use super::{
-    ActiveAtom, ActiveJob, ActiveKind, AdmissionBudget, DeferredObject, ExactGeometryCheckpoint,
-    ExactGeometryError, ExactGeometryLimits, OwnerInputs, StreamingGeometryStyle,
+    ActiveAtom, ActiveJob, ActiveKind, AdmissionBudget, DeferredObject, ExactGeometryError,
+    ExactGeometryLimits, OwnerInputs, StreamingGeometryStyle,
 };
 
 mod output;

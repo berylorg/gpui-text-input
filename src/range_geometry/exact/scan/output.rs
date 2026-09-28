@@ -127,27 +127,18 @@ pub(super) fn admit_layout(
                 budget.failure_stage = Some(super::super::ExactGeometryFailureStage::Checkpoint);
                 error
             })?;
-        budget
-            .observe(
-                job,
-                transient_bytes.saturating_add(std::mem::size_of::<ExactGeometryCheckpoint>()),
-                transient_items,
-            )
-            .map_err(|error| {
-                budget.failure_stage = Some(super::super::ExactGeometryFailureStage::Checkpoint);
-                error
-            })?;
-        super::super::checkpoint::retain_checkpoint(
-            &mut job.scanner.checkpoints,
+        super::super::checkpoint::retain_scanner_checkpoint(
+            job,
             checkpoint,
             limits.max_checkpoints,
-        );
-        budget
-            .observe(job, transient_bytes, transient_items)
-            .map_err(|error| {
-                budget.failure_stage = Some(super::super::ExactGeometryFailureStage::Checkpoint);
-                error
-            })?;
+            budget,
+            transient_bytes,
+            transient_items,
+        )
+        .map_err(|error| {
+            budget.failure_stage = Some(super::super::ExactGeometryFailureStage::Checkpoint);
+            error
+        })?;
     }
     budget.observe(job, 0, 0)?;
     Ok(retained)

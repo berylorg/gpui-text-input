@@ -335,6 +335,8 @@ fn with_text_system(test: &mut TestAppContext, f: impl FnOnce(&WindowTextSystem)
 mod canonical;
 #[path = "exact_geometry/capacity_lifecycle.rs"]
 mod capacity_lifecycle;
+#[path = "exact_geometry/checkpoint_growth.rs"]
+mod checkpoint_growth;
 #[path = "exact_geometry/composite_objects.rs"]
 mod composite_objects;
 #[path = "exact_geometry/continuation_growth.rs"]

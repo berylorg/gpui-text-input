@@ -5,7 +5,57 @@ use unicode_segmentation::GraphemeCursor;
 
 use crate::{ByteOffset, ObjectCursor, SourcePosition};
 
-use super::{BlockTarget, ExactGeometryCheckpoint, ExactGeometryError, Scanner};
+use super::{
+    ActiveJob, AdmissionBudget, BlockTarget, ExactGeometryCheckpoint, ExactGeometryError, Scanner,
+};
+
+pub(super) fn retain_scanner_checkpoint(
+    job: &mut ActiveJob,
+    checkpoint: ExactGeometryCheckpoint,
+    limit: usize,
+    budget: &mut AdmissionBudget,
+    transient_bytes: usize,
+    transient_items: usize,
+) -> Result<(), ExactGeometryError> {
+    let checkpoints = &job.scanner.checkpoints;
+    let replaces = checkpoints.len() > 1
+        && checkpoints.back().is_some_and(|prior| {
+            prior.source == checkpoint.source && prior.object_cursor == checkpoint.object_cursor
+        });
+    let required = if replaces || checkpoints.len() >= limit {
+        checkpoints.len()
+    } else {
+        checkpoints
+            .len()
+            .checked_add(1)
+            .ok_or(ExactGeometryError::CapacityExceeded)?
+    };
+    let capacity = checkpoints.capacity();
+    let replacement = if required > capacity {
+        capacity.saturating_mul(2).max(required).min(limit)
+    } else {
+        0
+    };
+    let records = replacement
+        .checked_add(1)
+        .ok_or(ExactGeometryError::CapacityExceeded)?;
+    let bytes = records
+        .checked_mul(std::mem::size_of::<ExactGeometryCheckpoint>())
+        .and_then(|bytes| bytes.checked_add(transient_bytes))
+        .ok_or(ExactGeometryError::CapacityExceeded)?;
+    let items = records
+        .checked_add(transient_items)
+        .ok_or(ExactGeometryError::CapacityExceeded)?;
+    budget.observe(job, bytes, items)?;
+    if replacement != 0 {
+        job.scanner
+            .checkpoints
+            .try_reserve_exact(replacement - job.scanner.checkpoints.len())
+            .map_err(|_| ExactGeometryError::CapacityExceeded)?;
+    }
+    retain_checkpoint(&mut job.scanner.checkpoints, checkpoint, limit);
+    budget.observe(job, transient_bytes, transient_items)
+}
 
 pub(super) fn checkpoint(
     binding: &StreamingLayoutBinding,
