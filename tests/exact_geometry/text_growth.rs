@@ -149,7 +149,10 @@ fn text_conversion_refusal_preserves_scanner_storage_until_release(cx: &mut Test
                 .admit_object_page(job, &page, &objects, text_system)
                 .unwrap_err();
             assert_eq!(failure.error(), &ExactGeometryError::CapacityExceeded);
-            assert_eq!(failure.release().counts.scan_buffer_bytes, released_text);
+            assert_eq!(
+                failure.release().counts.scan_buffer_bytes,
+                released_text + newline_capacity
+            );
             assert_eq!(owner.counts().active_job_items, 0);
             assert!(owner.index().is_none());
         }
@@ -247,7 +250,7 @@ fn rollover_owner(
 }
 
 #[gpui::test]
-fn target_segment_rollover_rechecks_capacity_after_retaining_geometry(cx: &mut TestAppContext) {
+fn target_segment_rollover_keeps_grapheme_charged_during_layout(cx: &mut TestAppContext) {
     with_text_system(cx, |text_system| {
         let grapheme = format!("a{}", "\u{301}".repeat(256));
         let source = format!("{grapheme}{grapheme}zz");
@@ -281,8 +284,8 @@ fn target_segment_rollover_rechecks_capacity_after_retaining_geometry(cx: &mut T
                     failure.stage(),
                     gpui_text_input::ExactGeometryFailureStage::Scan
                 );
-                assert!(failure.release().counts.output_payload_bytes > 0);
-                assert_eq!(failure.release().counts.scan_buffer_bytes, 0);
+                assert_eq!(failure.release().counts.output_payload_bytes, 0);
+                assert!(failure.release().counts.scan_buffer_bytes >= grapheme.len());
                 assert_eq!(owner.counts().active_job_items, 0);
                 assert!(owner.target().is_none());
             }

@@ -340,7 +340,6 @@ fn admit_inline_object(
             style,
             limits,
             true,
-            None,
             budget,
         )?;
     }
@@ -468,9 +467,8 @@ fn complete_grapheme(
             budget.observe(job, segment_capacity, 1)?;
         }
     }
-    let grapheme = job.scanner.grapheme_text.take();
     let end_cursor = job.scanner.cursor.clone();
-    if grapheme.as_deref() == Some("\n") {
+    if job.scanner.grapheme_text.as_deref() == Some("\n") {
         job.scanner.cursor = job.scanner.grapheme_start_cursor.clone();
         admit_text_segment(
             job,
@@ -480,9 +478,9 @@ fn complete_grapheme(
             style,
             limits,
             false,
-            grapheme.as_ref(),
             budget,
         )?;
+        job.scanner.grapheme_text = None;
         job.scanner.cursor = end_cursor.clone();
         job.scanner.grapheme_start = end;
         job.scanner.grapheme_start_cursor = end_cursor.clone();
@@ -503,7 +501,7 @@ fn complete_grapheme(
         admit_layout(job, text_system, binding, limits, true, budget, |session| {
             session.finalize_logical_line(finalization)
         })?;
-    } else if let Some(grapheme) = grapheme {
+    } else if let Some(grapheme) = job.scanner.grapheme_text.as_ref() {
         if job
             .scanner
             .segment_text
@@ -520,12 +518,12 @@ fn complete_grapheme(
                 style,
                 limits,
                 true,
-                Some(&grapheme),
                 budget,
             )?;
             job.scanner.cursor = end_cursor.clone();
             job.scanner.segment_start = start;
         }
+        let grapheme = job.scanner.grapheme_text.take().unwrap();
         let grows = segment_capacity > job.scanner.segment_text.capacity();
         let transient_bytes = grapheme
             .capacity()
@@ -548,7 +546,6 @@ fn complete_grapheme(
             style,
             limits,
             true,
-            None,
             budget,
         )?;
         job.scanner.cursor = end_cursor.clone();
@@ -591,7 +588,6 @@ fn admit_text_segment(
     style: &StreamingGeometryStyle,
     limits: ExactGeometryLimits,
     retain_checkpoint: bool,
-    detached_grapheme: Option<&String>,
     budget: &mut AdmissionBudget,
 ) -> Result<(), ExactGeometryError> {
     if job.scanner.segment_text.is_empty() {
@@ -607,13 +603,8 @@ fn admit_text_segment(
         .segment_text
         .len()
         .checked_add(std::mem::size_of::<gpui::TextRun>())
-        .and_then(|bytes| bytes.checked_add(detached_grapheme.map_or(0, String::capacity)))
         .ok_or(ExactGeometryError::CapacityExceeded)?;
-    budget.observe(
-        job,
-        conversion_bytes,
-        2 + usize::from(detached_grapheme.is_some()),
-    )?;
+    budget.observe(job, conversion_bytes, 2)?;
     let text = std::mem::take(&mut job.scanner.segment_text);
     let mut run = style.text_run.clone();
     run.len = text.len();
@@ -660,7 +651,6 @@ fn admit_compact_atom(
         style,
         limits,
         true,
-        None,
         budget,
     )?;
     job.scanner.cursor = end_cursor.clone();
@@ -733,7 +723,6 @@ pub(super) fn finalize_source(
         style,
         limits,
         false,
-        None,
         budget,
     )?;
     let end = StreamingEndOfSource {

@@ -253,7 +253,8 @@ fn window_scan_and_finalize_errors_release_named_terminal_state(cx: &mut TestApp
         );
         let objects = empty_object_page(&mut layout_owner, job, &next, 1);
         let mut layout_active = subtract_counts(layout_owner.counts(), layout_base);
-        layout_active.scan_buffer_items = 1;
+        layout_active.scan_buffer_items = 2;
+        layout_active.scan_buffer_bytes = 8;
         let failure = layout_owner
             .admit_object_page(job, &next, &objects, window.text_system())
             .unwrap_err();
