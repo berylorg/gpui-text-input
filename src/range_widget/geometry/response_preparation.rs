@@ -520,6 +520,7 @@ impl RangeTextInput {
             .map_err(|_| RangeTextInputError::SurfaceCapacity)?,
             owned_maps,
             buffers,
+            |_| true,
         )?;
         if let Some(seed) = state.restoration
             && (surface.binding() != seed.binding

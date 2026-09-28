@@ -25,6 +25,10 @@ use gpui_text_input::{
 #[path = "prepublication/admitted_response.rs"]
 mod admitted_response;
 
+#[path = "prepublication/candidate_highlights.rs"]
+#[cfg(feature = "test-support")]
+mod candidate_highlights;
+
 #[path = "prepublication/candidate_transfer.rs"]
 #[cfg(feature = "test-support")]
 mod candidate_transfer;

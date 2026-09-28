@@ -1,3 +1,4 @@
+mod highlight_geometry;
 use std::sync::Weak;
 
 mod fragment_maps;
@@ -268,25 +269,60 @@ impl RangePrepublicationSession {
         };
         desired.preserve_scroll_anchor = true;
         desired.reveal_caret = false;
-        let prepared = CoherentRangeSurface::prepare(
-            self.seed.binding,
-            self.residency.resident_page_iter(),
-            self.object_residency.resident_page_iter(),
-            desired,
-            Some((self.seed.caret, self.seed.selection)),
-            Some(self.seed.scroll.position),
-            target,
-            aggregate.quality(),
-            aggregate.visual_lines(),
-            aggregate.content_height(),
-            config.layout.line_height,
-            config.layout.wrap_width,
-            config.placeholder.clone(),
-            page_order,
-            owned_maps,
-            buffers,
-        )
-        .map_err(classify_widget_error)?;
+        let highlight_baseline =
+            add_charge(
+                realized_baseline,
+                RangeSurfaceCharge {
+                    bytes: buffers
+                        .0
+                        .capacity()
+                        .checked_mul(std::mem::size_of::<crate::RealizedInlineObjectGeometry>())
+                        .and_then(|bytes| {
+                            bytes.checked_add(buffers.1.capacity().checked_mul(
+                                std::mem::size_of::<crate::RealizedObjectGapGeometry>(),
+                            )?)
+                        })
+                        .ok_or(RangePrepublicationFailure::Arithmetic)?,
+                    items: buffers
+                        .0
+                        .capacity()
+                        .checked_add(buffers.1.capacity())
+                        .ok_or(RangePrepublicationFailure::Arithmetic)?,
+                },
+            )?;
+        let prepared = highlight_geometry::prepare(
+            highlight_baseline,
+            configured_capacity(&config),
+            self.available,
+            &mut surface_peak,
+            |admit| {
+                CoherentRangeSurface::prepare(
+                    self.seed.binding,
+                    self.residency.resident_page_iter(),
+                    self.object_residency.resident_page_iter(),
+                    desired,
+                    Some((self.seed.caret, self.seed.selection)),
+                    Some(self.seed.scroll.position),
+                    target,
+                    aggregate.quality(),
+                    aggregate.visual_lines(),
+                    aggregate.content_height(),
+                    config.layout.line_height,
+                    config.layout.wrap_width,
+                    config.placeholder.clone(),
+                    page_order,
+                    owned_maps,
+                    buffers,
+                    admit,
+                )
+            },
+        );
+        self.observe_charge(surface_peak);
+        let Some(prepared) = prepared? else {
+            let _ = self.environment.cleanup().complete(cleanup);
+            self.ledger_blocked = true;
+            return Ok(());
+        };
         let preparation_allocation = [
             RangeSurfaceCharge {
                 bytes: std::mem::size_of_val(&prepared),

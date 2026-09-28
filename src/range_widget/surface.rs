@@ -1,4 +1,5 @@
 pub(in crate::range_widget) mod fragment_maps;
+pub(in crate::range_widget) mod highlight_geometry;
 pub(in crate::range_widget) mod page_order;
 pub(in crate::range_widget) mod realized_buffers;
 
@@ -263,6 +264,7 @@ impl CoherentRangeSurface {
         page_order: Box<[SurfacePageIndex]>,
         owned_maps: Vec<StreamingLayoutMap>,
         realized_buffers: realized_buffers::Buffers,
+        admit_highlights: impl FnMut(RangeSurfaceCharge) -> bool,
     ) -> Result<PreparedCoherentRangeSurface, crate::RangeTextInputError> {
         let viewport = ByteRange::new(
             target.target_source().byte_offset,
@@ -381,16 +383,15 @@ impl CoherentRangeSurface {
             .map(|(_, selection)| selection)
             .or(desired.source_selection)
             .unwrap_or_else(|| RangeSourceSelection::caret(target.target_source()));
-        let selection_geometry = bounds_for_composite_selection_from_maps(
+        let (selection_geometry, composition_geometry) = highlight_geometry::prepare(
             &owned_maps,
             &realized_objects,
             selection,
+            desired.composition,
             line_height,
             wrap_width,
-        );
-        let composition_geometry = desired.composition.map_or_else(Vec::new, |range| {
-            bounds_for_owned_fragment_maps(&owned_maps, range, line_height, wrap_width)
-        });
+            admit_highlights,
+        )?;
         let caret_geometry = position_for_composite_fragments(target.fragments(), selection.head)
             .map(|origin| Bounds::new(origin, gpui::size(px(2.), line_height)));
         let geometry_candidate_items = selection_geometry
@@ -1212,85 +1213,6 @@ fn gap_bounds(
     .ok()
     .and_then(|index| gaps.get(index))
     .map(|gap| gap.caret_bounds)
-}
-
-fn bounds_for_owned_fragment_maps(
-    maps: &[StreamingLayoutMap],
-    selected: ByteRange,
-    line_height: Pixels,
-    wrap_width: Pixels,
-) -> Vec<Bounds<Pixels>> {
-    if selected.is_empty() {
-        return Vec::new();
-    }
-    let mut bounds = Vec::new();
-    let mut previous = None;
-    for right in maps
-        .iter()
-        .copied()
-        .filter(|map| map.logical_position.gap == StreamingObjectGap::no_objects())
-    {
-        let Some(left) = previous.replace(right) else {
-            continue;
-        };
-        if right.logical_position.byte_offset <= selected.start().get()
-            || left.logical_position.byte_offset >= selected.end().get()
-        {
-            continue;
-        }
-        if left.position.y == right.position.y {
-            bounds.push(Bounds::new(
-                left.position,
-                gpui::size(
-                    (right.position.x - left.position.x).max(px(1.)),
-                    line_height,
-                ),
-            ));
-        } else {
-            bounds.push(Bounds::new(
-                left.position,
-                gpui::size((wrap_width - left.position.x).max(px(1.)), line_height),
-            ));
-            bounds.push(Bounds::new(
-                gpui::point(px(0.), right.position.y),
-                gpui::size(right.position.x.max(px(1.)), line_height),
-            ));
-        }
-    }
-    bounds
-}
-
-fn bounds_for_composite_selection_from_maps(
-    maps: &[StreamingLayoutMap],
-    objects: &[RealizedInlineObjectGeometry],
-    selection: RangeSourceSelection,
-    line_height: Pixels,
-    wrap_width: Pixels,
-) -> Vec<Bounds<Pixels>> {
-    let Ok(selected) = selection.range() else {
-        return Vec::new();
-    };
-    let Ok(byte_range) = ByteRange::new(selected.start().byte_offset, selected.end().byte_offset)
-    else {
-        return Vec::new();
-    };
-    let mut bounds = bounds_for_owned_fragment_maps(maps, byte_range, line_height, wrap_width);
-    bounds.extend(
-        objects
-            .iter()
-            .filter(|object| {
-                selected
-                    .start()
-                    .compare_in_revision(object.leading)
-                    .is_some_and(|ordering| !ordering.is_gt())
-                    && object
-                        .trailing
-                        .compare_in_revision(selected.end())
-                        .is_some_and(|ordering| !ordering.is_gt())
-            })
-            .map(|object| object.bounds),
-    );
-    bounds
 }
 
 fn first_last_bounds_for_fragment_maps(

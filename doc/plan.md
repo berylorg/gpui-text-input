@@ -4,13 +4,13 @@ Implement the capacity prerequisite for preserved resident adoption from
 [the package contract](design.md#range-backed-preserved-resident-adoption), coordinated by
 the Beryl root plan. Resident protection, accounting and publication remain separate work.
 
-# Phase 71: Admit Realized Geometry Buffers (finished)
+# Phase 72: Admit Highlight Geometry Collections (finished)
 
-Combined object/gap storage now admits requested and actual capacities before filling, with
-transfer, page-order and map storage retained in the baseline. Retry keeps resident/geometry
-custody and releases temporary cleanup. All 240 integration tests, default-feature compilation
-and independent semantic/resource review passed. Remaining collections, conversions and
-publication transitions stay pending; see the Beryl capacity evidence note.
+Selection and composition collections now admit combined requested and actual capacity before
+filling, preserving wrapped text and inline-object selection geometry. The session carries existing
+storage in its baseline and retains custody on host-only refusal. All 243 integration tests,
+default-feature compilation and independent semantic/resource review passed. Box conversions
+and later publication transitions remain pending; see the Beryl capacity evidence note.
 
 # Phase 2: Enforce Capacity Throughout Preparation (pending)
 
