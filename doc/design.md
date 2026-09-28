@@ -330,6 +330,13 @@ response cleanup contract; stale or mismatched responses leave the current job u
 The ordinary admission methods use the configured ceilings. Deriving a ceiling from enclosing
 owners and propagating the resulting peak remains the enclosing caller's responsibility.
 
+`admit_resident_page_with_capacity` and `admit_resident_object_page_with_capacity` explicitly
+reuse authenticated resident payloads under the same ceilings. Text pages must match the binding,
+revision, requested adjacent edge and payload bound; object pages must match the binding, revision,
+presentation generation and complete demand. Their original request ID and purpose may differ.
+The current job and pending request must still match, including the active text page for objects.
+These checks precede capacity admission. Ordinary response methods retain exact-key validation.
+
 Direct request creation accepts the same independently clamped owner ceilings through
 `request_page_with_capacity` and `request_object_page_with_capacity`. Its charge includes the
 current geometry owner and the pending request record. Identity and request validation precede

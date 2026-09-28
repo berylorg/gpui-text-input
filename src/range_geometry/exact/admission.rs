@@ -11,6 +11,7 @@ use super::*;
 
 mod context;
 mod release;
+mod resident;
 
 pub(super) use release::{index_release, merge_release, target_release};
 
@@ -30,13 +31,14 @@ impl ExactGeometryOwner {
         )
     }
 
-    pub fn admit_page_with_capacity(
+    fn admit_page_inner(
         &mut self,
         key: GeometryJobKey,
         page: &RangePage,
         text_system: &WindowTextSystem,
         max_bytes: usize,
         max_items: usize,
+        resident: bool,
     ) -> Result<ExactGeometryAdmission, ExactGeometryFailure> {
         let Some(mut active) = self.active.take() else {
             return Err(self.nonterminal_failure(ExactGeometryError::ObsoleteJob(key)));
@@ -49,7 +51,11 @@ impl ExactGeometryOwner {
             self.active = Some(active);
             return Err(self.nonterminal_failure(ExactGeometryError::NoActiveJob));
         };
-        if page.key() != expected {
+        if if resident {
+            !prepared_admission::resident_page_satisfies(page, expected)
+        } else {
+            page.key() != expected
+        } {
             self.active = Some(active);
             return Err(self.nonterminal_failure(ExactGeometryError::WrongPage(page.key())));
         }
@@ -159,7 +165,8 @@ impl ExactGeometryOwner {
         )
     }
 
-    pub fn admit_object_page_with_capacity(
+    #[allow(clippy::too_many_arguments)]
+    fn admit_object_page_inner(
         &mut self,
         key: GeometryJobKey,
         text_page: &RangePage,
@@ -167,6 +174,7 @@ impl ExactGeometryOwner {
         text_system: &WindowTextSystem,
         max_bytes: usize,
         max_items: usize,
+        resident: bool,
     ) -> Result<ExactGeometryAdmission, ExactGeometryFailure> {
         let Some(mut active) = self.active.take() else {
             return Err(self.nonterminal_failure(ExactGeometryError::ObsoleteJob(key)));
@@ -185,7 +193,11 @@ impl ExactGeometryOwner {
         };
         if text_page.id() != active_page.id
             || text_page.range() != active_page.range
-            || !resident_object_page_satisfies(object_page, expected)
+            || if resident {
+                !prepared_admission::resident_object_payload_satisfies(object_page, expected)
+            } else {
+                !resident_object_page_satisfies(object_page, expected)
+            }
         {
             self.active = Some(active);
             return Err(

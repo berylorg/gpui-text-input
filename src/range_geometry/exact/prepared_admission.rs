@@ -782,7 +782,7 @@ fn resident_object_page_satisfies(page: &ObjectPage, expected: ObjectRequestKey)
         && actual.demand() == expected.demand()
 }
 
-fn resident_object_payload_satisfies(page: &ObjectPage, expected: ObjectRequestKey) -> bool {
+pub(super) fn resident_object_payload_satisfies(page: &ObjectPage, expected: ObjectRequestKey) -> bool {
     let actual = page.key();
     actual.binding() == expected.binding()
         && actual.revision() == expected.revision()
@@ -790,7 +790,7 @@ fn resident_object_payload_satisfies(page: &ObjectPage, expected: ObjectRequestK
         && actual.demand() == expected.demand()
 }
 
-fn resident_page_satisfies(page: &RangePage, expected: PageRequestKey) -> bool {
+pub(super) fn resident_page_satisfies(page: &RangePage, expected: PageRequestKey) -> bool {
     if page.key().binding() != expected.binding()
         || page.key().revision() != expected.revision()
         || page.range().len() > expected.max_payload_bytes()

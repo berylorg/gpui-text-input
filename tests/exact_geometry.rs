@@ -355,5 +355,8 @@ mod release_peak;
 mod response_capacity;
 #[path = "exact_geometry/request_capacity.rs"]
 mod request_capacity;
+
+#[path = "exact_geometry/resident_admission.rs"]
+mod resident_admission;
 #[path = "exact_geometry/text_growth.rs"]
 mod text_growth;
