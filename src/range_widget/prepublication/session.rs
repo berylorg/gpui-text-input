@@ -183,7 +183,7 @@ impl RangePrepublicationSession {
             })
             .map_err(|_| RangePrepublicationFailure::Arithmetic)?;
         let generation = RangePrepublicationSessionGeneration::new(generation_value);
-        let config = environment.config().clone();
+        let config = environment.config();
         let geometry = ExactGeometryOwner::new(
             config.binding,
             config.presentation_generation,
@@ -192,7 +192,7 @@ impl RangePrepublicationSession {
             config.geometry_limits,
         )
         .map_err(classify_geometry_error)?;
-        let configured = configured_capacity(&config);
+        let configured = configured_capacity(config);
         let limit = RangeSurfaceCharge {
             bytes: capacity.bytes.min(configured.bytes),
             items: capacity.items.min(configured.items),
@@ -207,7 +207,7 @@ impl RangePrepublicationSession {
             .map_err(|_| RangePrepublicationFailure::InitialCapacityDenied)?;
         let mut session = Self {
             generation,
-            environment,
+            environment: environment.clone(),
             seed,
             stage: SessionStage::Initializing,
             validation: RestorationValidation::new(seed),
