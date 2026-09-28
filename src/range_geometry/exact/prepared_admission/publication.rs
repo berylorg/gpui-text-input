@@ -118,6 +118,7 @@ impl ExactGeometryOwner {
                 predecessor_checkpoint,
                 release,
                 shared,
+                output_display_bytes,
                 budget,
             ),
             ActiveKind::Index => {
@@ -126,6 +127,7 @@ impl ExactGeometryOwner {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn finish_target_publication(
         &self,
         mut delta: Box<ActiveJob>,
@@ -133,8 +135,10 @@ impl ExactGeometryOwner {
         predecessor_checkpoint: ExactGeometryCheckpoint,
         mut release: ExactGeometryRelease,
         shared: SharedOutput,
+        output_display_bytes: usize,
         mut budget: AdmissionBudget,
     ) -> Result<PreparedTargetResponse, ExactGeometryFailure> {
+        budget.output_display_bytes = output_display_bytes;
         let current = self.response_active(delta.key, false)?;
         let record_count = current
             .scanner

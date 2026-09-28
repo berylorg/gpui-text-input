@@ -4,11 +4,11 @@ Implement the capacity prerequisite for preserved resident adoption from
 [the package contract](design.md#range-backed-preserved-resident-adoption), coordinated by
 the Beryl root plan. Resident protection, accounting and publication remain separate work.
 
-# Phase 64: Credit Shared Output Through Source Finalization (finished)
+# Phase 65: Credit Shared Output Through Terminal Target Publication (finished)
 
-Complete object-response finalization and terminal checkpoint admission carry proven retained
-output credit, restoring it before terminal publication. The regression failed before the fix;
-all 228 integration tests passed afterward. Independent review found no blockers.
+Terminal target publication carries candidate-only display credit through array conversion and
+cleanup admission without discounting original payload again. The regression failed before the fix;
+all 229 integration tests passed afterward. Independent review found no blockers.
 
 # Phase 2: Enforce Capacity Throughout Preparation (pending)
 
@@ -39,7 +39,8 @@ original. Deferred-tail pre-allocation and immediate retention also credit displ
 borrowed page. Detached custody carries existing credit through scanner admission and reservation;
 GPUI inline output now carries credit through object-page scanning and active object-response
 publication. Source finalization and terminal checkpoint admission now carry retained output
-credit with scoped restoration. Terminal/nested publication still requires its own mapping.
+credit with scoped restoration. Terminal target publication now carries candidate-only credit
+through arrays and cleanup admission. Terminal index/nested publication still requires its own mapping.
 Complete object pages also carry retained output credit through nonterminal forward-text publication.
 Text responses cannot retain deferred custody and need no deferred-display credit.
 Deferred presentation backing now shares correctly and participates in retained overlap queries.

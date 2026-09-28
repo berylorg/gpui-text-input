@@ -726,6 +726,7 @@ impl ExactGeometryOwner {
                 predecessor_checkpoint,
                 release,
                 shared,
+                output_display_bytes,
                 budget,
             );
         }

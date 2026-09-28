@@ -754,11 +754,18 @@ Active object-response publication derives candidate-only display credit from re
 output and deferred backing shared with the borrowed page or original continuation. That credit
 applies through successor-record and destination admission while those owners remain live. It
 does not discount existing owner payload again or relax configured geometry limits. Terminal
-publication requires separate ownership mapping. Complete object-response source finalization
+index publication requires separate ownership mapping. Complete object-response source finalization
 and terminal checkpoint admission carry the proven retained output credit while the original
 and borrowed inputs remain live. These operations do not remove existing inline output; newly
 produced text receives no display credit. The stack budget restores its prior credit on success
 and error before terminal publication, preserving raw configured accounting.
+
+Terminal target publication carries proven candidate-only output credit through immutable-array
+staging/conversion, publication allocation and cleanup-record admission. Moving fragment handles
+into the publication preserves that credited backing; original scanner payload remains in the
+baseline and receives no additional credit. Existing payload-transfer deductions remain unchanged.
+The terminal call consumes its stack budget on success or error, so its credit cannot enter a later
+index transition. Configured and geometry-relative observations retain their raw charges.
 
 Deferred inline custody exists only while an incomplete object page awaits its object successor.
 A complete object page consumes that custody before requesting forward text or grapheme context.
