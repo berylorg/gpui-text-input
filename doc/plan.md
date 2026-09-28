@@ -4,11 +4,11 @@ Implement the capacity prerequisite for preserved resident adoption from
 [the package contract](design.md#range-backed-preserved-resident-adoption), coordinated by
 the Beryl root plan. Resident protection, accounting and publication remain separate work.
 
-# Phase 20: Admit Terminal Prepared Release Collection Growth (finished)
+# Phase 21: Admit Prepared Target Publication Array Staging (finished)
 
-Terminal prepared target/index cleanup-key growth admits old/new backing overlap and publication
-custody before exact reservation. Independent resource review accepted refusal and peak propagation;
-all 188 regression cases passed across the suite and corrected exact-peak test rerun.
+Terminal target arrays admit staging and immutable backing overlap before allocation and recheck
+actual capacity while preserving shared payload accounting. Independent resource review accepted
+refusal and peak propagation; all 188 regression cases passed.
 
 # Phase 2: Enforce Capacity Throughout Preparation (pending)
 

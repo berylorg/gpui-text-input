@@ -163,24 +163,24 @@ impl ExactGeometryOwner {
                     &budget,
                 )
             })?;
-        let fragments = Arc::from(
-            current
-                .scanner
-                .fragments
-                .iter()
-                .cloned()
-                .chain(delta.scanner.fragments.drain(..))
-                .collect::<Vec<_>>(),
-        );
-        let object_presentations = Arc::from(
-            current
-                .scanner
-                .object_presentations
-                .iter()
-                .cloned()
-                .chain(delta.scanner.object_presentations.drain(..))
-                .collect::<Vec<_>>(),
-        );
+        let fragments = super::target_arrays::prepare_array(
+            &current.scanner.fragments,
+            &delta.scanner.fragments,
+            (conversion_bytes, conversion_items),
+            &release,
+            &delta,
+            &mut budget,
+        )?;
+        let object_presentations = super::target_arrays::prepare_array(
+            &current.scanner.object_presentations,
+            &delta.scanner.object_presentations,
+            (conversion_bytes, conversion_items),
+            &release,
+            &delta,
+            &mut budget,
+        )?;
+        delta.scanner.fragments.clear();
+        delta.scanner.object_presentations.clear();
         let target = Box::new(BlockTargetPublication {
             key: delta.key,
             predecessor,

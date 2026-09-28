@@ -20,6 +20,7 @@ use super::{
 
 mod publication;
 mod release;
+mod target_arrays;
 
 #[derive(Debug)]
 pub(crate) struct PreparedTargetResponse {
