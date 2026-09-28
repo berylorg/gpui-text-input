@@ -242,6 +242,15 @@ impl ExactGeometryOwner {
                 crate::InlineObjectGap::before(cursor.neighbor()),
             )
         });
+        let staging_items = self
+            .limits
+            .max_checkpoints
+            .checked_add(1)
+            .ok_or_else(|| prepared_capacity_failure(&budget))?;
+        let staging_bytes = staging_items
+            .checked_mul(size_of::<ExactGeometryCheckpoint>())
+            .ok_or_else(|| prepared_capacity_failure(&budget))?;
+        observe_prepared(&mut budget, &delta, staging_bytes, staging_items)?;
         let mut checkpoints = VecDeque::with_capacity(self.limits.max_checkpoints);
         for checkpoint in current
             .scanner
@@ -263,24 +272,24 @@ impl ExactGeometryOwner {
                 self.limits.max_checkpoints,
             );
         }
-        let mut checkpoint_records = Vec::with_capacity(checkpoints.len());
-        checkpoint_records.extend(checkpoints.iter().cloned());
+        let record_capacity = checkpoints.len();
         let destination_bytes = checkpoints
             .capacity()
             .checked_mul(size_of::<ExactGeometryCheckpoint>())
             .and_then(|bytes| {
-                checkpoint_records
-                    .capacity()
+                record_capacity
                     .checked_mul(size_of::<ExactGeometryCheckpoint>())
                     .and_then(|records| bytes.checked_add(records))
             })
             .ok_or_else(|| prepared_capacity_failure(&budget))?;
         let destination_items = checkpoints
             .capacity()
-            .checked_add(checkpoint_records.capacity())
+            .checked_add(record_capacity)
             .and_then(|items| items.checked_add(1))
             .ok_or_else(|| prepared_capacity_failure(&budget))?;
         observe_prepared(&mut budget, &delta, destination_bytes, destination_items)?;
+        let mut checkpoint_records = Vec::with_capacity(record_capacity);
+        checkpoint_records.extend(checkpoints.iter().cloned());
         drop(checkpoints);
         let extent = self
             .inputs
