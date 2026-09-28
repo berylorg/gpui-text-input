@@ -11,52 +11,26 @@ identity and restoration custody; configured shortfalls remain terminal. All 250
 115 unit tests pass, default-feature check passes, and independent review accepted the correction.
 Overall phase 2 acceptance remains pending.
 
+# Phase 92: Admit Delivered Text Residency Preparation (pending)
+
+Gate disposition and replacement-deque coexistence before delivered text residency allocation.
+Retain the exact response, waiting identity and cleanup custody on enclosing refusal, preserve
+configured failure precedence, and propagate peaks. Verify replacement of an existing resident
+under current, byte/item one-under and exact capacity, repeated retry, continuation and cleanup
+with independent review. Delivered-object proof and residency preparation remain an unresolved
+checkpoint of overall phase 2 review.
+
 # Phase 2: Enforce Capacity Throughout Preparation (pending)
 
-Apply the admitted budget before geometry scan growth and candidate preparation allocations,
-including resident-response paths and candidate/ready/transition ownership peaks. Verify tight
-byte/item budgets during progress and exact cleanup with independent resource review. Combined
-preserved-resident reservation must not rely on the admission API until this boundary is accepted.
-Cover prepared target transitions and prepared-publication collections under the host ceiling.
-The admitted response state now retains delivered or resident inputs without re-admission when
-current capacity is unavailable. Immutable preparation now receives the session budget with shared presentation
-charged once and routes typed retryable refusals through that state. Admitted responses retain successor identities without per-attempt counter mutation.
-Observe configured and enclosing charges separately at each peak; final retained overlap cannot
-correct earlier peaks. Prospective display credit must not subsidize GPUI continuation-only startup.
-The independent observer now follows actual nested admissions, supports checked baseline mapping,
-and reports enclosing peaks in prepared results and failures. Actual response preparation now accepts
-typed enclosing current charge and limit with a checked raw owner/input baseline. Ordinary callers
-still use identity ceilings; session callers now supply live baselines and consume enclosing peaks.
-Zero-credit GPUI allowances now respect both mapped views, and actual continuation startup is
-explicitly admitted before invocation. Shared-output allowance derivation is accepted; connect
-per-observation ownership evidence before prospective display credits can be enabled.
-Active and returned inline overlap now derives from live fragments before metadata exists; avoid
-crediting duplicate returned/retained handles when their shared payload is charged only once.
-Carry it through pre-copy, detached custody, output before metadata and publication observations.
-Continuation pre-copy and immediate copy coexistence credit the deferred display shared with the
-original. Deferred-tail pre-allocation and immediate retention also credit display shared with the
-borrowed page. Detached custody carries existing credit through scanner admission and reservation;
-GPUI inline output now carries credit through object-page scanning and active object-response
-publication. Source finalization and terminal checkpoint admission now carry retained output
-credit with scoped restoration. Terminal target publication now carries candidate-only credit
-through arrays and cleanup admission. Terminal index/nested publication uses zero incremental credit:
-index output is discarded and nested targets start without display payload.
-Complete object pages also carry retained output credit through nonterminal forward-text publication.
-Text responses cannot retain deferred custody and need no deferred-display credit.
-Deferred presentation backing now shares correctly and participates in retained overlap queries.
-Explicit preparation admission now carries typed configured/enclosing refusal attribution.
-Do not infer host attribution from ambiguous GPUI errors. All baseline unit failures are reconciled in the Beryl capacity failure note; overall preparation acceptance remains pending.
-Returned GPUI custody now uses the geometry budget before invocation.
-Transient inline style runs remain charged through the layout call and output coexistence.
-Direct response admission accepts enclosing ceilings; host derivation and peak propagation remain
-required before combined resident reservation can use them.
-Direct request creation also accepts enclosing ceilings before pending-record allocation.
-Deferred-object custody remains charged through inline admission when deriving remaining capacity.
-Carry prepared transition peak evidence through enclosing host admission before host use.
-Dependency-private shaping scratch is outside this reservation; retain finite layout input limits.
+Complete overall review of startup, restoration and geometry request/response preparation,
+candidate collections, Ready/adoption projections and synchronous custody transfer under the
+admitted session ceiling. Verify that current-capacity refusal retains identity and cleanup
+custody, configured failures remain terminal, all preparation peaks precede growth, and shared
+owners are charged once. Finite shaping inputs remain required; dependency-private scratch and
+allocator/RSS accounting are outside this reservation.
 
-Candidate, Ready and adoption charges are now admitted before custody transfer. Startup owner
-admission and the shared-environment/transfer-coexistence audits are accepted. All baseline unit failures are reconciled; overall preparation closure still requires final acceptance.
-Phase 79 removes the candidate configuration copy and qualifies shared placeholder ownership.
-Phase 78 proves buffered effects cannot coexist with candidate preparation under current scheduling;
-accepted component checks alone do not close the preparation boundary.
+Initial index admission and allocation-free retirement close the latest overall review findings.
+Current implementation passes 250 integration and 115 unit tests plus the default-feature check.
+Independent overall resource review remains required before preserved resident reservation.
+Detailed accepted components and evidence limitations are retained in Beryl's
+`doc/failures/prepublication-capacity.md`.
