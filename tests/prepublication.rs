@@ -25,6 +25,10 @@ use gpui_text_input::{
 #[path = "prepublication/admitted_response.rs"]
 mod admitted_response;
 
+#[path = "prepublication/candidate_transfer.rs"]
+#[cfg(feature = "test-support")]
+mod candidate_transfer;
+
 fn binding(source: &str, revision: u64) -> RangeBinding {
     RangeBinding::new(
         BindingId::new(41),

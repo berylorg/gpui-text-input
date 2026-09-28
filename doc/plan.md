@@ -4,12 +4,12 @@ Implement the capacity prerequisite for preserved resident adoption from
 [the package contract](design.md#range-backed-preserved-resident-adoption), coordinated by
 the Beryl root plan. Resident protection, accounting and publication remain separate work.
 
-# Phase 67: Route Session Geometry Preparation Through Enclosing Capacity (finished)
+# Phase 68: Admit Candidate Resident Transfer Buffers (finished)
 
-Admitted delivered/resident responses enforce enclosing session capacity during preparation,
-retain custody and IDs on explicit retryable refusal, and report observed peaks. Configured and
-unattributed failures remain terminal. All 231 integration tests passed; independent review found
-no blockers. Next enforce candidate surface preparation admission.
+Candidate transfer buffers now admit checked combined byte/item growth before allocation and
+recheck actual capacities before continuing. Refusal preserves resident/geometry custody and
+completes the temporary cleanup reservation. All 233 integration tests passed; the default-feature
+check and independent semantic/resource review passed. Next admit surface preparation collections.
 
 # Phase 2: Enforce Capacity Throughout Preparation (pending)
 

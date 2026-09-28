@@ -1,5 +1,7 @@
 use std::sync::Weak;
 
+mod transfer;
+
 use gpui::WindowTextSystem;
 
 use crate::{ExactGeometryOwner, ObjectPage, RangePage, RangeSurfaceCharge};
@@ -110,6 +112,18 @@ impl Drop for RangePrepublicationCandidate {
 }
 
 impl RangePrepublicationSession {
+    #[cfg(feature = "test-support")]
+    pub fn test_prepare_transfer_buffers(
+        text: usize,
+        objects: usize,
+        current: RangeSurfaceCharge,
+        configured: RangeSurfaceCharge,
+        available: RangeSurfaceCharge,
+        peak: &mut RangeSurfaceCharge,
+    ) -> Result<Option<(Vec<RangePage>, Vec<ObjectPage>)>, RangePrepublicationFailure> {
+        transfer::prepare(text, objects, current, configured, available, peak)
+    }
+
     pub(super) fn finish_candidate(&mut self) -> Result<(), RangePrepublicationFailure> {
         let Some(cleanup) = self.reserve_cleanup()? else {
             return Ok(());
@@ -119,14 +133,21 @@ impl RangePrepublicationSession {
         let current_charge = self
             .current_charge()
             .ok_or(RangePrepublicationFailure::Arithmetic)?;
-        let mut pages = Vec::<RangePage>::new();
-        pages
-            .try_reserve_exact(self.residency.counts().resident_pages)
-            .map_err(|_| RangePrepublicationFailure::TerminalCapacity)?;
-        let mut object_pages = Vec::<ObjectPage>::new();
-        object_pages
-            .try_reserve_exact(self.object_residency.counts().resident_pages)
-            .map_err(|_| RangePrepublicationFailure::TerminalCapacity)?;
+        let mut transfer_peak = current_charge;
+        let transfer = transfer::prepare(
+            self.residency.counts().resident_pages,
+            self.object_residency.counts().resident_pages,
+            current_charge,
+            configured_capacity(&config),
+            self.available,
+            &mut transfer_peak,
+        );
+        self.observe_charge(transfer_peak);
+        let Some((pages, object_pages)) = transfer? else {
+            let _ = self.environment.cleanup().complete(cleanup);
+            self.ledger_blocked = true;
+            return Ok(());
+        };
         let geometry = self
             .geometry
             .as_ref()
