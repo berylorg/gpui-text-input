@@ -1,5 +1,40 @@
 use super::*;
 
+#[gpui::test]
+fn terminal_target_startup_accounts_for_prior_publication(cx: &mut TestAppContext) {
+    with_text_system(cx, |text_system| {
+        for source in ["", "bounded terminal target"] {
+            let mut owner = owner(source, 8, 4, 512 * 1024, 16);
+            let job = start_index(&mut owner, 1);
+            assert_eq!(
+                drive_ascii_job(&mut owner, text_system, source, job, 0, 128, 1),
+                ExactGeometryProgress::IndexComplete
+            );
+            let terminal = owner.index().unwrap().checkpoints().last().unwrap().source();
+            for id in [2, 3] {
+                let before = owner.counts();
+                let start = owner
+                    .request_block_target(
+                        GeometryJobId::new(id),
+                        BlockTarget::new(px(1_000_000.), px(14.), px(0.)),
+                    )
+                    .unwrap();
+                assert_eq!(start.progress(), ExactGeometryProgress::TargetComplete);
+                assert_eq!(start.admission_required_items(), before.total_items() + 2);
+                assert_eq!(
+                    start.admission_required_bytes(),
+                    before.total_bytes()
+                        + std::mem::size_of::<gpui_text_input::BlockTargetPublication>()
+                        + std::mem::size_of::<gpui_text_input::ExactGeometryCheckpoint>()
+                );
+                let target = owner.target().unwrap();
+                assert_eq!(target.target_source(), terminal);
+                assert!(target.fragments().is_empty());
+            }
+        }
+    });
+}
+
 #[test]
 fn index_startup_admits_checkpoint_and_job_before_allocation() {
     for source in ["", "bounded index startup"] {

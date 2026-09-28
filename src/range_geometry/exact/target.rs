@@ -132,6 +132,21 @@ impl ExactGeometryOwner {
         if predecessor.source.byte_offset.get() == source_len
             && anchor.is_none_or(|anchor| matches!(anchor.gap, crate::InlineObjectGap::NoObjects))
         {
+            let counts = accounting::owner_counts(self);
+            let required = counts
+                .total_bytes()
+                .checked_add(std::mem::size_of::<BlockTargetPublication>())
+                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<ExactGeometryCheckpoint>()))
+                .ok_or(ExactGeometryError::CapacityExceeded)?;
+            let required_items = counts
+                .total_items()
+                .checked_add(2)
+                .ok_or(ExactGeometryError::CapacityExceeded)?;
+            if required > self.limits.max_retained_bytes
+                || required_items > self.limits.max_retained_items
+            {
+                return Err(ExactGeometryError::CapacityExceeded);
+            }
             let candidate = BlockTargetPublication {
                 key,
                 predecessor: predecessor.source,
@@ -145,16 +160,6 @@ impl ExactGeometryOwner {
                 charge: Default::default(),
                 item_charge: Default::default(),
             };
-            let counts = accounting::counts_with_target_candidate(self, &candidate);
-            let required = counts
-                .total_bytes()
-                .saturating_add(std::mem::size_of::<ExactGeometryCheckpoint>());
-            let required_items = counts.total_items().saturating_add(1);
-            if required > self.limits.max_retained_bytes
-                || required_items > self.limits.max_retained_items
-            {
-                return Err(ExactGeometryError::CapacityExceeded);
-            }
             self.high_water_bytes = self.high_water_bytes.max(required);
             self.high_water_items = self.high_water_items.max(required_items);
             let prior = self.target.replace(Box::new(candidate));
