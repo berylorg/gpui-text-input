@@ -4,11 +4,12 @@ Implement the capacity prerequisite for preserved resident adoption from
 [the package contract](design.md#range-backed-preserved-resident-adoption), coordinated by
 the Beryl root plan. Resident protection, accounting and publication remain separate work.
 
-# Phase 66: Qualify Terminal Index Publication Ownership (finished)
+# Phase 67: Route Session Geometry Preparation Through Enclosing Capacity (finished)
 
-Terminal index and nested target publication require zero incremental display credit. Whole-response
-qualification covers initial/deferred inputs and both nested outcomes without a production change.
-All 230 integration tests passed; independent semantic/resource review found no blockers.
+Admitted delivered/resident responses enforce enclosing session capacity during preparation,
+retain custody and IDs on explicit retryable refusal, and report observed peaks. Configured and
+unattributed failures remain terminal. All 231 integration tests passed; independent review found
+no blockers. Next enforce candidate surface preparation admission.
 
 # Phase 2: Enforce Capacity Throughout Preparation (pending)
 
@@ -18,16 +19,14 @@ byte/item budgets during progress and exact cleanup with independent resource re
 preserved-resident reservation must not rely on the admission API until this boundary is accepted.
 Cover prepared target transitions and prepared-publication collections under the host ceiling.
 The admitted response state now retains delivered or resident inputs without re-admission when
-current capacity is unavailable. Internal immutable preparation accepts enclosing ceilings; derive
-the session budget with shared presentation charged once and route typed retryable refusals through
-that state. Admitted responses retain successor identities without per-attempt counter mutation.
+current capacity is unavailable. Immutable preparation now receives the session budget with shared presentation
+charged once and routes typed retryable refusals through that state. Admitted responses retain successor identities without per-attempt counter mutation.
 Observe configured and enclosing charges separately at each peak; final retained overlap cannot
 correct earlier peaks. Prospective display credit must not subsidize GPUI continuation-only startup.
 The independent observer now follows actual nested admissions, supports checked baseline mapping,
 and reports enclosing peaks in prepared results and failures. Actual response preparation now accepts
 typed enclosing current charge and limit with a checked raw owner/input baseline. Ordinary callers
-still use identity ceilings; derive live session baselines and per-observation credits, then consume
-those peaks in the session.
+still use identity ceilings; session callers now supply live baselines and consume enclosing peaks.
 Zero-credit GPUI allowances now respect both mapped views, and actual continuation startup is
 explicitly admitted before invocation. Shared-output allowance derivation is accepted; connect
 per-observation ownership evidence before prospective display credits can be enabled.

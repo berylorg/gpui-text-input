@@ -720,8 +720,13 @@ Immutable response preparation accepts internal geometry-relative ceilings or an
 charge and limit. The enclosing form derives its raw baseline from the checked geometry owner and
 borrowed response inputs, then measures each preparation observation as current charge plus growth
 above that baseline. Configured geometry limits remain independent. The enclosing caller must include
-the existing owner and borrowed inputs in its current charge; this input does not itself establish
-shared-display credits or complete prepublication-session capacity routing.
+the existing owner and borrowed inputs in its current charge. Admitted prepublication responses use
+the session's checked current charge, including buffered effects and existing resident presentation
+overlap accounting, and its clamped available ceiling. Success and failure observations contribute
+to session high-water evidence. Explicit enclosing refusal within configured session capacity
+reports capacity-blocked without consuming work or changing response custody and reserved successor
+identities. Configured failure stays terminal; unattributed GPUI errors retain their existing terminal
+classification. Candidate surface and transition preparation require their separate admission paths.
 
 At continuation copy admission and immediate copy coexistence, enclosing observations credit the
 deferred display backing shared with the original continuation. The original remains borrowed for

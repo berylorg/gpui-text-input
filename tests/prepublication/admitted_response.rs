@@ -34,7 +34,7 @@ fn admitted_geometry_response_retains_exact_custody_until_commit(cx: &mut TestAp
     let window = cx.add_empty_window();
     window.update(|window, _| {
         for object in [false, true] {
-            for item_limit in [false, true] {
+            for (item_limit, growth) in [(false, false), (true, false), (false, true), (true, true)] {
                 for outcome in 0..4 {
                     let mut config = config(source, 1, 16);
                     config.limits.max_realization_work_per_frame = 1;
@@ -86,15 +86,15 @@ fn admitted_geometry_response_retains_exact_custody_until_commit(cx: &mut TestAp
                     session.set_available_capacity(if item_limit {
                         RangeSurfaceCharge {
                             bytes: usize::MAX,
-                            items: before.items - 1,
+                            items: before.items - usize::from(!growth),
                         }
                     } else {
                         RangeSurfaceCharge {
-                            bytes: before.bytes - 1,
+                            bytes: before.bytes - usize::from(!growth),
                             items: usize::MAX,
                         }
                     });
-                    assert_eq!(session.status(), RangePrepublicationStatus::CapacityBlocked);
+                    assert_eq!(session.status(), if growth { RangePrepublicationStatus::Advancing } else { RangePrepublicationStatus::CapacityBlocked });
                     for _ in 0..3 {
                         let blocked = session.service(window.text_system());
                         assert_eq!(blocked.status, RangePrepublicationStatus::CapacityBlocked);
@@ -238,15 +238,16 @@ fn admitted_response_successor_ids_are_stable_and_never_reused(cx: &mut TestAppC
                     resident_reservations += 1;
                 }
                 let before = session.ownership();
-                for items in [false, true] {
+                for (items, growth) in [(false, false), (true, false), (false, true), (true, true)]
+                {
                     session.set_available_capacity(if items {
                         RangeSurfaceCharge {
                             bytes: usize::MAX,
-                            items: before.items - 1,
+                            items: before.items - usize::from(!growth),
                         }
                     } else {
                         RangeSurfaceCharge {
-                            bytes: before.bytes - 1,
+                            bytes: before.bytes - usize::from(!growth),
                             items: usize::MAX,
                         }
                     });
@@ -292,5 +293,90 @@ fn admitted_response_successor_ids_are_stable_and_never_reused(cx: &mut TestAppC
         drop(session);
         let _ = drain_cleanup(&cleanup);
         assert_eq!(cleanup.ownership().active, 0);
+    });
+}
+
+#[gpui::test]
+fn geometry_preparation_peaks_preserve_refusal_attribution(cx: &mut TestAppContext) {
+    let source = "first line\nsecond line\nthird line";
+    let window = cx.add_empty_window();
+    window.update(|window, _| {
+        let mut required = RangeSurfaceCharge::default();
+        for case in 0..4 {
+            let mut config = config(source, 1, 16);
+            config.limits.max_realization_work_per_frame = 1;
+            config.object_residency_limits =
+                ObjectResidencyLimits::new(4, 1, 512, 64, 4, 1, 512).unwrap();
+            let (environment, cleanup) = make_environment(75, config, window.text_system());
+            let mut session =
+                RangePrepublicationSession::new(seed(source, 1, 0), environment).unwrap();
+            let mut found = false;
+            for id in 1..200 {
+                let step = session.service(window.text_system());
+                assert!(!matches!(step.status, RangePrepublicationStatus::Failed(_)));
+                for effect in step.effects {
+                    found |= matches!(effect, RangePrepublicationEffect::ObjectPage { request, .. }
+                        if request.key().purpose() == ObjectPurpose::GeometryIndex);
+                    assert_eq!(
+                        deliver(&mut session, source, id, &effect),
+                        RangePrepublicationDelivery::Accepted
+                    );
+                }
+                let _ = drain_cleanup(&cleanup);
+                if found {
+                    break;
+                }
+            }
+            assert!(found);
+            assert_eq!(session.service(window.text_system()).spent, 1);
+            let before = session.ownership();
+            let prior_peak = session.high_water();
+            if (1..=3).contains(&case) {
+                session.set_available_capacity(RangeSurfaceCharge {
+                    bytes: required.bytes - usize::from(case == 2),
+                    items: required.items - usize::from(case == 3),
+                });
+                assert!(before.bytes < required.bytes);
+                assert!(before.items < required.items);
+            }
+            let step = session.service(window.text_system());
+            assert!(step.effects.is_empty());
+            match case {
+                0 => {
+                    assert_eq!(step.spent, 1);
+                    required = session.high_water();
+                    assert!(
+                        required.bytes > prior_peak.bytes,
+                        "required={required:?} prior={prior_peak:?} before={before:?}"
+                    );
+                    assert!(required.items > prior_peak.items);
+                }
+                1 => {
+                    assert_eq!(step.spent, 1);
+                    assert_eq!(session.high_water(), required);
+                    assert!(!matches!(step.status, RangePrepublicationStatus::Failed(_)));
+                }
+                2 | 3 => {
+                    assert_eq!(step.spent, 0);
+                    match step.status {
+                        RangePrepublicationStatus::CapacityBlocked => {
+                            assert_eq!(session.ownership().bytes, before.bytes);
+                            assert_eq!(session.ownership().items, before.items);
+                            assert!(drain_cleanup(&cleanup).is_empty());
+                            session.set_available_capacity(required);
+                            assert_eq!(session.service(window.text_system()).spent, 1);
+                        }
+                        RangePrepublicationStatus::Failed(
+                            RangePrepublicationFailure::DeterministicGeometry,
+                        ) => {}
+                        status => panic!("unexpected host refusal: {status:?}"),
+                    }
+                }
+                _ => unreachable!(),
+            }
+            drop(session);
+            let _ = drain_cleanup(&cleanup);
+            assert_eq!(cleanup.ownership().active, 0);
+        }
     });
 }

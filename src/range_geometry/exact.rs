@@ -33,10 +33,10 @@ mod validation;
 
 pub(crate) use lifecycle::PreparedTerminalGeometryFailure;
 pub(crate) use prepared_admission::{
-    PreparedTargetResponse, PreparedTargetSuccessor, TargetResponseSuccessor,
+    PreparedTargetResponse, PreparedTargetSuccessor, ResponseCapacity, TargetResponseSuccessor,
 };
 pub(crate) use transition::PreparedGeometryTransition;
-pub(crate) use types::TargetInlineObjectPresentation;
+pub(crate) use types::{CapacityRefusal, TargetInlineObjectPresentation};
 
 pub use types::{
     BlockTarget, BlockTargetPublication, ExactGeometryAdmission, ExactGeometryAggregate,

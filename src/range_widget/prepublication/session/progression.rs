@@ -11,7 +11,7 @@ impl RangePrepublicationSession {
         effects: &mut EffectBuffer,
     ) -> Result<bool, RangePrepublicationFailure> {
         if self.admitted_geometry.is_some() {
-            return self.advance_admitted_geometry(text_system);
+            return self.advance_admitted_geometry(text_system, effects);
         }
         if self.delivered.is_some() {
             let coexistence = self

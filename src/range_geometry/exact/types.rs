@@ -520,6 +520,10 @@ pub(crate) enum CapacityRefusal {
 }
 
 impl ExactGeometryFailure {
+    pub(crate) const fn capacity_refusal(&self) -> Option<CapacityRefusal> {
+        self.capacity_refusal
+    }
+
     pub(crate) const fn enclosing_peak(&self) -> Option<(usize, usize)> {
         self.enclosing_peak
     }

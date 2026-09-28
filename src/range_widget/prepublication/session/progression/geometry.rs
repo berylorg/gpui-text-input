@@ -1,6 +1,7 @@
 use super::super::*;
 use crate::range_geometry::{
-    PreparedTargetResponse, PreparedTargetSuccessor, TargetResponseSuccessor,
+    CapacityRefusal, PreparedTargetResponse, PreparedTargetSuccessor, ResponseCapacity,
+    TargetResponseSuccessor,
 };
 
 impl RangePrepublicationSession {
@@ -220,17 +221,31 @@ impl RangePrepublicationSession {
     pub(super) fn advance_admitted_geometry(
         &mut self,
         text_system: &WindowTextSystem,
+        effects: &EffectBuffer,
     ) -> Result<bool, RangePrepublicationFailure> {
-        let charge = self
-            .current_charge()
-            .ok_or(RangePrepublicationFailure::Arithmetic)?;
+        let charge = add_charge(
+            self.current_charge()
+                .ok_or(RangePrepublicationFailure::Arithmetic)?,
+            multiply_charge(
+                RangeSurfaceCharge {
+                    bytes: std::mem::size_of::<RangePrepublicationEffect>(),
+                    items: 1,
+                },
+                effects.len(),
+            )
+            .ok_or(RangePrepublicationFailure::Arithmetic)?,
+        )?;
         if !charge_fits(charge, configured_capacity(self.environment.config())) {
             return Err(RangePrepublicationFailure::TerminalCapacity);
         }
         if !charge_fits(charge, self.available) {
             return Ok(false);
         }
-        match self
+        let capacity = ResponseCapacity::Enclosing {
+            current: (charge.bytes, charge.items),
+            limit: (self.available.bytes, self.available.items),
+        };
+        let prepared = match self
             .admitted_geometry
             .ok_or(RangePrepublicationFailure::Stale)?
             .input
@@ -239,30 +254,55 @@ impl RangePrepublicationSession {
                 job,
                 page,
                 resident,
-            } => {
-                self.process_geometry_page(job, page, text_system, resident)?;
-            }
+            } => self.prepare_geometry_page(job, page, text_system, resident, capacity)?,
             GeometryResponseInput::Object {
                 job,
                 text_page,
                 page,
                 resident,
             } => {
-                self.process_geometry_object(job, text_page, page, text_system, resident)?;
+                self.prepare_geometry_object(job, text_page, page, text_system, resident, capacity)?
             }
-        }
+        };
+        let prepared = match prepared {
+            Ok(prepared) => {
+                if let Some((bytes, items)) = prepared.enclosing_peak() {
+                    self.observe_charge(RangeSurfaceCharge { bytes, items });
+                }
+                prepared
+            }
+            Err(failure) => {
+                if let Some((bytes, items)) = failure.enclosing_peak() {
+                    let peak = RangeSurfaceCharge { bytes, items };
+                    self.observe_charge(peak);
+                    if !charge_fits(peak, configured_capacity(self.environment.config())) {
+                        return Err(RangePrepublicationFailure::TerminalCapacity);
+                    }
+                    if failure.capacity_refusal() == Some(CapacityRefusal::Enclosing) {
+                        self.ledger_blocked = true;
+                        return Ok(false);
+                    }
+                }
+                return Err(classify_geometry_error(failure.error().clone()));
+            }
+        };
+        self.commit_geometry_response(prepared)?;
         self.admitted_geometry = None;
         self.waiting = None;
         Ok(true)
     }
 
-    pub(in crate::range_widget::prepublication::session) fn process_geometry_page(
-        &mut self,
+    fn prepare_geometry_page(
+        &self,
         job: GeometryJobKey,
         page_id: PageId,
         text_system: &WindowTextSystem,
         resident: bool,
-    ) -> Result<(), RangePrepublicationFailure> {
+        capacity: ResponseCapacity,
+    ) -> Result<
+        Result<PreparedTargetResponse, crate::ExactGeometryFailure>,
+        RangePrepublicationFailure,
+    > {
         let successor = self.geometry_response_successor()?;
         let page = self
             .residency
@@ -272,26 +312,29 @@ impl RangePrepublicationSession {
             .geometry
             .as_ref()
             .ok_or(RangePrepublicationFailure::Stale)?;
-        let prepared = match (matches!(self.stage, SessionStage::Index), resident) {
-            (true, true) => geometry.prepare_index_resident_page(job, page, text_system, successor),
-            (true, false) => geometry.prepare_index_page(job, page, text_system, successor),
-            (false, true) => {
-                geometry.prepare_target_resident_page(job, page, text_system, successor)
-            }
-            (false, false) => geometry.prepare_target_page(job, page, text_system, successor),
-        }
-        .map_err(|failure| classify_geometry_error(failure.error().clone()))?;
-        self.commit_geometry_response(prepared)
+        Ok(geometry.prepare_response_page_with_capacity(
+            job,
+            page,
+            text_system,
+            resident,
+            matches!(self.stage, SessionStage::Index),
+            successor,
+            capacity,
+        ))
     }
 
-    pub(in crate::range_widget::prepublication::session) fn process_geometry_object(
-        &mut self,
+    fn prepare_geometry_object(
+        &self,
         job: GeometryJobKey,
         text_page: PageId,
         object_page: ObjectPageId,
         text_system: &WindowTextSystem,
         resident: bool,
-    ) -> Result<(), RangePrepublicationFailure> {
+        capacity: ResponseCapacity,
+    ) -> Result<
+        Result<PreparedTargetResponse, crate::ExactGeometryFailure>,
+        RangePrepublicationFailure,
+    > {
         let successor = self.geometry_response_successor()?;
         let text_page = self
             .residency
@@ -305,38 +348,16 @@ impl RangePrepublicationSession {
             .geometry
             .as_ref()
             .ok_or(RangePrepublicationFailure::Stale)?;
-        let prepared = match (matches!(self.stage, SessionStage::Index), resident) {
-            (true, true) => geometry.prepare_index_resident_object_page(
-                job,
-                text_page,
-                object_page,
-                text_system,
-                successor,
-            ),
-            (true, false) => geometry.prepare_index_object_page(
-                job,
-                text_page,
-                object_page,
-                text_system,
-                successor,
-            ),
-            (false, true) => geometry.prepare_target_resident_object_page(
-                job,
-                text_page,
-                object_page,
-                text_system,
-                successor,
-            ),
-            (false, false) => geometry.prepare_target_object_page(
-                job,
-                text_page,
-                object_page,
-                text_system,
-                successor,
-            ),
-        }
-        .map_err(|failure| classify_geometry_error(failure.error().clone()))?;
-        self.commit_geometry_response(prepared)
+        Ok(geometry.prepare_response_object_page_with_capacity(
+            job,
+            text_page,
+            object_page,
+            text_system,
+            matches!(self.stage, SessionStage::Index),
+            resident,
+            successor,
+            capacity,
+        ))
     }
 
     fn geometry_response_successor(

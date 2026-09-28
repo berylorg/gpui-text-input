@@ -6,8 +6,9 @@ mod types;
 pub use exact::preparation_test_support;
 
 pub(crate) use exact::{
-    PreparedGeometryTransition, PreparedTargetResponse, PreparedTargetSuccessor,
-    PreparedTerminalGeometryFailure, TargetInlineObjectPresentation, TargetResponseSuccessor,
+    CapacityRefusal, PreparedGeometryTransition, PreparedTargetResponse, PreparedTargetSuccessor,
+    PreparedTerminalGeometryFailure, ResponseCapacity, TargetInlineObjectPresentation,
+    TargetResponseSuccessor,
 };
 
 pub use exact::{
