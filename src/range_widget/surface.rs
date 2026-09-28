@@ -1,5 +1,6 @@
 pub(in crate::range_widget) mod fragment_maps;
 pub(in crate::range_widget) mod page_order;
+pub(in crate::range_widget) mod realized_buffers;
 
 use gpui::{
     Bounds, Pixels, Point, SharedString, StreamingBoundaryKind, StreamingLayoutFragment,
@@ -261,6 +262,7 @@ impl CoherentRangeSurface {
         placeholder: SharedString,
         page_order: Box<[SurfacePageIndex]>,
         owned_maps: Vec<StreamingLayoutMap>,
+        realized_buffers: realized_buffers::Buffers,
     ) -> Result<PreparedCoherentRangeSurface, crate::RangeTextInputError> {
         let viewport = ByteRange::new(
             target.target_source().byte_offset,
@@ -345,6 +347,7 @@ impl CoherentRangeSurface {
             target.fragments(),
             line_height,
             &owned_maps,
+            realized_buffers,
         )?;
         let realized_candidate_items = realized_objects
             .capacity()
@@ -1100,6 +1103,7 @@ fn realize_composite_geometry<'a>(
     fragments: &[StreamingLayoutFragment],
     line_height: Pixels,
     owned_maps: &[StreamingLayoutMap],
+    buffers: realized_buffers::Buffers,
 ) -> Result<
     (
         Vec<RealizedInlineObjectGeometry>,
@@ -1118,8 +1122,14 @@ fn realize_composite_geometry<'a>(
         .iter()
         .filter(|map| map.logical_position.gap != StreamingObjectGap::no_objects())
         .count();
-    let mut objects = Vec::with_capacity(object_count);
-    let mut gaps: Vec<RealizedObjectGapGeometry> = Vec::with_capacity(gap_count);
+    let (mut objects, mut gaps) = buffers;
+    if !objects.is_empty()
+        || !gaps.is_empty()
+        || objects.capacity() < object_count
+        || gaps.capacity() < gap_count
+    {
+        return Err(crate::RangeTextInputError::SurfaceCapacity);
+    }
     let mut previous = None;
     for map in owned_maps {
         if map.logical_position.gap == StreamingObjectGap::no_objects() {

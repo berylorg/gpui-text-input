@@ -2,6 +2,7 @@ use std::sync::Weak;
 
 mod fragment_maps;
 mod page_order;
+mod realized_buffers;
 mod transfer;
 
 use gpui::WindowTextSystem;
@@ -209,6 +210,38 @@ impl RangePrepublicationSession {
             self.ledger_blocked = true;
             return Ok(());
         };
+        let realized_baseline = add_charge(
+            map_baseline,
+            RangeSurfaceCharge {
+                bytes: owned_maps
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<gpui::StreamingLayoutMap>())
+                    .ok_or(RangePrepublicationFailure::Arithmetic)?,
+                items: owned_maps.capacity(),
+            },
+        )?;
+        let fragments = self
+            .geometry
+            .as_ref()
+            .and_then(|geometry| geometry.target())
+            .ok_or(RangePrepublicationFailure::DeterministicGeometry)?
+            .fragments();
+        let (objects, gaps) =
+            crate::range_widget::surface::realized_buffers::counts(fragments, &owned_maps);
+        let buffers = realized_buffers::prepare(
+            objects,
+            gaps,
+            realized_baseline,
+            configured_capacity(&config),
+            self.available,
+            &mut surface_peak,
+        );
+        self.observe_charge(surface_peak);
+        let Some(buffers) = buffers? else {
+            let _ = self.environment.cleanup().complete(cleanup);
+            self.ledger_blocked = true;
+            return Ok(());
+        };
         let geometry = self
             .geometry
             .as_ref()
@@ -251,6 +284,7 @@ impl RangePrepublicationSession {
             config.placeholder.clone(),
             page_order,
             owned_maps,
+            buffers,
         )
         .map_err(classify_widget_error)?;
         let preparation_allocation = [

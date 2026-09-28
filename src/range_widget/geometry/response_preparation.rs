@@ -490,6 +490,15 @@ impl RangeTextInput {
                         })
                         .flatten()
                 });
+        let owned_maps = super::super::surface::fragment_maps::prepare(
+            super::super::surface::fragment_maps::owned_maps(target.fragments()),
+            |_| true,
+        )
+        .map_err(|_| RangeTextInputError::SurfaceCapacity)?;
+        let (objects, gaps) =
+            super::super::surface::realized_buffers::counts(target.fragments(), &owned_maps);
+        let buffers = super::super::surface::realized_buffers::prepare(objects, gaps, |_| true)
+            .map_err(|_| RangeTextInputError::SurfaceCapacity)?;
         let surface = CoherentRangeSurface::prepare(
             state.binding,
             pages.clone(),
@@ -509,11 +518,8 @@ impl RangeTextInput {
                 |_| true,
             )
             .map_err(|_| RangeTextInputError::SurfaceCapacity)?,
-            super::super::surface::fragment_maps::prepare(
-                super::super::surface::fragment_maps::owned_maps(target.fragments()),
-                |_| true,
-            )
-            .map_err(|_| RangeTextInputError::SurfaceCapacity)?,
+            owned_maps,
+            buffers,
         )?;
         if let Some(seed) = state.restoration
             && (surface.binding() != seed.binding

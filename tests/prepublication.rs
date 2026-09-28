@@ -29,6 +29,10 @@ mod admitted_response;
 #[cfg(feature = "test-support")]
 mod candidate_transfer;
 
+#[path = "prepublication/candidate_realized_buffers.rs"]
+#[cfg(feature = "test-support")]
+mod candidate_realized_buffers;
+
 #[path = "prepublication/candidate_fragment_maps.rs"]
 #[cfg(feature = "test-support")]
 mod candidate_fragment_maps;
