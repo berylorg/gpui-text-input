@@ -433,6 +433,30 @@ fn complete_grapheme(
     budget: &mut AdmissionBudget,
 ) -> Result<(), ExactGeometryError> {
     let start = job.scanner.grapheme_start;
+    let mut segment_capacity = job.scanner.segment_text.capacity();
+    if let Some(grapheme) = job
+        .scanner
+        .grapheme_text
+        .as_ref()
+        .filter(|text| text.as_str() != "\n")
+    {
+        let combined = job
+            .scanner
+            .segment_text
+            .len()
+            .checked_add(grapheme.len())
+            .ok_or(ExactGeometryError::CapacityExceeded)?;
+        let (required, capacity) = if combined > binding.limits.segment_bytes {
+            (grapheme.len(), 0)
+        } else {
+            (combined, job.scanner.segment_text.capacity())
+        };
+        segment_capacity = text_capacity(capacity, required, binding.limits.segment_bytes);
+        if segment_capacity > capacity {
+            // The old segment and grapheme still coexist with the replacement backing storage.
+            budget.observe(job, segment_capacity, 1)?;
+        }
+    }
     let grapheme = job.scanner.grapheme_text.take();
     let end_cursor = job.scanner.cursor.clone();
     if grapheme.as_deref() == Some("\n") {
@@ -489,6 +513,16 @@ fn complete_grapheme(
             job.scanner.cursor = end_cursor.clone();
             job.scanner.segment_start = start;
         }
+        let grows = segment_capacity > job.scanner.segment_text.capacity();
+        let transient_bytes = grapheme
+            .capacity()
+            .checked_add(if grows { segment_capacity } else { 0 })
+            .ok_or(ExactGeometryError::CapacityExceeded)?;
+        budget.observe(job, transient_bytes, 1 + usize::from(grows))?;
+        job.scanner
+            .segment_text
+            .try_reserve_exact(segment_capacity - job.scanner.segment_text.len())
+            .map_err(|_| ExactGeometryError::CapacityExceeded)?;
         job.scanner.segment_text.push_str(&grapheme);
         budget.observe(job, 0, 0)?;
     } else {
@@ -525,6 +559,14 @@ fn complete_grapheme(
     job.scanner.grapheme_text = Some(String::new());
     budget.observe(job, 0, 0)?;
     Ok(())
+}
+
+fn text_capacity(current: usize, required: usize, limit: usize) -> usize {
+    if required <= current {
+        current
+    } else {
+        current.saturating_mul(2).max(required).max(8).min(limit)
+    }
 }
 
 fn admit_text_segment(

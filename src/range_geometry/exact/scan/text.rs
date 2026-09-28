@@ -4,8 +4,7 @@ use unicode_segmentation::{GraphemeCursor, GraphemeIncomplete};
 use crate::{ByteOffset, InlineObjectGap, RangePage, SourcePosition};
 
 use super::super::{
-    ActiveJob, AdmissionBudget, ExactGeometryError, ExactGeometryLimits, Scanner,
-    StreamingGeometryStyle,
+    ActiveJob, AdmissionBudget, ExactGeometryError, ExactGeometryLimits, StreamingGeometryStyle,
 };
 use super::{PageScan, complete_grapheme};
 
@@ -48,10 +47,11 @@ pub(super) fn process_text_region(
                     .checked_sub(chunk_start)
                     .ok_or(ExactGeometryError::SourceContract)?;
                 append_grapheme(
-                    &mut job.scanner,
+                    job,
                     &text[consumed..local],
                     binding.limits.segment_bytes,
-                );
+                    budget,
+                )?;
                 budget.observe(job, 0, 0)?;
                 complete_grapheme(
                     job,
@@ -75,11 +75,7 @@ pub(super) fn process_text_region(
                 consumed = local;
             }
             Ok(None) | Err(GraphemeIncomplete::NextChunk) => {
-                append_grapheme(
-                    &mut job.scanner,
-                    &text[consumed..],
-                    binding.limits.segment_bytes,
-                );
+                append_grapheme(job, &text[consumed..], binding.limits.segment_bytes, budget)?;
                 budget.observe(job, 0, 0)?;
                 break;
             }
@@ -134,17 +130,35 @@ pub(super) fn process_text_region(
     Ok(None)
 }
 
-fn append_grapheme(scanner: &mut Scanner, piece: &str, cap: usize) {
-    let Some(buffer) = scanner.grapheme_text.as_mut() else {
-        return;
+fn append_grapheme(
+    job: &mut ActiveJob,
+    piece: &str,
+    cap: usize,
+    budget: &mut AdmissionBudget,
+) -> Result<(), ExactGeometryError> {
+    let Some(buffer) = job.scanner.grapheme_text.as_ref() else {
+        return Ok(());
     };
-    if buffer
+    let Some(required) = buffer
         .len()
         .checked_add(piece.len())
-        .is_none_or(|bytes| bytes > cap)
-    {
-        scanner.grapheme_text = None;
-    } else {
-        buffer.push_str(piece);
+        .filter(|bytes| *bytes <= cap)
+    else {
+        job.scanner.grapheme_text = None;
+        return Ok(());
+    };
+    let capacity = super::text_capacity(buffer.capacity(), required, cap);
+    if capacity > buffer.capacity() {
+        budget.observe(job, capacity, 1)?;
     }
+    let buffer = job
+        .scanner
+        .grapheme_text
+        .as_mut()
+        .expect("checked grapheme buffer");
+    buffer
+        .try_reserve_exact(capacity - buffer.len())
+        .map_err(|_| ExactGeometryError::CapacityExceeded)?;
+    buffer.push_str(piece);
+    Ok(())
 }
