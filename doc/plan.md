@@ -4,11 +4,11 @@ Implement the capacity prerequisite for preserved resident adoption from
 [the package contract](design.md#range-backed-preserved-resident-adoption), coordinated by
 the Beryl root plan. Resident protection, accounting and publication remain separate work.
 
-# Phase 58: Credit Shared Deferred Tail Creation (finished)
+# Phase 59: Credit Detached Deferred Display Custody (finished)
 
-Enclosing preparation credits the borrowed page's display during deferred-tail pre-allocation and
-immediate retention observations, preserving full configured charges. All 226 integration tests passed
-and independent resource review accepted the boundary. Other credits and session routing remain pending.
+Detached custody now carries existing display credit through scanner observations, startup and GPUI
+allowance, restoring temporary charges on success/error. Configured charges remain full; prospective
+output remains uncredited. All 226 integration tests passed and independent resource review accepted.
 
 # Phase 2: Enforce Capacity Throughout Preparation (pending)
 
@@ -36,7 +36,8 @@ crediting duplicate returned/retained handles when their shared payload is charg
 Carry it through pre-copy, detached custody, output before metadata and publication observations.
 Continuation pre-copy and immediate copy coexistence credit the deferred display shared with the
 original. Deferred-tail pre-allocation and immediate retention also credit display shared with the
-borrowed page. Detached custody, GPUI output and publication still use zero credit.
+borrowed page. Detached custody carries existing credit through scanner admission and reservation;
+GPUI output and publication still require their own credits.
 Deferred presentation backing now shares correctly and participates in retained overlap queries.
 Explicit preparation admission now carries typed configured/enclosing refusal attribution.
 Do not infer host attribution from ambiguous GPUI errors. Five older baseline unit failures remain

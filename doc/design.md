@@ -733,7 +733,13 @@ Deferred-tail creation in enclosing response preparation also credits the new de
 at pre-allocation and immediate retained observations. The borrowed object page remains included in
 the baseline and `clone_for_geometry` shares that display backing. Copied fallback text and all
 records/items retain full charges. Direct admission and geometry-relative preparation remain raw.
-This credit covers only that boundary; detached custody, GPUI output and publication remain separate.
+This credit covers only that boundary; GPUI output and publication remain separate.
+
+While a copied deferred fact is detached from the scanner for inline admission, enclosing preparation
+carries its existing shared-display credit with that temporary custody through every observation and
+GPUI reservation. The original remains borrowed. The full fact charge stays in the raw budget, and
+the credit applies only to that existing copy, never prospective GPUI output or continuation startup
+allocations. Temporary charge and credit are restored on success and error before further work.
 
 The optional `test-support` feature exposes `preparation_test_support` for integration qualification
 of immutable response preparation. Its probe reports raw required capacity, optional independently
@@ -755,6 +761,8 @@ The continuation-copy probe executes the same pre-copy and post-copy admission a
 paths, returns both peaks, and drops the prepared copy without changing the original owner.
 The deferred-tail probe prepares a continuation under configured limits, then isolates the production
 tail admission with a fresh observer and returns its raw/enclosing peaks and owner/page baseline.
+The detached-inline probe likewise isolates actual deferred layout after copying, checks restoration
+of temporary raw charges and credit on every returned result, and drops the copy without commit.
 The remaining-capacity probe also qualifies mapped headroom with distinct baselines and no
 prospective output credit before GPUI startup. The startup probe admits the prior continuation's
 actual byte/item charge independently of output allowance and qualifies it against GPUI accounting.

@@ -711,6 +711,7 @@ impl ExactGeometryOwner {
             }
         };
         Ok(AdmissionBudget {
+            detached_display_bytes: 0,
             observations: Some(observations),
             refused_capacity: None,
             fixed_bytes,

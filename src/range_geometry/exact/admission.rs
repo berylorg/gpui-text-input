@@ -62,6 +62,7 @@ impl ExactGeometryOwner {
 
         let fixed = accounting::fixed_counts_without_active(self);
         let mut budget = AdmissionBudget {
+            detached_display_bytes: 0,
             observations: None,
             refused_capacity: None,
             fixed_bytes: fixed.total_bytes(),
@@ -208,6 +209,7 @@ impl ExactGeometryOwner {
         }
         let fixed = accounting::fixed_counts_without_active(self);
         let mut budget = AdmissionBudget {
+            detached_display_bytes: 0,
             observations: None,
             refused_capacity: None,
             fixed_bytes: fixed.total_bytes(),

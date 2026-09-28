@@ -196,35 +196,18 @@ pub(super) fn process_object_page(
             return Err(ExactGeometryError::SourceContract);
         }
         let next = objects.first().ok_or(ExactGeometryError::SourceContract)?;
-        let bytes = std::mem::size_of::<DeferredObject>()
-            .checked_sub(std::mem::size_of::<InlineObjectFact>())
-            .and_then(|bytes| bytes.checked_add(deferred.fact.retained_bytes().ok()?))
-            .ok_or(ExactGeometryError::CapacityExceeded)?;
-        let fixed_bytes = budget.fixed_bytes;
-        let fixed_items = budget.fixed_items;
-        let detached_bytes = fixed_bytes
-            .checked_add(bytes)
-            .ok_or(ExactGeometryError::CapacityExceeded)?;
-        let detached_items = fixed_items
-            .checked_add(4)
-            .ok_or(ExactGeometryError::CapacityExceeded)?;
-        budget.fixed_bytes = detached_bytes;
-        budget.fixed_items = detached_items;
-        let result = admit_inline_object(
+        admit_deferred_object(
             job,
             text_page,
-            &deferred.fact,
-            Some(next),
+            &deferred,
+            next,
             text_system,
-            &inputs.layout,
-            &inputs.style,
+            inputs,
             limits,
             source_len,
             budget,
-        );
-        budget.fixed_bytes = fixed_bytes;
-        budget.fixed_items = fixed_items;
-        result?;
+            credit_deferred_display,
+        )?;
     }
     while index < objects.len() {
         let object = &objects[index];
@@ -287,6 +270,35 @@ pub(super) fn process_object_page(
         source_len,
         budget,
     )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn admit_deferred_object(
+    job: &mut ActiveJob,
+    text_page: &RangePage,
+    deferred: &DeferredObject,
+    next: &InlineObjectFact,
+    text_system: &WindowTextSystem,
+    inputs: &OwnerInputs,
+    limits: ExactGeometryLimits,
+    source_len: u64,
+    budget: &mut AdmissionBudget,
+    credit_display: bool,
+) -> Result<(), ExactGeometryError> {
+    budget.with_deferred_custody(deferred, credit_display, |budget| {
+        admit_inline_object(
+            job,
+            text_page,
+            &deferred.fact,
+            Some(next),
+            text_system,
+            &inputs.layout,
+            &inputs.style,
+            limits,
+            source_len,
+            budget,
+        )
+    })
 }
 
 pub(super) fn defer_object(

@@ -236,6 +236,7 @@ struct ActiveJob {
 }
 
 struct AdmissionBudget {
+    detached_display_bytes: usize,
     observations: Option<capacity_observation::CapacityObservations>,
     refused_capacity: Option<(usize, usize)>,
     fixed_bytes: usize,
@@ -250,6 +251,50 @@ struct AdmissionBudget {
 }
 
 impl AdmissionBudget {
+    fn with_deferred_custody<T>(
+        &mut self,
+        deferred: &DeferredObject,
+        credit_display: bool,
+        admit: impl FnOnce(&mut Self) -> Result<T, ExactGeometryError>,
+    ) -> Result<T, ExactGeometryError> {
+        self.clear_refusal();
+        let bytes = std::mem::size_of::<DeferredObject>()
+            .checked_sub(std::mem::size_of::<InlineObjectFact>())
+            .and_then(|bytes| bytes.checked_add(deferred.fact.retained_bytes().ok()?))
+            .ok_or(ExactGeometryError::CapacityExceeded)?;
+        let fixed_bytes = self
+            .fixed_bytes
+            .checked_add(bytes)
+            .ok_or(ExactGeometryError::CapacityExceeded)?;
+        let fixed_items = self
+            .fixed_items
+            .checked_add(4)
+            .ok_or(ExactGeometryError::CapacityExceeded)?;
+        let display_bytes = self
+            .detached_display_bytes
+            .checked_add(if credit_display {
+                deferred.fact.presentation_allocation().1
+            } else {
+                0
+            })
+            .ok_or(ExactGeometryError::CapacityExceeded)?;
+        let prior = (
+            self.fixed_bytes,
+            self.fixed_items,
+            self.detached_display_bytes,
+        );
+        self.fixed_bytes = fixed_bytes;
+        self.fixed_items = fixed_items;
+        self.detached_display_bytes = display_bytes;
+        let result = admit(self);
+        (
+            self.fixed_bytes,
+            self.fixed_items,
+            self.detached_display_bytes,
+        ) = prior;
+        result
+    }
+
     fn clear_refusal(&mut self) {
         self.refused_capacity = None;
         if let Some(observations) = &mut self.observations {
@@ -288,7 +333,11 @@ impl AdmissionBudget {
             .ok_or(ExactGeometryError::CapacityExceeded)?;
         self.admit_counts(bytes, items)?;
         if let Some(observations) = &self.observations {
-            return observations.remaining_capacity((occupied_bytes, occupied_items));
+            return observations.output_capacity(
+                (occupied_bytes, occupied_items),
+                (self.detached_display_bytes, 0),
+                (0, 0),
+            );
         }
         Ok((
             self.max_bytes - occupied_bytes,
@@ -346,6 +395,9 @@ impl AdmissionBudget {
         self.peak_bytes = self.peak_bytes.max(bytes);
         self.peak_items = self.peak_items.max(items);
         if let Some(observations) = &mut self.observations {
+            let shared_bytes = shared_bytes
+                .checked_add(self.detached_display_bytes)
+                .ok_or(ExactGeometryError::CapacityExceeded)?;
             return observations
                 .observe_preparation((bytes, items), (shared_bytes, 0))
                 .inspect_err(|_| {

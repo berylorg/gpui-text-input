@@ -36,13 +36,6 @@ impl CapacityObservations {
         self.refusal = None;
     }
 
-    pub(super) fn remaining_capacity(
-        &self,
-        occupied: (usize, usize),
-    ) -> Result<(usize, usize), ExactGeometryError> {
-        self.output_capacity(occupied, (0, 0), (0, 0))
-    }
-
     pub(super) fn output_capacity(
         &self,
         occupied: (usize, usize),
