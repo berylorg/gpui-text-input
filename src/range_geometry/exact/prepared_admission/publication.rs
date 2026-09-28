@@ -719,7 +719,7 @@ impl ExactGeometryOwner {
         }
     }
 
-    pub(super) fn prepared_budget(
+    pub(in crate::range_geometry::exact) fn prepared_budget(
         &self,
         page_payload_bytes: usize,
         page_items: usize,
@@ -869,7 +869,7 @@ impl ExactGeometryOwner {
         })
     }
 
-    pub(super) fn prepared_validation_failure(
+    pub(in crate::range_geometry::exact) fn prepared_validation_failure(
         &self,
         error: ExactGeometryError,
     ) -> ExactGeometryFailure {

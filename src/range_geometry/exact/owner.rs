@@ -1,9 +1,8 @@
 use gpui::StreamingLayoutBinding;
 
 use crate::{
-    ByteOffset, ObjectDemandEnvelope, ObjectDirection, ObjectPurpose, ObjectRequest,
-    ObjectRequestId, PageDirection, PagePurpose, PageRequest, PageRequestId,
-    PresentationGeneration, RangeBinding,
+    ObjectDemandEnvelope, ObjectDirection, ObjectPurpose, ObjectRequest, ObjectRequestId,
+    PageDirection, PagePurpose, PageRequest, PageRequestId, PresentationGeneration, RangeBinding,
 };
 
 use super::*;
@@ -143,65 +142,16 @@ impl ExactGeometryOwner {
         &mut self,
         id: GeometryJobId,
     ) -> Result<ExactGeometryStart, ExactGeometryError> {
-        self.admit_job_id(id)?;
-        if self.active.is_some() {
-            return Err(ExactGeometryError::Busy);
-        }
-        let inputs = self.inputs()?;
-        let source_len = usize::try_from(inputs.binding.extent().byte_len())
-            .map_err(|_| ExactGeometryError::SourceContract)?;
-        let key = GeometryJobKey::new(self.key, id);
-        let fixed = accounting::fixed_bytes_without_active(self);
-        let retained_capacity = self
-            .limits
-            .max_retained_bytes
-            .checked_sub(fixed)
-            .ok_or(ExactGeometryError::CapacityExceeded)?;
-        let (scanner, origin) = Scanner::origin_unallocated(&inputs.layout, source_len);
-        let mut active = ActiveJob {
-            key,
-            kind: ActiveKind::Index,
-            page_use: ActivePageUse::Traverse {
-                anchor: ByteOffset::new(0),
-            },
-            pending: None,
-            text_page: None,
-            window_identity: None,
-            retained_capacity,
-            scanner,
-        };
-        let mut budget = AdmissionBudget {
-            detached_display_bytes: 0,
-            output_display_bytes: 0,
-            observations: None,
-            refused_capacity: None,
-            fixed_bytes: fixed,
-            fixed_items: accounting::fixed_counts_without_active(self).total_items(),
-            page_payload_bytes: 0,
-            page_items: 0,
-            max_bytes: self.limits.max_retained_bytes,
-            max_items: self.limits.max_retained_items,
-            peak_bytes: 0,
-            peak_items: 0,
-            failure_stage: None,
-        };
-        checkpoint::retain_scanner_checkpoint(
-            &mut active,
-            origin,
-            self.limits.max_checkpoints,
-            &mut budget,
-            0,
-            0,
-        )?;
-        self.active = Some(Box::new(active));
-        self.highest_job = Some(id);
-        self.observe_current();
-        self.high_water_bytes = self.high_water_bytes.max(budget.peak_bytes);
-        self.high_water_items = self.high_water_items.max(budget.peak_items);
-        let mut result = self.start_result(key, ExactGeometryProgress::Scanning);
-        result.admission_required_bytes = budget.peak_bytes;
-        result.admission_required_items = budget.peak_items;
-        Ok(result)
+        let prepared = self
+            .prepare_initial_index(
+                id,
+                ResponseCapacity::Geometry((
+                    self.limits.max_retained_bytes,
+                    self.limits.max_retained_items,
+                )),
+            )
+            .map_err(|failure| failure.error().clone())?;
+        Ok(self.commit_initial_index(prepared))
     }
 
     pub fn request_page(

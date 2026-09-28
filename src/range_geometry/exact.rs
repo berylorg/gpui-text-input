@@ -19,6 +19,7 @@ mod accounting;
 mod admission;
 mod capacity_observation;
 mod checkpoint;
+mod initial_index;
 mod lifecycle;
 mod owner;
 mod prepared_admission;

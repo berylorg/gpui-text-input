@@ -476,6 +476,16 @@ pub fn session_response_successor_ids(
     session.response_successor_ids_for_test()
 }
 
+pub fn session_initial_index_identity(session: &crate::RangePrepublicationSession) -> Option<u64> {
+    session.initial_index_identity_for_test()
+}
+
+pub fn session_initial_index_peak(
+    session: &crate::RangePrepublicationSession,
+) -> Option<crate::RangeSurfaceCharge> {
+    session.initial_index_peak_for_test()
+}
+
 #[derive(Debug)]
 pub struct PreparedResponseProbe(PreparedTargetResponse);
 

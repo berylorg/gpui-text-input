@@ -158,6 +158,34 @@ pub struct RangePrepublicationSession {
 
 impl RangePrepublicationSession {
     #[cfg(feature = "test-support")]
+    pub(crate) fn initial_index_identity_for_test(&self) -> Option<u64> {
+        (matches!(self.stage, SessionStage::Restoration)
+            && self.waiting.is_none()
+            && self.delivered.is_none()
+            && matches!(self.validation.next(), RestorationValidationNext::Complete))
+        .then_some(self.next_id)
+    }
+
+    #[cfg(feature = "test-support")]
+    pub(crate) fn initial_index_peak_for_test(&self) -> Option<RangeSurfaceCharge> {
+        let id = self.initial_index_identity_for_test()?;
+        let charge = self.current_charge()?;
+        let prepared = self
+            .geometry
+            .as_ref()?
+            .prepare_initial_index(
+                GeometryJobId::new(id),
+                crate::range_geometry::ResponseCapacity::Enclosing {
+                    current: (charge.bytes, charge.items),
+                    limit: (usize::MAX, usize::MAX),
+                },
+            )
+            .ok()?;
+        let (bytes, items) = prepared.enclosing_peak();
+        Some(RangeSurfaceCharge { bytes, items })
+    }
+
+    #[cfg(feature = "test-support")]
     pub(crate) fn response_successor_ids_for_test(&self) -> Option<[u64; 3]> {
         self.admitted_geometry
             .map(|response| response.successor_ids)

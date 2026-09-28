@@ -1,6 +1,6 @@
 use super::*;
 
-fn deliver(
+pub(super) fn deliver(
     session: &mut RangePrepublicationSession,
     source: &str,
     id: u64,

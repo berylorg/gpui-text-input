@@ -1,4 +1,5 @@
 use super::super::*;
+use crate::range_geometry::{CapacityRefusal, ResponseCapacity};
 
 impl RangePrepublicationSession {
     pub(super) fn advance_restoration(
@@ -84,19 +85,63 @@ impl RangePrepublicationSession {
                 }
             }
             RestorationValidationNext::Complete => {
-                self.release_all_resident_custody();
-                self.residency.discard_resident_pages();
-                self.object_residency.discard_resident_pages();
-                let id = GeometryJobId::new(self.next_id()?);
+                let charge = add_charge(
+                    self.current_charge()
+                        .ok_or(RangePrepublicationFailure::Arithmetic)?,
+                    multiply_charge(
+                        RangeSurfaceCharge {
+                            bytes: std::mem::size_of::<RangePrepublicationEffect>(),
+                            items: 1,
+                        },
+                        effects.len(),
+                    )
+                    .ok_or(RangePrepublicationFailure::Arithmetic)?,
+                )?;
+                let next_id = self
+                    .next_id
+                    .checked_add(1)
+                    .ok_or(RangePrepublicationFailure::Arithmetic)?;
+                let prepared = self
+                    .geometry
+                    .as_ref()
+                    .ok_or(RangePrepublicationFailure::Stale)?
+                    .prepare_initial_index(
+                        GeometryJobId::new(self.next_id),
+                        ResponseCapacity::Enclosing {
+                            current: (charge.bytes, charge.items),
+                            limit: (self.available.bytes, self.available.items),
+                        },
+                    );
+                let prepared = match prepared {
+                    Ok(prepared) => {
+                        let (bytes, items) = prepared.enclosing_peak();
+                        self.observe_charge(RangeSurfaceCharge { bytes, items });
+                        prepared
+                    }
+                    Err(failure) => {
+                        if let Some((bytes, items)) = failure.enclosing_peak() {
+                            let peak = RangeSurfaceCharge { bytes, items };
+                            self.observe_charge(peak);
+                            if !charge_fits(peak, configured_capacity(self.environment.config())) {
+                                return Err(RangePrepublicationFailure::TerminalCapacity);
+                            }
+                            if failure.capacity_refusal() == Some(CapacityRefusal::Enclosing) {
+                                self.ledger_blocked = true;
+                                return Ok(false);
+                            }
+                        }
+                        return Err(classify_geometry_error(failure.error().clone()));
+                    }
+                };
                 let start = self
                     .geometry
                     .as_mut()
-                    .ok_or(RangePrepublicationFailure::Stale)?
-                    .start_index(id)
-                    .map_err(classify_geometry_error)?;
-                if start.progress() != ExactGeometryProgress::Scanning {
-                    return Err(RangePrepublicationFailure::DeterministicGeometry);
-                }
+                    .unwrap()
+                    .commit_initial_index(prepared);
+                self.next_id = next_id;
+                self.release_all_resident_custody();
+                self.residency.discard_resident_pages();
+                self.object_residency.discard_resident_pages();
                 self.geometry_job = Some(start.key());
                 self.stage = SessionStage::Index;
                 Ok(true)
