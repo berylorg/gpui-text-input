@@ -1,3 +1,4 @@
+pub(in crate::range_widget) mod boxed_collection;
 pub(in crate::range_widget) mod fragment_maps;
 pub(in crate::range_widget) mod highlight_geometry;
 pub(in crate::range_widget) mod page_order;
@@ -264,7 +265,7 @@ impl CoherentRangeSurface {
         page_order: Box<[SurfacePageIndex]>,
         owned_maps: Vec<StreamingLayoutMap>,
         realized_buffers: realized_buffers::Buffers,
-        admit_highlights: impl FnMut(RangeSurfaceCharge) -> bool,
+        mut admit_collections: impl FnMut(RangeSurfaceCharge) -> bool,
     ) -> Result<PreparedCoherentRangeSurface, crate::RangeTextInputError> {
         let viewport = ByteRange::new(
             target.target_source().byte_offset,
@@ -390,7 +391,16 @@ impl CoherentRangeSurface {
             desired.composition,
             line_height,
             wrap_width,
-            admit_highlights,
+            |highlights| {
+                boxed_collection::add(
+                    RangeSurfaceCharge {
+                        bytes: realized_candidate_bytes,
+                        items: realized_candidate_items,
+                    },
+                    highlights,
+                )
+                .is_ok_and(&mut admit_collections)
+            },
         )?;
         let caret_geometry = position_for_composite_fragments(target.fragments(), selection.head)
             .map(|origin| Bounds::new(origin, gpui::size(px(2.), line_height)));
@@ -553,6 +563,42 @@ impl CoherentRangeSurface {
                 RangeRealizationCapacityState::CapacitySaturatedViewportExceedsRenderingCapacity
             }
         };
+        let mut collection_charge = boxed_collection::add(
+            RangeSurfaceCharge {
+                bytes: realized_candidate_bytes,
+                items: realized_candidate_items,
+            },
+            boxed_collection::add(
+                RangeSurfaceCharge {
+                    bytes: geometry_candidate_bytes,
+                    items: geometry_candidate_items,
+                },
+                RangeSurfaceCharge {
+                    bytes: placeholder_bytes,
+                    items: placeholder_items,
+                },
+            )?,
+        )?;
+        let realized_objects = boxed_collection::prepare(
+            realized_objects,
+            &mut collection_charge,
+            &mut admit_collections,
+        )?;
+        let realized_object_gaps = boxed_collection::prepare(
+            realized_object_gaps,
+            &mut collection_charge,
+            &mut admit_collections,
+        )?;
+        let selection_geometry = boxed_collection::prepare(
+            selection_geometry,
+            &mut collection_charge,
+            &mut admit_collections,
+        )?;
+        let composition_geometry = boxed_collection::prepare(
+            composition_geometry,
+            &mut collection_charge,
+            &mut admit_collections,
+        )?;
         Ok(PreparedCoherentRangeSurface {
             binding,
             geometry: target.key().geometry(),
@@ -569,10 +615,10 @@ impl CoherentRangeSurface {
             visual_lines,
             content_height,
             line_height,
-            realized_objects: realized_objects.into_boxed_slice(),
-            realized_object_gaps: realized_object_gaps.into_boxed_slice(),
-            selection_geometry: selection_geometry.into_boxed_slice(),
-            composition_geometry: composition_geometry.into_boxed_slice(),
+            realized_objects,
+            realized_object_gaps,
+            selection_geometry,
+            composition_geometry,
             caret_geometry,
             placeholder,
             priority: desired.priority(),

@@ -495,3 +495,7 @@ mod resident_request_capacity;
 
 #[path = "prepublication/prepared_successor.rs"]
 mod prepared_successor;
+
+#[path = "prepublication/boxed_collections.rs"]
+#[cfg(feature = "test-support")]
+mod boxed_collections;

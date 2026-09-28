@@ -77,3 +77,30 @@ impl RangePrepublicationSession {
         })
     }
 }
+
+#[cfg(feature = "test-support")]
+impl RangePrepublicationSession {
+    pub fn test_box_collections(
+        values: [Vec<u64>; 2],
+        mut retained: RangeSurfaceCharge,
+        current: RangeSurfaceCharge,
+        configured: RangeSurfaceCharge,
+        available: RangeSurfaceCharge,
+        peak: &mut RangeSurfaceCharge,
+    ) -> Result<Option<([Box<[u64]>; 2], RangeSurfaceCharge)>, RangePrepublicationFailure> {
+        prepare(current, configured, available, peak, |admit| {
+            let [first, second] = values;
+            let first = crate::range_widget::surface::boxed_collection::prepare(
+                first,
+                &mut retained,
+                &mut *admit,
+            )?;
+            let second = crate::range_widget::surface::boxed_collection::prepare(
+                second,
+                &mut retained,
+                admit,
+            )?;
+            Ok(([first, second], retained))
+        })
+    }
+}

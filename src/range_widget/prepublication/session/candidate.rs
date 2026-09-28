@@ -269,29 +269,8 @@ impl RangePrepublicationSession {
         };
         desired.preserve_scroll_anchor = true;
         desired.reveal_caret = false;
-        let highlight_baseline =
-            add_charge(
-                realized_baseline,
-                RangeSurfaceCharge {
-                    bytes: buffers
-                        .0
-                        .capacity()
-                        .checked_mul(std::mem::size_of::<crate::RealizedInlineObjectGeometry>())
-                        .and_then(|bytes| {
-                            bytes.checked_add(buffers.1.capacity().checked_mul(
-                                std::mem::size_of::<crate::RealizedObjectGapGeometry>(),
-                            )?)
-                        })
-                        .ok_or(RangePrepublicationFailure::Arithmetic)?,
-                    items: buffers
-                        .0
-                        .capacity()
-                        .checked_add(buffers.1.capacity())
-                        .ok_or(RangePrepublicationFailure::Arithmetic)?,
-                },
-            )?;
         let prepared = highlight_geometry::prepare(
-            highlight_baseline,
+            realized_baseline,
             configured_capacity(&config),
             self.available,
             &mut surface_peak,
