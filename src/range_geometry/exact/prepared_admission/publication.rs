@@ -303,10 +303,29 @@ impl ExactGeometryOwner {
             content_height: delta.scanner.continuation.block_offset,
         };
         let document_selection = exact_document_selection(&delta.scanner, extent);
+        let conversion_items = checkpoint_records
+            .capacity()
+            .checked_add(checkpoint_records.len())
+            .ok_or_else(|| prepared_capacity_failure(&budget))?;
+        let conversion_bytes = conversion_items
+            .checked_mul(size_of::<ExactGeometryCheckpoint>())
+            .ok_or_else(|| prepared_capacity_failure(&budget))?;
+        observe_prepared(&mut budget, &delta, conversion_bytes, conversion_items)?;
+        let checkpoints: Arc<[ExactGeometryCheckpoint]> = Arc::from(checkpoint_records);
+        let publication_bytes = checkpoints
+            .len()
+            .checked_mul(size_of::<ExactGeometryCheckpoint>())
+            .and_then(|bytes| bytes.checked_add(size_of::<ExactGeometryIndex>()))
+            .ok_or_else(|| prepared_capacity_failure(&budget))?;
+        let publication_items = checkpoints
+            .len()
+            .checked_add(1)
+            .ok_or_else(|| prepared_capacity_failure(&budget))?;
+        observe_prepared(&mut budget, &delta, publication_bytes, publication_items)?;
         let index = Box::new(ExactGeometryIndex {
             key: delta.key,
             aggregate,
-            checkpoints: Arc::from(checkpoint_records),
+            checkpoints,
             document_selection,
         });
         let mut target = successor.target;
