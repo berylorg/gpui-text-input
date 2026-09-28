@@ -1,7 +1,59 @@
 use super::*;
 use gpui_text_input::preparation_test_support::{
-    is_configured_capacity_refusal, is_enclosing_capacity_refusal, prepare_response,
+    is_configured_capacity_refusal, is_enclosing_capacity_refusal, preparation_remaining_capacity,
+    prepare_response,
 };
+
+#[test]
+fn pre_shaping_reservation_requires_positive_capacity_in_both_dimensions() {
+    for occupied in [(100, 10), (0, 0)] {
+        let exact = (occupied.0 + 1, occupied.1 + 1);
+        assert_eq!(
+            preparation_remaining_capacity(occupied, exact, exact).unwrap(),
+            (1, 1)
+        );
+        assert_eq!(
+            preparation_remaining_capacity(occupied, (1000, 100), (500, 50)).unwrap(),
+            (500 - occupied.0, 50 - occupied.1)
+        );
+        for enclosing in [(occupied.0, 100), (1000, occupied.1), occupied] {
+            let failure =
+                preparation_remaining_capacity(occupied, (1000, 100), enclosing).unwrap_err();
+            assert!(is_enclosing_capacity_refusal(&failure));
+            assert!(!is_configured_capacity_refusal(&failure));
+            assert_eq!(failure.error(), &ExactGeometryError::CapacityExceeded);
+            assert_eq!(failure.release(), &ExactGeometryRelease::default());
+            assert_eq!(
+                (
+                    failure.admission_required_bytes(),
+                    failure.admission_required_items()
+                ),
+                exact
+            );
+        }
+        for (configured, enclosing) in [
+            ((occupied.0, 100), (1000, occupied.1)),
+            ((1000, occupied.1), (occupied.0, 100)),
+        ] {
+            let failure =
+                preparation_remaining_capacity(occupied, configured, enclosing).unwrap_err();
+            assert!(is_configured_capacity_refusal(&failure));
+            assert!(!is_enclosing_capacity_refusal(&failure));
+        }
+    }
+    for occupied in [(usize::MAX, 0), (0, usize::MAX), (usize::MAX, usize::MAX)] {
+        let failure = preparation_remaining_capacity(
+            occupied,
+            (usize::MAX, usize::MAX),
+            (usize::MAX, usize::MAX),
+        )
+        .unwrap_err();
+        assert_eq!(failure.error(), &ExactGeometryError::CapacityExceeded);
+        assert!(!is_configured_capacity_refusal(&failure));
+        assert!(!is_enclosing_capacity_refusal(&failure));
+        assert_eq!(failure.release(), &ExactGeometryRelease::default());
+    }
+}
 
 #[gpui::test]
 fn immutable_response_preparation_obeys_enclosing_ceilings(cx: &mut TestAppContext) {

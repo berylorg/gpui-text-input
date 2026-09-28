@@ -721,7 +721,8 @@ of immutable response preparation. Its probe reports required capacity and termi
 can explicitly commit the prepared result, and can read an admitted session response's reserved
 successor identities. It can query current and prepared presentation overlap with supplied object
 pages without exposing allocation addresses, and distinguish explicit enclosing-only and configured
-preparation admission refusals. It delegates to ordinary preparation and commit;
+preparation admission refusals. It also qualifies the positive remaining-capacity reservation used
+before GPUI binding construction. It delegates to ordinary preparation and commit;
 it is absent without the feature and does not define a production host admission interface.
 
 ## Range-Backed Preserved Resident Adoption

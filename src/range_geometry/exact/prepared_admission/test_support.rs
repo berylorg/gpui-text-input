@@ -1,5 +1,28 @@
 use super::*;
 
+pub fn preparation_remaining_capacity(
+    occupied: (usize, usize),
+    configured: (usize, usize),
+    enclosing: (usize, usize),
+) -> Result<(usize, usize), ExactGeometryFailure> {
+    let mut budget = AdmissionBudget {
+        configured_capacity: Some(configured),
+        refused_capacity: None,
+        fixed_bytes: 0,
+        fixed_items: 0,
+        page_payload_bytes: 0,
+        page_items: 0,
+        max_bytes: configured.0.min(enclosing.0),
+        max_items: configured.1.min(enclosing.1),
+        peak_bytes: 0,
+        peak_items: 0,
+        failure_stage: None,
+    };
+    budget
+        .remaining_capacity(occupied.0, occupied.1)
+        .map_err(|error| prepared_failure(error, ExactGeometryFailureStage::Finalize, &budget))
+}
+
 pub fn is_enclosing_capacity_refusal(failure: &ExactGeometryFailure) -> bool {
     failure.capacity_refusal == Some(super::super::types::CapacityRefusal::Enclosing)
 }

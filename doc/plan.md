@@ -4,11 +4,11 @@ Implement the capacity prerequisite for preserved resident adoption from
 [the package contract](design.md#range-backed-preserved-resident-adoption), coordinated by
 the Beryl root plan. Resident protection, accounting and publication remain separate work.
 
-# Phase 44: Attribute Explicit Preparation Capacity Refusals (finished)
+# Phase 45: Attribute Pre-Shaping Reservation Refusals (finished)
 
-Explicit preparation refusal records exact rejected counts and distinguishes configured from
-enclosing-only limits, including nested successor evidence. GPUI and other unattributed errors
-retain their behavior. Independent review accepted the boundary; all 212 integration tests passed.
+The positive remaining-capacity check before GPUI now records explicit required counts and refusal
+attribution without changing allowed ceilings or classifying arithmetic/GPUI errors. Independent
+resource review accepted the boundary; all 213 integration tests passed.
 
 # Phase 2: Enforce Capacity Throughout Preparation (pending)
 

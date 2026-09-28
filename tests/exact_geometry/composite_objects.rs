@@ -200,8 +200,18 @@ fn inline_style_storage_is_admitted_before_layout(cx: &mut TestAppContext) {
                     let failure = owner
                         .admit_object_page(job, &text, &objects, text_system)
                         .unwrap_err();
-                    assert_eq!(failure.admission_required_bytes(), expected.0);
-                    assert_eq!(failure.admission_required_items(), expected.1);
+                    let peak = if attempt <= 1 {
+                        (
+                            expected.0 - run_count * std::mem::size_of::<TextRun>()
+                                + std::mem::size_of::<StreamingLayoutFragment>()
+                                + 1,
+                            expected.1 - run_count + 2 + 2 * usize::from(deferred),
+                        )
+                    } else {
+                        expected
+                    };
+                    assert_eq!(failure.admission_required_bytes(), peak.0);
+                    assert_eq!(failure.admission_required_items(), peak.1);
                     if attempt == 0 {
                         assert!(matches!(
                             failure.error(),

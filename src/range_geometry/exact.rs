@@ -249,6 +249,25 @@ struct AdmissionBudget {
 }
 
 impl AdmissionBudget {
+    fn remaining_capacity(
+        &mut self,
+        occupied_bytes: usize,
+        occupied_items: usize,
+    ) -> Result<(usize, usize), ExactGeometryError> {
+        self.refused_capacity = None;
+        let bytes = occupied_bytes
+            .checked_add(1)
+            .ok_or(ExactGeometryError::CapacityExceeded)?;
+        let items = occupied_items
+            .checked_add(1)
+            .ok_or(ExactGeometryError::CapacityExceeded)?;
+        self.admit_counts(bytes, items)?;
+        Ok((
+            self.max_bytes - occupied_bytes,
+            self.max_items - occupied_items,
+        ))
+    }
+
     fn observe(
         &mut self,
         active: &ActiveJob,
