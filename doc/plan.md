@@ -4,13 +4,13 @@ Implement the capacity prerequisite for preserved resident adoption from
 [the package contract](design.md#range-backed-preserved-resident-adoption), coordinated by
 the Beryl root plan. Resident protection, accounting and publication remain separate work.
 
-# Phase 77: Admit Ready And Adoption Ownership Before Transfer (finished)
+# Phase 78: Qualify Candidate Effect-Buffer Isolation (finished)
 
-Ready and adoption charges now include the projected remaining session and are admitted before
-custody moves. Projection equality is checked against actual ownership before cleanup draining.
-All 248 integration tests, default-feature compilation and independent semantic/resource review
-passed. Tight byte/item tests verify retry, but may refuse earlier; exact transition refusal is
-source-reviewed. Overall preparation acceptance and preserved-resident adoption remain pending.
+Candidate preparation cannot coexist with buffered service effects: every request producer installs
+waiting state and ends the service step, and each step starts with an empty buffer. The common live
+driver now asserts Ready results have no effects. All 43 prepublication integration tests and
+independent resource review passed; blocked/failed attempts are covered by source-level scheduling
+proof. Placeholder and transfer coexistence audits remain pending under phase 747.
 # Phase 2: Enforce Capacity Throughout Preparation (pending)
 
 Apply the admitted budget before geometry scan growth and candidate preparation allocations,

@@ -338,6 +338,12 @@ fn drive_with_objects(
             cleanup.ownership()
         );
         let step = session.service(text_system);
+        if step.status == RangePrepublicationStatus::Ready {
+            assert!(
+                step.effects.is_empty(),
+                "candidate readiness emitted a request"
+            );
+        }
         for effect in step.effects {
             match effect {
                 RangePrepublicationEffect::ValidateOwner(request) => {
