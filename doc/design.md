@@ -723,7 +723,9 @@ successor identities. It can query current and prepared presentation overlap wit
 pages without exposing allocation addresses, and distinguish explicit enclosing-only and configured
 preparation admission refusals. It also qualifies the positive remaining-capacity reservation used
 before GPUI binding construction, and independently supplied configured/enclosing charge
-observations and their separate high-water marks. It delegates to ordinary preparation and commit;
+observations and their separate high-water marks, including nested transition admissions and
+unattributed arithmetic failure. The feature exposes the observation type for source-backed
+transition integration fixtures. It delegates to ordinary preparation and commit;
 it is absent without the feature and does not define a production host admission interface.
 
 ## Range-Backed Preserved Resident Adoption

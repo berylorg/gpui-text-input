@@ -378,6 +378,7 @@ impl ExactGeometryOwner {
             max_items: budget.max_items.min(self.limits.max_retained_items),
             peak_bytes: 0,
             peak_items: 0,
+            observations: budget.observations.take(),
         };
         let prepared_target = self.prepare_target_replacement_from_index(
             &index,
@@ -390,14 +391,7 @@ impl ExactGeometryOwner {
         budget.peak_bytes = budget.peak_bytes.max(capacity.peak_bytes);
         budget.peak_items = budget.peak_items.max(capacity.peak_items);
         budget.refused_capacity = capacity.refused_capacity;
-        if let Some(observations) = &mut budget.observations {
-            let peak = (capacity.peak_bytes, capacity.peak_items);
-            let _ = observations.observe(peak, peak);
-            observations.refusal = None;
-            if let Some(refused) = capacity.refused_capacity {
-                let _ = observations.observe(refused, refused);
-            }
-        }
+        budget.observations = capacity.observations;
         let prepared_target = prepared_target.map_err(|error| {
             prepared_failure(error, ExactGeometryFailureStage::Publication, &budget)
         })?;

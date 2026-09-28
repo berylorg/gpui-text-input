@@ -5,6 +5,7 @@ use gpui::StreamingLayoutBinding;
 mod capacity;
 mod release;
 
+use super::capacity_observation::CapacityObservations;
 pub(crate) use capacity::PreparationCapacity;
 use release::PreparedRelease;
 
@@ -749,6 +750,7 @@ impl ExactGeometryOwner {
     ) -> Result<PreparationCapacity, ExactGeometryError> {
         let (bytes, items) = self.preparation_base(replacement_inputs)?;
         Ok(PreparationCapacity {
+            observations: None,
             refused_capacity: None,
             bytes,
             items,

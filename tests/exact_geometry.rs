@@ -362,6 +362,7 @@ mod request_capacity;
 
 #[path = "exact_geometry/resident_admission.rs"]
 mod resident_admission;
+#[cfg(feature = "test-support")]
 #[path = "exact_geometry/preparation_capacity.rs"]
 mod preparation_capacity;
 #[path = "exact_geometry/text_growth.rs"]

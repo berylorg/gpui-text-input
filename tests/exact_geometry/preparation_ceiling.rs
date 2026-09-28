@@ -5,6 +5,42 @@ use gpui_text_input::preparation_test_support::{
 };
 
 #[test]
+fn nested_preparation_preserves_observations_and_clears_overflow_attribution() {
+    for (configured, enclosing, configured_refusal) in [
+        ((149, 15), (150, 15), true),
+        ((150, 14), (150, 15), true),
+        ((149, 15), (150, 14), true),
+        ((150, 15), (149, 15), false),
+        ((150, 15), (150, 14), false),
+    ] {
+        let mut probe = PreparationCapacityProbe::new(configured, enclosing);
+        probe.observe((120, 12), (110, 11)).unwrap();
+        assert_eq!(
+            probe.observe_nested((100, 10), (50, 5)),
+            Err(ExactGeometryError::CapacityExceeded)
+        );
+        assert_eq!(probe.configured_refusal(), configured_refusal);
+        assert_eq!(probe.enclosing_refusal(), !configured_refusal);
+        assert_eq!(probe.peaks(), ((150, 15), (150, 15)));
+        assert_eq!(
+            probe.observe_nested((100, 10), (usize::MAX, 0)),
+            Err(ExactGeometryError::CapacityExceeded)
+        );
+        assert!(!probe.configured_refusal());
+        assert!(!probe.enclosing_refusal());
+        assert_eq!(probe.peaks(), ((150, 15), (150, 15)));
+        probe.observe_nested((100, 10), (0, 0)).unwrap();
+        assert_eq!(probe.peaks(), ((150, 15), (150, 15)));
+    }
+    let mut probe = PreparationCapacityProbe::new((200, 20), (150, 15));
+    probe.observe((200, 20), (140, 14)).unwrap();
+    assert_eq!(probe.observe_nested((100, 10), (50, 5)).unwrap(), (150, 15));
+    assert_eq!(probe.peaks(), ((200, 20), (150, 15)));
+    let mut probe = PreparationCapacityProbe::new((0, 0), (0, 0));
+    probe.observe_nested((0, 0), (0, 0)).unwrap();
+}
+
+#[test]
 fn preparation_observes_configured_and_enclosing_peaks_independently() {
     let mut probe = PreparationCapacityProbe::new((200, 20), (150, 15));
     probe.observe((200, 10), (100, 8)).unwrap();

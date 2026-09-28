@@ -1,5 +1,7 @@
 use super::*;
 
+pub use super::super::capacity_observation::CapacityObservations;
+
 pub struct PreparationCapacityProbe(super::super::capacity_observation::CapacityObservations);
 
 impl PreparationCapacityProbe {
@@ -17,6 +19,29 @@ impl PreparationCapacityProbe {
 
     pub fn peaks(&self) -> ((usize, usize), (usize, usize)) {
         (self.0.configured_peak, self.0.enclosing_peak)
+    }
+
+    pub fn observe_nested(
+        &mut self,
+        base: (usize, usize),
+        additional: (usize, usize),
+    ) -> Result<(usize, usize), ExactGeometryError> {
+        let mut capacity = super::super::transition::PreparationCapacity {
+            observations: Some(std::mem::replace(
+                &mut self.0,
+                CapacityObservations::new((0, 0), (0, 0)),
+            )),
+            refused_capacity: None,
+            bytes: base.0,
+            items: base.1,
+            max_bytes: usize::MAX,
+            max_items: usize::MAX,
+            peak_bytes: 0,
+            peak_items: 0,
+        };
+        let result = capacity.admit_from(base.0, base.1, additional.0, additional.1);
+        self.0 = capacity.observations.take().unwrap();
+        result
     }
 
     pub fn configured_refusal(&self) -> bool {

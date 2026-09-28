@@ -1,6 +1,6 @@
 use super::{ExactGeometryError, types::CapacityRefusal};
 
-pub(super) struct CapacityObservations {
+pub struct CapacityObservations {
     configured_limit: (usize, usize),
     enclosing_limit: (usize, usize),
     pub(super) configured_peak: (usize, usize),
@@ -19,7 +19,11 @@ impl CapacityObservations {
         }
     }
 
-    pub(super) fn observe(
+    pub fn clear_refusal(&mut self) {
+        self.refusal = None;
+    }
+
+    pub fn observe(
         &mut self,
         configured: (usize, usize),
         enclosing: (usize, usize),

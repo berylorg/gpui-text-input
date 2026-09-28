@@ -1,4 +1,5 @@
 use super::*;
+use gpui_text_input::preparation_test_support::CapacityObservations;
 
 #[path = "../../src/range_geometry/exact/transition/capacity.rs"]
 mod capacity;
@@ -8,6 +9,7 @@ mod release;
 
 fn budget(bytes: usize, items: usize) -> PreparationCapacity {
     PreparationCapacity {
+        observations: None,
         refused_capacity: None,
         bytes: 100,
         items: 10,
