@@ -119,7 +119,7 @@ fn reach_context(
     reach_context_with_forward_cap(owner, source, job, text_system, usize::MAX)
 }
 
-fn reach_context_with_forward_cap(
+pub(super) fn reach_context_with_forward_cap(
     owner: &mut ExactGeometryOwner,
     source: &str,
     job: GeometryJobKey,

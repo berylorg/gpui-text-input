@@ -21,14 +21,22 @@ impl ExactGeometryOwner {
         page: &RangePage,
         text_system: &WindowTextSystem,
     ) -> Result<ExactGeometryAdmission, ExactGeometryFailure> {
-        self.admit_page_inner(key, page, text_system)
+        self.admit_page_with_capacity(
+            key,
+            page,
+            text_system,
+            self.limits.max_retained_bytes,
+            self.limits.max_retained_items,
+        )
     }
 
-    fn admit_page_inner(
+    pub fn admit_page_with_capacity(
         &mut self,
         key: GeometryJobKey,
         page: &RangePage,
         text_system: &WindowTextSystem,
+        max_bytes: usize,
+        max_items: usize,
     ) -> Result<ExactGeometryAdmission, ExactGeometryFailure> {
         let Some(mut active) = self.active.take() else {
             return Err(self.nonterminal_failure(ExactGeometryError::ObsoleteJob(key)));
@@ -52,8 +60,8 @@ impl ExactGeometryOwner {
             fixed_items: fixed.total_items(),
             page_payload_bytes: page.retained_charge().bytes(),
             page_items: page.retained_charge().items(),
-            max_bytes: self.limits.max_retained_bytes,
-            max_items: self.limits.max_retained_items,
+            max_bytes: max_bytes.min(self.limits.max_retained_bytes),
+            max_items: max_items.min(self.limits.max_retained_items),
             peak_bytes: 0,
             peak_items: 0,
             failure_stage: None,
@@ -141,6 +149,25 @@ impl ExactGeometryOwner {
         object_page: &ObjectPage,
         text_system: &WindowTextSystem,
     ) -> Result<ExactGeometryAdmission, ExactGeometryFailure> {
+        self.admit_object_page_with_capacity(
+            key,
+            text_page,
+            object_page,
+            text_system,
+            self.limits.max_retained_bytes,
+            self.limits.max_retained_items,
+        )
+    }
+
+    pub fn admit_object_page_with_capacity(
+        &mut self,
+        key: GeometryJobKey,
+        text_page: &RangePage,
+        object_page: &ObjectPage,
+        text_system: &WindowTextSystem,
+        max_bytes: usize,
+        max_items: usize,
+    ) -> Result<ExactGeometryAdmission, ExactGeometryFailure> {
         let Some(mut active) = self.active.take() else {
             return Err(self.nonterminal_failure(ExactGeometryError::ObsoleteJob(key)));
         };
@@ -178,8 +205,8 @@ impl ExactGeometryOwner {
                 .items()
                 .saturating_add(object_page.retained_charge().allocated_items())
                 .saturating_add(1),
-            max_bytes: self.limits.max_retained_bytes,
-            max_items: self.limits.max_retained_items,
+            max_bytes: max_bytes.min(self.limits.max_retained_bytes),
+            max_items: max_items.min(self.limits.max_retained_items),
             peak_bytes: 0,
             peak_items: 0,
             failure_stage: None,
@@ -399,8 +426,8 @@ impl ExactGeometryOwner {
                     document_selection,
                 };
                 let retained = accounting::counts_with_index_candidate(self, &candidate);
-                if retained.total_bytes() > self.limits.max_retained_bytes
-                    || retained.total_items() > self.limits.max_retained_items
+                if retained.total_bytes() > budget.max_bytes
+                    || retained.total_items() > budget.max_items
                 {
                     return Err(candidate_failure(
                         ExactGeometryError::CapacityExceeded,
@@ -453,8 +480,8 @@ impl ExactGeometryOwner {
                     item_charge: scanner.output_item_charge,
                 };
                 let retained = accounting::counts_with_target_candidate(self, &candidate);
-                if retained.total_bytes() > self.limits.max_retained_bytes
-                    || retained.total_items() > self.limits.max_retained_items
+                if retained.total_bytes() > budget.max_bytes
+                    || retained.total_items() > budget.max_items
                 {
                     return Err(candidate_failure(
                         ExactGeometryError::CapacityExceeded,

@@ -321,6 +321,15 @@ and publication records. Admission includes their peak coexistence with the prio
 publication; the exact cap is accepted and one under is rejected atomically without replacing
 that publication.
 
+Exact-geometry text and object response admission may accept a per-call retained-byte and
+semantic-item ceiling through `admit_page_with_capacity` and `admit_object_page_with_capacity`.
+The ceiling covers the geometry owner, borrowed response pages and their admission peak; it is
+clamped independently to the configured limits and never changes them. Zero capacity is valid
+and refuses an exact response before growth. Exact-key refusal follows the ordinary terminal
+response cleanup contract; stale or mismatched responses leave the current job untouched.
+The ordinary admission methods use the configured ceilings. Deriving a ceiling from enclosing
+owners and propagating the resulting peak remains the enclosing caller's responsibility.
+
 Realization is credit- and capacity-gated. It prioritizes caret, IME, and directed-selection
 geometry first, the active interaction or scroll anchor second, and nearby content last. Nominally
 visible regions that cannot be admitted are coalesced into bounded filler coverage rather than one
