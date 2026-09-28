@@ -774,15 +774,10 @@ fn prepared_failure(
     budget: &AdmissionBudget,
 ) -> ExactGeometryFailure {
     let capacity_refusal = if error == ExactGeometryError::CapacityExceeded {
-        budget.refused_capacity.zip(budget.configured_capacity).map(
-            |((bytes, items), (max_bytes, max_items))| {
-                if bytes > max_bytes || items > max_items {
-                    super::types::CapacityRefusal::Configured
-                } else {
-                    super::types::CapacityRefusal::Enclosing
-                }
-            },
-        )
+        budget
+            .observations
+            .as_ref()
+            .and_then(|observations| observations.refusal)
     } else {
         None
     };

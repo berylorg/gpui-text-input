@@ -816,7 +816,7 @@ impl ExactGeometryOwner {
             scanner,
         };
         let mut budget = AdmissionBudget {
-            configured_capacity: None,
+            observations: None,
             refused_capacity: None,
             fixed_bytes: coexisting
                 .0

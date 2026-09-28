@@ -1,8 +1,54 @@
 use super::*;
 use gpui_text_input::preparation_test_support::{
-    is_configured_capacity_refusal, is_enclosing_capacity_refusal, preparation_remaining_capacity,
-    prepare_response,
+    PreparationCapacityProbe, is_configured_capacity_refusal, is_enclosing_capacity_refusal,
+    preparation_remaining_capacity, prepare_response,
 };
+
+#[test]
+fn preparation_observes_configured_and_enclosing_peaks_independently() {
+    let mut probe = PreparationCapacityProbe::new((200, 20), (150, 15));
+    probe.observe((200, 10), (100, 8)).unwrap();
+    probe.observe((180, 20), (150, 15)).unwrap();
+    assert_eq!(probe.peaks(), ((200, 20), (150, 15)));
+    // The smaller raw observation has the larger enclosing charge.
+    probe.observe((50, 5), (40, 4)).unwrap();
+    assert_eq!(probe.peaks(), ((200, 20), (150, 15)));
+    assert!(!probe.configured_refusal());
+    assert!(!probe.enclosing_refusal());
+
+    for (configured, enclosing, configured_refusal) in [
+        ((201, 10), (100, 8), true),
+        ((100, 21), (100, 8), true),
+        ((200, 20), (151, 15), false),
+        ((200, 20), (150, 16), false),
+        ((201, 20), (150, 16), true),
+        ((200, 21), (151, 15), true),
+    ] {
+        let mut probe = PreparationCapacityProbe::new((200, 20), (150, 15));
+        assert_eq!(
+            probe.observe(configured, enclosing),
+            Err(ExactGeometryError::CapacityExceeded)
+        );
+        assert_eq!(probe.configured_refusal(), configured_refusal);
+        assert_eq!(probe.enclosing_refusal(), !configured_refusal);
+        assert_eq!(probe.peaks(), (configured, enclosing));
+        probe.observe((0, 0), (0, 0)).unwrap();
+        assert!(!probe.configured_refusal());
+        assert!(!probe.enclosing_refusal());
+        assert_eq!(probe.peaks(), (configured, enclosing));
+    }
+    let mut probe = PreparationCapacityProbe::new((0, 0), (0, 0));
+    probe.observe((0, 0), (0, 0)).unwrap();
+    assert_eq!(
+        probe.observe((0, 0), (1, 0)),
+        Err(ExactGeometryError::CapacityExceeded)
+    );
+    assert!(probe.enclosing_refusal());
+    let mut probe =
+        PreparationCapacityProbe::new((usize::MAX, usize::MAX), (usize::MAX, usize::MAX));
+    probe.observe((usize::MAX, 0), (0, usize::MAX)).unwrap();
+    assert_eq!(probe.peaks(), ((usize::MAX, 0), (0, usize::MAX)));
+}
 
 #[test]
 fn pre_shaping_reservation_requires_positive_capacity_in_both_dimensions() {

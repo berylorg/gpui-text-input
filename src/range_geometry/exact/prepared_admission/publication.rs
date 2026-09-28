@@ -390,6 +390,14 @@ impl ExactGeometryOwner {
         budget.peak_bytes = budget.peak_bytes.max(capacity.peak_bytes);
         budget.peak_items = budget.peak_items.max(capacity.peak_items);
         budget.refused_capacity = capacity.refused_capacity;
+        if let Some(observations) = &mut budget.observations {
+            let peak = (capacity.peak_bytes, capacity.peak_items);
+            let _ = observations.observe(peak, peak);
+            observations.refusal = None;
+            if let Some(refused) = capacity.refused_capacity {
+                let _ = observations.observe(refused, refused);
+            }
+        }
         let prepared_target = prepared_target.map_err(|error| {
             prepared_failure(error, ExactGeometryFailureStage::Publication, &budget)
         })?;
@@ -676,10 +684,15 @@ impl ExactGeometryOwner {
     ) -> Result<AdmissionBudget, ExactGeometryFailure> {
         let counts = self.counts();
         Ok(AdmissionBudget {
-            configured_capacity: Some((
-                self.limits.max_retained_bytes,
-                self.limits.max_retained_items,
-            )),
+            observations: Some(
+                super::super::capacity_observation::CapacityObservations::new(
+                    (
+                        self.limits.max_retained_bytes,
+                        self.limits.max_retained_items,
+                    ),
+                    (max_bytes, max_items),
+                ),
+            ),
             refused_capacity: None,
             fixed_bytes: checked_total_bytes(counts).map_err(|_| {
                 self.prepared_validation_failure(ExactGeometryError::CapacityExceeded)

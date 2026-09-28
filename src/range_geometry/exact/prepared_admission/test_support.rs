@@ -1,12 +1,42 @@
 use super::*;
 
+pub struct PreparationCapacityProbe(super::super::capacity_observation::CapacityObservations);
+
+impl PreparationCapacityProbe {
+    pub fn new(configured: (usize, usize), enclosing: (usize, usize)) -> Self {
+        Self(super::super::capacity_observation::CapacityObservations::new(configured, enclosing))
+    }
+
+    pub fn observe(
+        &mut self,
+        configured: (usize, usize),
+        enclosing: (usize, usize),
+    ) -> Result<(), ExactGeometryError> {
+        self.0.observe(configured, enclosing)
+    }
+
+    pub fn peaks(&self) -> ((usize, usize), (usize, usize)) {
+        (self.0.configured_peak, self.0.enclosing_peak)
+    }
+
+    pub fn configured_refusal(&self) -> bool {
+        self.0.refusal == Some(super::super::types::CapacityRefusal::Configured)
+    }
+
+    pub fn enclosing_refusal(&self) -> bool {
+        self.0.refusal == Some(super::super::types::CapacityRefusal::Enclosing)
+    }
+}
+
 pub fn preparation_remaining_capacity(
     occupied: (usize, usize),
     configured: (usize, usize),
     enclosing: (usize, usize),
 ) -> Result<(usize, usize), ExactGeometryFailure> {
     let mut budget = AdmissionBudget {
-        configured_capacity: Some(configured),
+        observations: Some(
+            super::super::capacity_observation::CapacityObservations::new(configured, enclosing),
+        ),
         refused_capacity: None,
         fixed_bytes: 0,
         fixed_items: 0,

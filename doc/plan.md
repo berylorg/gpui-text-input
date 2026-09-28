@@ -4,11 +4,11 @@ Implement the capacity prerequisite for preserved resident adoption from
 [the package contract](design.md#range-backed-preserved-resident-adoption), coordinated by
 the Beryl root plan. Resident protection, accounting and publication remain separate work.
 
-# Phase 47: Qualify Shared Presentation Preparation Peaks (finished)
+# Phase 48: Separate Preparation Capacity Observations (finished)
 
-Independent review accepted the preparation ownership map recorded in Beryl's capacity failure
-note. It covers prospective display credit before metadata and separate continuation-only GPUI
-startup admission. No production code changed; full preparation capacity remains pending.
+Independent review accepted separate configured/enclosing observation and high-water admission;
+all 214 integration tests passed. Current production charges remain identical, preserving existing
+ceilings and refusal precedence. Shared credits and host-session propagation remain pending.
 
 # Phase 2: Enforce Capacity Throughout Preparation (pending)
 
@@ -23,6 +23,8 @@ the session budget with shared presentation charged once and route typed retryab
 that state. Admitted responses retain successor identities without per-attempt counter mutation.
 Observe configured and enclosing charges separately at each peak; final retained overlap cannot
 correct earlier peaks. Prospective display credit must not subsidize GPUI continuation-only startup.
+The independent observer is implemented; replace nested aggregate raw-peak import with actual
+observations for both views before credits, and propagate enclosing peaks to the session.
 Carry it through pre-copy, detached custody, output before metadata and publication observations.
 Deferred presentation backing now shares correctly and participates in retained overlap queries.
 Explicit preparation admission now carries typed configured/enclosing refusal attribution.

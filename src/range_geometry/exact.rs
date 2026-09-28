@@ -17,6 +17,7 @@ use super::{GeometryJobId, GeometryJobKey, GeometryKey, LayoutEpoch};
 
 mod accounting;
 mod admission;
+mod capacity_observation;
 mod checkpoint;
 mod lifecycle;
 mod owner;
@@ -235,7 +236,7 @@ struct ActiveJob {
 }
 
 struct AdmissionBudget {
-    configured_capacity: Option<(usize, usize)>,
+    observations: Option<capacity_observation::CapacityObservations>,
     refused_capacity: Option<(usize, usize)>,
     fixed_bytes: usize,
     fixed_items: usize,
@@ -249,12 +250,19 @@ struct AdmissionBudget {
 }
 
 impl AdmissionBudget {
+    fn clear_refusal(&mut self) {
+        self.refused_capacity = None;
+        if let Some(observations) = &mut self.observations {
+            observations.refusal = None;
+        }
+    }
+
     fn remaining_capacity(
         &mut self,
         occupied_bytes: usize,
         occupied_items: usize,
     ) -> Result<(usize, usize), ExactGeometryError> {
-        self.refused_capacity = None;
+        self.clear_refusal();
         let bytes = occupied_bytes
             .checked_add(1)
             .ok_or(ExactGeometryError::CapacityExceeded)?;
@@ -274,7 +282,7 @@ impl AdmissionBudget {
         transient_bytes: usize,
         transient_items: usize,
     ) -> Result<(), ExactGeometryError> {
-        self.refused_capacity = None;
+        self.clear_refusal();
         let counts = accounting::active_counts(active);
         let bytes = self
             .fixed_bytes
@@ -295,9 +303,16 @@ impl AdmissionBudget {
     }
 
     fn admit_counts(&mut self, bytes: usize, items: usize) -> Result<(), ExactGeometryError> {
-        self.refused_capacity = None;
+        self.clear_refusal();
         self.peak_bytes = self.peak_bytes.max(bytes);
         self.peak_items = self.peak_items.max(items);
+        if let Some(observations) = &mut self.observations {
+            return observations
+                .observe((bytes, items), (bytes, items))
+                .inspect_err(|_| {
+                    self.refused_capacity = Some((bytes, items));
+                });
+        }
         if bytes > self.max_bytes || items > self.max_items {
             self.refused_capacity = Some((bytes, items));
             Err(ExactGeometryError::CapacityExceeded)

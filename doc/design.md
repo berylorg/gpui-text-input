@@ -722,7 +722,8 @@ can explicitly commit the prepared result, and can read an admitted session resp
 successor identities. It can query current and prepared presentation overlap with supplied object
 pages without exposing allocation addresses, and distinguish explicit enclosing-only and configured
 preparation admission refusals. It also qualifies the positive remaining-capacity reservation used
-before GPUI binding construction. It delegates to ordinary preparation and commit;
+before GPUI binding construction, and independently supplied configured/enclosing charge
+observations and their separate high-water marks. It delegates to ordinary preparation and commit;
 it is absent without the feature and does not define a production host admission interface.
 
 ## Range-Backed Preserved Resident Adoption
