@@ -11,6 +11,14 @@ Independent review accepted the boundary; 293 integration and 115 unit tests plu
 checks pass. Exact cleanup and reporting semantics remain covered; nonallocation is source-proved.
 Overall phase 2 acceptance remains pending.
 
+# Phase 95: Admit Adoption Configuration Storage (pending)
+
+Account for the independently cloned configuration style-run backing in adoption support and
+retained widget ownership, separately from transferred geometry storage. Admit requested capacity
+before cloning and validate actual capacity before owner transfer. Verify independent run-length
+and spare-capacity cases, byte/item refusal, exact fit and candidate cleanup. Independent review
+precedes overall phase 2 acceptance; Beryl root 840 coordinates this prerequisite.
+
 # Phase 2: Enforce Capacity Throughout Preparation (pending)
 
 Complete overall review of startup, restoration and geometry request/response preparation,
