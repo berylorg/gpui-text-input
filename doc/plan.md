@@ -4,13 +4,13 @@ Implement the capacity prerequisite for preserved resident adoption from
 [the package contract](design.md#range-backed-preserved-resident-adoption), coordinated by
 the Beryl root plan. Resident protection, accounting and publication remain separate work.
 
-# Phase 76: Admit Candidate Ownership Before Transfer (finished)
+# Phase 77: Admit Ready And Adoption Ownership Before Transfer (finished)
 
-Candidate storage is derived immutably and admitted against configured and host capacity before
-page, target or cleanup custody moves. Geometry projection tests cover terminal removal and active
-shared presentation custody. All 247 integration tests, the added focused assertion, default-feature
-compilation and independent review passed. Exact live-session candidate refusal is source-reviewed.
-Ready/adoption coexistence and overall preparation acceptance remain pending.
+Ready and adoption charges now include the projected remaining session and are admitted before
+custody moves. Projection equality is checked against actual ownership before cleanup draining.
+All 248 integration tests, default-feature compilation and independent semantic/resource review
+passed. Tight byte/item tests verify retry, but may refuse earlier; exact transition refusal is
+source-reviewed. Overall preparation acceptance and preserved-resident adoption remain pending.
 # Phase 2: Enforce Capacity Throughout Preparation (pending)
 
 Apply the admitted budget before geometry scan growth and candidate preparation allocations,
@@ -55,3 +55,7 @@ Direct request creation also accepts enclosing ceilings before pending-record al
 Deferred-object custody remains charged through inline admission when deriving remaining capacity.
 Carry prepared transition peak evidence through enclosing host admission before host use.
 Dependency-private shaping scratch is outside this reservation; retain finite layout input limits.
+
+Candidate, Ready and adoption charges are now admitted before custody transfer. Overall closure
+requires a bounded audit including placeholder ownership before preparation and enclosing effects
+and transition coexistence; accepted component checks alone do not close the preparation boundary.

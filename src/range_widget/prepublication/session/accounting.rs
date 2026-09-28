@@ -92,8 +92,6 @@ impl RangePrepublicationSession {
     }
 
     pub(super) fn current_charge(&self) -> Option<RangeSurfaceCharge> {
-        let text = self.residency.counts();
-        let objects = self.object_residency.counts();
         let geometry =
             self.geometry
                 .as_ref()
@@ -109,14 +107,6 @@ impl RangePrepublicationSession {
                         std::mem::size_of::<ExactGeometryOwner>(),
                     )
                 })?;
-        let text_owner = nested_owner_charge(
-            self.residency.owner_storage_charge(),
-            std::mem::size_of::<RangeResidency>(),
-        )?;
-        let object_owner = nested_owner_charge(
-            self.object_residency.owner_storage_charge(),
-            std::mem::size_of::<crate::ObjectResidency>(),
-        )?;
         let text_resident = self.residency.resident_pages().try_fold(
             RangeSurfaceCharge::default(),
             |total, page| {
@@ -147,10 +137,6 @@ impl RangePrepublicationSession {
             .environment
             .cleanup()
             .active_session_records(self.generation);
-        let ledger = multiply_charge(
-            RangePrepublicationCleanupLedger::record_charge(),
-            ledger_records,
-        )?;
         let candidate =
             self.candidate
                 .as_ref()
@@ -162,28 +148,52 @@ impl RangePrepublicationSession {
                 })?;
         let custody = self.custody_storage_charge()?;
         [
+            self.shell_charge(ledger_records)?,
+            text_resident,
+            object_resident,
+            geometry,
+            custody,
+            candidate,
+        ]
+        .into_iter()
+        .try_fold(RangeSurfaceCharge::default(), |total, charge| {
+            add_charge(total, charge).ok()
+        })
+    }
+
+    pub(super) fn shell_charge(&self, ledger_records: usize) -> Option<RangeSurfaceCharge> {
+        let text = self.residency.counts();
+        let objects = self.object_residency.counts();
+        let text_owner = nested_owner_charge(
+            self.residency.owner_storage_charge(),
+            std::mem::size_of::<RangeResidency>(),
+        )?;
+        let object_owner = nested_owner_charge(
+            self.object_residency.owner_storage_charge(),
+            std::mem::size_of::<crate::ObjectResidency>(),
+        )?;
+        let ledger = multiply_charge(
+            RangePrepublicationCleanupLedger::record_charge(),
+            ledger_records,
+        )?;
+        [
             RangeSurfaceCharge {
                 bytes: std::mem::size_of::<Self>(),
                 items: 1,
             },
             text_owner,
             object_owner,
-            text_resident,
             RangeSurfaceCharge {
                 bytes: usize::try_from(text.pending_bytes).ok()?,
                 items: text.pending_requests,
             },
-            object_resident,
             RangeSurfaceCharge {
                 bytes: objects.pending_bytes,
                 items: objects
                     .pending_requests
                     .checked_add(objects.pending_objects)?,
             },
-            geometry,
             ledger,
-            custody,
-            candidate,
         ]
         .into_iter()
         .try_fold(RangeSurfaceCharge::default(), |total, charge| {

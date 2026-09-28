@@ -380,11 +380,23 @@ fn drive_with_objects(
                 }
             }
         }
-        let _ = drain_cleanup(cleanup);
         max_bytes = max_bytes.max(session.ownership().bytes);
         match step.status {
             RangePrepublicationStatus::Ready => {
-                return (session.take_candidate().unwrap(), steps, max_bytes);
+                let candidate = session.take_candidate().unwrap();
+                #[cfg(feature = "test-support")]
+                {
+                    let actual = session.ownership();
+                    assert_eq!(
+                        candidate.test_origin_session_charge(),
+                        RangeSurfaceCharge {
+                            bytes: actual.bytes,
+                            items: actual.items,
+                        }
+                    );
+                }
+                let _ = drain_cleanup(cleanup);
+                return (candidate, steps, max_bytes);
             }
             RangePrepublicationStatus::Failed(failure) => panic!("failed: {failure:?}"),
             RangePrepublicationStatus::Cancelled | RangePrepublicationStatus::Stale => {
@@ -392,6 +404,7 @@ fn drive_with_objects(
             }
             _ => {}
         }
+        let _ = drain_cleanup(cleanup);
     }
 }
 

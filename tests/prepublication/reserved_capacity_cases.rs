@@ -1,6 +1,113 @@
 use super::*;
 
 #[gpui::test]
+fn preparation_peak_shortfalls_retain_custody_and_resume_at_exact_capacity(
+    cx: &mut TestAppContext,
+) {
+    let source = "first line\nsecond line\nthird line";
+    let seed = seed(source, 2, 15);
+    let window = cx.add_empty_window();
+    window.update(|window, _| {
+        let config = config(source, 2, 32);
+        let (environment, cleanup) = make_environment(64, config.clone(), window.text_system());
+        let mut probe = RangePrepublicationSession::new(seed, environment).unwrap();
+        let (candidate, _, _) = drive(&mut probe, source, window.text_system(), &cleanup);
+        let exact = probe.high_water();
+        assert!(candidate.adoption_peak().bytes <= exact.bytes);
+        assert!(candidate.adoption_peak().items <= exact.items);
+        drop(candidate);
+        drop(probe);
+        let _ = drain_cleanup(&cleanup);
+
+        for available in [
+            RangeSurfaceCharge {
+                bytes: exact.bytes - 1,
+                ..exact
+            },
+            RangeSurfaceCharge {
+                items: exact.items - 1,
+                ..exact
+            },
+        ] {
+            let (environment, cleanup) = make_environment(65, config.clone(), window.text_system());
+            let mut session =
+                RangePrepublicationSession::new_with_admission_capacity(seed, environment, exact)
+                    .unwrap();
+            session.set_available_capacity(available);
+            let mut blocked = false;
+            for id in 1..500 {
+                let step = session.service(window.text_system());
+                for effect in step.effects {
+                    match effect {
+                        RangePrepublicationEffect::ValidateOwner(request) => {
+                            assert_eq!(
+                                session.deliver_validation(RangePrepublicationValidationResponse {
+                                    key: request.key,
+                                    binding: request.binding,
+                                    history: request.history,
+                                    current: true,
+                                }),
+                                RangePrepublicationDelivery::Accepted
+                            );
+                        }
+                        RangePrepublicationEffect::Page {
+                            generation,
+                            request,
+                            ..
+                        } => {
+                            assert_eq!(
+                                session.deliver_page(generation, page_for(source, id, request)),
+                                RangePrepublicationDelivery::Accepted
+                            );
+                        }
+                        RangePrepublicationEffect::ObjectPage {
+                            generation,
+                            request,
+                            ..
+                        } => {
+                            assert_eq!(
+                                session.deliver_object_page(
+                                    generation,
+                                    empty_object_page(id, request)
+                                ),
+                                RangePrepublicationDelivery::Accepted
+                            );
+                        }
+                    }
+                }
+                let _ = drain_cleanup(&cleanup);
+                if step.status == RangePrepublicationStatus::CapacityBlocked {
+                    blocked = true;
+                    break;
+                }
+                assert!(!matches!(
+                    step.status,
+                    RangePrepublicationStatus::Ready | RangePrepublicationStatus::Failed(_)
+                ));
+            }
+            assert!(blocked);
+            let before = session.ownership();
+            let records = cleanup.ownership().active;
+            for _ in 0..2 {
+                let retry = session.service(window.text_system());
+                assert_eq!(retry.status, RangePrepublicationStatus::CapacityBlocked);
+                assert!(retry.effects.is_empty());
+                assert!(session.take_candidate().is_none());
+                assert_eq!(session.ownership().bytes, before.bytes);
+                assert_eq!(session.ownership().items, before.items);
+                assert_eq!(cleanup.ownership().active, records);
+            }
+            session.set_available_capacity(exact);
+            let (candidate, _, _) = drive(&mut session, source, window.text_system(), &cleanup);
+            drop(candidate);
+            drop(session);
+            let _ = drain_cleanup(&cleanup);
+            assert_eq!(cleanup.ownership().active, 0);
+        }
+    });
+}
+
+#[gpui::test]
 fn availability_cannot_expand_either_reserved_dimension(cx: &mut TestAppContext) {
     let source = "reservation";
     let seed = seed(source, 1, 0);

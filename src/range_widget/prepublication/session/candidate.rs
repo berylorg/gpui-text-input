@@ -46,11 +46,17 @@ impl std::fmt::Debug for RangePrepublicationCandidate {
             .field("seed", &self.seed)
             .field("charge", &self.charge)
             .field("adoption_peak", &self.adoption_peak)
+            .field("origin_session_charge", &self.origin_session_charge)
             .finish_non_exhaustive()
     }
 }
 
 impl RangePrepublicationCandidate {
+    #[cfg(feature = "test-support")]
+    pub const fn test_origin_session_charge(&self) -> RangeSurfaceCharge {
+        self.origin_session_charge
+    }
+
     pub const fn source_binding(&self) -> crate::RangeBinding {
         self.seed.binding
     }
@@ -126,6 +132,25 @@ impl RangePrepublicationSession {
         peak: &mut RangeSurfaceCharge,
     ) -> Result<Option<(Vec<RangePage>, Vec<ObjectPage>)>, RangePrepublicationFailure> {
         transfer::prepare(text, objects, current, configured, available, peak)
+    }
+
+    pub(super) fn candidate_origin_charge(&self) -> Option<RangeSurfaceCharge> {
+        let promoted = self
+            .text_custody
+            .len()
+            .checked_add(self.object_custody.len())?
+            .checked_add(1)?;
+        let ledger_records = self
+            .environment
+            .cleanup()
+            .active_session_records(self.generation)
+            .checked_sub(promoted)?;
+        let vacant_resident_slots = transfer::charge(
+            self.residency.counts().resident_pages,
+            self.object_residency.counts().resident_pages,
+        )
+        .ok()?;
+        add_charge(self.shell_charge(ledger_records)?, vacant_resident_slots).ok()
     }
 
     pub(super) fn finish_candidate(&mut self) -> Result<(), RangePrepublicationFailure> {
@@ -405,6 +430,32 @@ impl RangePrepublicationSession {
             self.ledger_blocked = true;
             return Ok(());
         }
+        let origin_session_charge = self
+            .candidate_origin_charge()
+            .ok_or(RangePrepublicationFailure::Arithmetic)?;
+        let ready_charge = add_charge(
+            origin_session_charge,
+            nested_owner_charge(
+                candidate_charge,
+                std::mem::size_of::<RangePrepublicationCandidate>(),
+            )
+            .ok_or(RangePrepublicationFailure::Arithmetic)?,
+        )?;
+        let adoption_peak = add_charge(
+            add_charge(candidate_charge, origin_session_charge)?,
+            super::super::adoption_widget_support_charge(&config)?,
+        )?;
+        self.observe_charge(ready_charge);
+        self.observe_charge(adoption_peak);
+        if !charge_fits(ready_charge, configured) || !charge_fits(adoption_peak, configured) {
+            return Err(RangePrepublicationFailure::TerminalCapacity);
+        }
+        if !charge_fits(ready_charge, self.available) || !charge_fits(adoption_peak, self.available)
+        {
+            let _ = self.environment.cleanup().complete(cleanup);
+            self.ledger_blocked = true;
+            return Ok(());
+        }
         let pages = self.residency.take_resident_pages_into(pages);
         let object_pages = self.object_residency.take_resident_pages_into(object_pages);
         let target = self
@@ -451,47 +502,11 @@ impl RangePrepublicationSession {
             surface: Some(surface),
             surface_charge,
             charge: candidate_charge,
-            adoption_peak: RangeSurfaceCharge::default(),
+            adoption_peak,
             next_id: self.next_id,
-            origin_session_charge: RangeSurfaceCharge::default(),
+            origin_session_charge,
         });
         self.geometry_job = None;
-        let ready_charge = self
-            .current_charge()
-            .ok_or(RangePrepublicationFailure::Arithmetic)?;
-        if !charge_fits(ready_charge, configured) {
-            self.candidate = None;
-            return Err(RangePrepublicationFailure::TerminalCapacity);
-        }
-        let nested_candidate = nested_owner_charge(
-            candidate_charge,
-            std::mem::size_of::<RangePrepublicationCandidate>(),
-        )
-        .ok_or(RangePrepublicationFailure::Arithmetic)?;
-        let origin_session_charge = RangeSurfaceCharge {
-            bytes: ready_charge
-                .bytes
-                .checked_sub(nested_candidate.bytes)
-                .ok_or(RangePrepublicationFailure::Arithmetic)?,
-            items: ready_charge
-                .items
-                .checked_sub(nested_candidate.items)
-                .ok_or(RangePrepublicationFailure::Arithmetic)?,
-        };
-        let adoption_peak = add_charge(
-            add_charge(candidate_charge, origin_session_charge)?,
-            super::super::adoption_widget_support_charge(&config)?,
-        )?;
-        if !charge_fits(adoption_peak, configured) {
-            self.candidate = None;
-            return Err(RangePrepublicationFailure::TerminalCapacity);
-        }
-        let candidate = self
-            .candidate
-            .as_mut()
-            .ok_or(RangePrepublicationFailure::Stale)?;
-        candidate.origin_session_charge = origin_session_charge;
-        candidate.adoption_peak = adoption_peak;
         self.stage = SessionStage::Ready;
         Ok(())
     }
