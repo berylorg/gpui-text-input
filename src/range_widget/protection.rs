@@ -22,6 +22,12 @@ pub(super) struct ProtectedResident {
 }
 
 impl RangeTextInput {
+    pub(super) fn invalidate_resident_protection(&mut self) {
+        if let Some(protected) = self.resident_protection.as_mut() {
+            protected.invalidated = true;
+        }
+    }
+
     pub fn protect_resident(
         &mut self,
         cx: &mut Context<Self>,

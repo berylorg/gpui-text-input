@@ -525,6 +525,12 @@ mod resident_protection;
 #[path = "prepublication/resident_reservation.rs"]
 mod resident_reservation;
 
+#[path = "prepublication/resident_adoption.rs"]
+mod resident_adoption;
+
+#[path = "prepublication/resident_ordinary.rs"]
+mod resident_ordinary;
+
 #[path = "prepublication/cleanup_capacity_cases.rs"]
 mod cleanup_capacity_cases;
 

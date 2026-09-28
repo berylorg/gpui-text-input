@@ -57,6 +57,7 @@ enum DispatchedClipboard {
 
 pub struct RangeTextInput {
     focus_handle: FocusHandle,
+    text_system: std::sync::Weak<gpui::WindowTextSystem>,
     enabled: bool,
     resident_protection: Option<protection::ProtectedResident>,
     protection_generation: u64,
@@ -440,6 +441,7 @@ impl RangeTextInput {
         };
         let mut this = Self {
             focus_handle: cx.focus_handle(),
+            text_system: std::sync::Arc::downgrade(window.text_system()),
             enabled: true,
             resident_protection: None,
             protection_generation: 0,

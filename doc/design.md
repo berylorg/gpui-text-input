@@ -885,6 +885,15 @@ without changing the predecessor. The host owns at most one preparation flight p
 settles the previous flight and cleanup before retry; the reservation is no process-wide governor.
 Final adoption consumes and rechecks the reservation with its matching candidate and live resident.
 
+`RangeTextInput::adopt_resident_successor` consumes that reservation and candidate, taking the
+same immutable environment and fresh `RangePrepublicationCurrent` evidence. Its available capacity
+is the successor portion of the reservation; it cannot enlarge the reserved combined envelope.
+The widget rechecks the protected predecessor and its working-set charge, prepares replacement
+source coordinators, and commits the ready publication without creating another widget. The
+original window text-system identity remains required. Success invalidates the consumed protection
+cut for further preparation while retaining its interaction fence until explicit release; ordinary
+request identifiers and scrollbar generations advance without reuse.
+
 Success consumes the candidate once and publishes its coherent binding, geometry, caret,
 selection, scroll and exact history frontier together through the ordinary staged-publication
 boundary. Resident identity, focus handle, subscriptions and the host's interaction fence survive.

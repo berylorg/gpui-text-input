@@ -1,3 +1,7 @@
+mod resident;
+
+pub(super) use resident::PreparedResidentPublication;
+
 use std::{collections::VecDeque, mem::size_of};
 
 use gpui::Context;

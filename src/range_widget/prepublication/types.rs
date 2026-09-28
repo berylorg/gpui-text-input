@@ -193,6 +193,8 @@ pub struct RangePrepublicationOwnership {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RangePrepublicationAdoptionError {
+    PredecessorMismatch,
+    ReservationMismatch,
     EnvironmentMismatch,
     SourceMismatch,
     HistoryMismatch,

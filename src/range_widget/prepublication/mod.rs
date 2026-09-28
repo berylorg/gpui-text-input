@@ -1,5 +1,6 @@
 mod adopted_custody;
 mod adoption;
+mod resident_adoption;
 mod cleanup;
 mod session;
 mod types;

@@ -11,66 +11,7 @@ impl RangeTextInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<Self, RangePrepublicationAdoptionError> {
-        if !environment.matches_candidate(&candidate.environment)
-            || environment.id() != candidate.environment_id
-            || !environment.matches_text_system(window.text_system())
-            || !candidate.text_system.upgrade().is_some_and(|text_system| {
-                std::sync::Arc::ptr_eq(&text_system, window.text_system())
-            })
-        {
-            return Err(RangePrepublicationAdoptionError::EnvironmentMismatch);
-        }
-        super::validate_seed(candidate.seed, environment.config())
-            .map_err(|_| RangePrepublicationAdoptionError::SourceMismatch)?;
-        if current.binding != candidate.seed.binding
-            || candidate.validation.binding != current.binding
-            || !candidate.validation.current
-        {
-            return Err(RangePrepublicationAdoptionError::SourceMismatch);
-        }
-        if current.history != candidate.seed.history
-            || candidate.validation.history != current.history
-        {
-            return Err(RangePrepublicationAdoptionError::HistoryMismatch);
-        }
-        let configured = crate::RangeSurfaceCharge {
-            bytes: environment.config().limits.max_surface_bytes,
-            items: environment.config().limits.max_surface_items,
-        };
-        if !charge_fits(current.available_capacity, configured)
-            || !charge_fits(candidate.adoption_peak, current.available_capacity)
-        {
-            return Err(RangePrepublicationAdoptionError::CapacityMismatch);
-        }
-        let requested = environment
-            .config()
-            .style
-            .cloned_run_storage_charge()
-            .ok_or(RangePrepublicationAdoptionError::CapacityMismatch)?;
-        let config = environment.config().clone();
-        let actual = config
-            .style
-            .retained_run_storage_charge()
-            .ok_or(RangePrepublicationAdoptionError::CapacityMismatch)?;
-        let actual_peak = crate::RangeSurfaceCharge {
-            bytes: candidate
-                .adoption_peak
-                .bytes
-                .checked_sub(requested.bytes)
-                .and_then(|bytes| bytes.checked_add(actual.bytes))
-                .ok_or(RangePrepublicationAdoptionError::CapacityMismatch)?,
-            items: candidate
-                .adoption_peak
-                .items
-                .checked_sub(requested.items)
-                .and_then(|items| items.checked_add(actual.items))
-                .ok_or(RangePrepublicationAdoptionError::CapacityMismatch)?,
-        };
-        if !charge_fits(actual_peak, configured)
-            || !charge_fits(actual_peak, current.available_capacity)
-        {
-            return Err(RangePrepublicationAdoptionError::CapacityMismatch);
-        }
+        let config = checked_adoption_config(environment, &candidate, current, window)?;
         let seed = candidate.seed;
         let surface_charge = candidate.surface_charge;
         let next_id = candidate.next_id;
@@ -102,4 +43,73 @@ impl RangeTextInput {
         input.install_adopted_prepublication_custody(custody);
         Ok(input)
     }
+}
+
+pub(super) fn checked_adoption_config(
+    environment: &RangePrepublicationEnvironment,
+    candidate: &super::RangePrepublicationCandidate,
+    current: RangePrepublicationCurrent,
+    window: &Window,
+) -> Result<crate::RangeTextInputConfig, RangePrepublicationAdoptionError> {
+    if !environment.matches_candidate(&candidate.environment)
+        || environment.id() != candidate.environment_id
+        || !environment.matches_text_system(window.text_system())
+        || !candidate
+            .text_system
+            .upgrade()
+            .is_some_and(|text_system| std::sync::Arc::ptr_eq(&text_system, window.text_system()))
+    {
+        return Err(RangePrepublicationAdoptionError::EnvironmentMismatch);
+    }
+    super::validate_seed(candidate.seed, environment.config())
+        .map_err(|_| RangePrepublicationAdoptionError::SourceMismatch)?;
+    if current.binding != candidate.seed.binding
+        || candidate.validation.binding != current.binding
+        || !candidate.validation.current
+    {
+        return Err(RangePrepublicationAdoptionError::SourceMismatch);
+    }
+    if current.history != candidate.seed.history || candidate.validation.history != current.history
+    {
+        return Err(RangePrepublicationAdoptionError::HistoryMismatch);
+    }
+    let configured = crate::RangeSurfaceCharge {
+        bytes: environment.config().limits.max_surface_bytes,
+        items: environment.config().limits.max_surface_items,
+    };
+    if !charge_fits(current.available_capacity, configured)
+        || !charge_fits(candidate.adoption_peak, current.available_capacity)
+    {
+        return Err(RangePrepublicationAdoptionError::CapacityMismatch);
+    }
+    let requested = environment
+        .config()
+        .style
+        .cloned_run_storage_charge()
+        .ok_or(RangePrepublicationAdoptionError::CapacityMismatch)?;
+    let config = environment.config().clone();
+    let actual = config
+        .style
+        .retained_run_storage_charge()
+        .ok_or(RangePrepublicationAdoptionError::CapacityMismatch)?;
+    let actual_peak = crate::RangeSurfaceCharge {
+        bytes: candidate
+            .adoption_peak
+            .bytes
+            .checked_sub(requested.bytes)
+            .and_then(|bytes| bytes.checked_add(actual.bytes))
+            .ok_or(RangePrepublicationAdoptionError::CapacityMismatch)?,
+        items: candidate
+            .adoption_peak
+            .items
+            .checked_sub(requested.items)
+            .and_then(|items| items.checked_add(actual.items))
+            .ok_or(RangePrepublicationAdoptionError::CapacityMismatch)?,
+    };
+    if !charge_fits(actual_peak, configured)
+        || !charge_fits(actual_peak, current.available_capacity)
+    {
+        return Err(RangePrepublicationAdoptionError::CapacityMismatch);
+    }
+    Ok(config)
 }
