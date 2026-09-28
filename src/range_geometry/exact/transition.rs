@@ -162,8 +162,9 @@ impl ExactGeometryOwner {
         }
         let inputs = self.inputs()?;
         let key = GeometryJobKey::new(self.key, job_id);
-        let active = self.prepare_index_active(inputs, key, request_id, self.fixed_bytes())?;
-        self.finish_prepared(
+        let (active, budget) =
+            self.prepare_index_active(inputs, key, request_id, self.fixed_bytes())?;
+        let prepared = self.finish_prepared(
             self.key,
             None,
             PreparedGeometryState::Index(active),
@@ -171,7 +172,8 @@ impl ExactGeometryOwner {
             job_id,
             Some(request_id),
             false,
-        )
+        )?;
+        self.admit_index_startup_peak(prepared, budget)
     }
 
     pub(crate) fn prepare_layout_and_index(
@@ -376,8 +378,8 @@ impl ExactGeometryOwner {
             .total_bytes()
             .saturating_add(accounting::input_counts(&inputs).total_bytes());
         let job_key = GeometryJobKey::new(key, job_id);
-        let active = self.prepare_index_active(&inputs, job_key, request_id, fixed)?;
-        self.finish_prepared(
+        let (active, budget) = self.prepare_index_active(&inputs, job_key, request_id, fixed)?;
+        let prepared = self.finish_prepared(
             key,
             Some(inputs),
             PreparedGeometryState::Index(active),
@@ -385,7 +387,8 @@ impl ExactGeometryOwner {
             job_id,
             Some(request_id),
             reset_object_request,
-        )
+        )?;
+        self.admit_index_startup_peak(prepared, budget)
     }
 
     pub(crate) fn prepare_target_replacement(
@@ -672,7 +675,7 @@ impl ExactGeometryOwner {
         key: GeometryJobKey,
         request_id: PageRequestId,
         fixed: usize,
-    ) -> Result<Box<ActiveJob>, ExactGeometryError> {
+    ) -> Result<(Box<ActiveJob>, AdmissionBudget), ExactGeometryError> {
         self.admit_transition_request_id(request_id)?;
         let source_len = usize::try_from(inputs.binding.extent().byte_len())
             .map_err(|_| ExactGeometryError::SourceContract)?;
@@ -736,7 +739,34 @@ impl ExactGeometryOwner {
         )?;
         active.pending = Some(Box::new(PendingInput::Text(page_key)));
         accounting::ensure_active(&mut active)?;
-        Ok(Box::new(active))
+        Ok((Box::new(active), budget))
+    }
+
+    fn admit_index_startup_peak(
+        &self,
+        mut prepared: PreparedGeometryTransition,
+        budget: AdmissionBudget,
+    ) -> Result<PreparedGeometryTransition, ExactGeometryError> {
+        let inputs = prepared
+            .inputs
+            .as_deref()
+            .map_or(Default::default(), accounting::input_counts);
+        let peak_bytes = budget
+            .peak_bytes
+            .checked_add(inputs.total_bytes())
+            .ok_or(ExactGeometryError::CapacityExceeded)?;
+        let peak_items = budget
+            .peak_items
+            .checked_add(inputs.total_items())
+            .ok_or(ExactGeometryError::CapacityExceeded)?;
+        prepared.admission_required_bytes = prepared.admission_required_bytes.max(peak_bytes);
+        prepared.admission_required_items = prepared.admission_required_items.max(peak_items);
+        if prepared.admission_required_bytes > self.limits.max_retained_bytes
+            || prepared.admission_required_items > self.limits.max_retained_items
+        {
+            return Err(ExactGeometryError::CapacityExceeded);
+        }
+        Ok(prepared)
     }
 
     fn prepare_target_active_for_inputs(

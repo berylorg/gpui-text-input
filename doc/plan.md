@@ -4,11 +4,11 @@ Implement the capacity prerequisite for preserved resident adoption from
 [the package contract](design.md#range-backed-preserved-resident-adoption), coordinated by
 the Beryl root plan. Resident protection, accounting and publication remain separate work.
 
-# Phase 16: Admit Prepared Index Startup Before Allocation (finished)
+# Phase 17: Preserve Prepared Index Startup Admission Peaks (finished)
 
-Prepared index startup admits the origin checkpoint, job and pending request with current ownership
-before allocation. Independent review accepted allocation ordering, component bounds and unchanged
-refusal custody; all 188 geometry, prepublication and range-widget tests passed.
+Prepared index transitions retain startup checkpoint coexistence peaks in admission and committed
+high-water evidence, including replacement input ownership. Independent review accepted checked
+peak propagation and unchanged refusal custody; all 188 geometry, prepublication and widget tests passed.
 
 # Phase 2: Enforce Capacity Throughout Preparation (pending)
 
@@ -17,5 +17,5 @@ including resident-response paths and candidate/ready/transition ownership peaks
 byte/item budgets during progress and exact cleanup with independent resource review. Combined
 preserved-resident reservation must not rely on the admission API until this boundary is accepted.
 Cover prepared target transitions, prepared-publication collections and bounded returned GPUI custody.
-Propagate the prepared index startup transient peak into enclosing admission evidence before host use.
+Carry prepared transition peak evidence through enclosing host admission before host use.
 Dependency-private shaping scratch is outside this reservation; retain finite layout input limits.
