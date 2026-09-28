@@ -4,21 +4,12 @@ Implement the capacity prerequisite for preserved resident adoption from
 [the package contract](design.md#range-backed-preserved-resident-adoption), coordinated by
 the Beryl root plan. Resident protection, accounting and publication remain separate work.
 
-# Phase 91: Admit Initial Session Index Preparation (finished)
+# Phase 92: Admit Delivered Text Residency Preparation (finished)
 
-Initial index growth is admitted before allocation under enclosing capacity. Retry preserves
-identity and restoration custody; configured shortfalls remain terminal. All 250 integration and
-115 unit tests pass, default-feature check passes, and independent review accepted the correction.
-Overall phase 2 acceptance remains pending.
-
-# Phase 92: Admit Delivered Text Residency Preparation (pending)
-
-Gate disposition and replacement-deque coexistence before delivered text residency allocation.
-Retain the exact response, waiting identity and cleanup custody on enclosing refusal, preserve
-configured failure precedence, and propagate peaks. Verify replacement of an existing resident
-under current, byte/item one-under and exact capacity, repeated retry, continuation and cleanup
-with independent review. Delivered-object proof and residency preparation remain an unresolved
-checkpoint of overall phase 2 review.
+Delivered text residency storage is admitted before allocation and response consumption, preserving
+identity and custody on retry. Independent review accepted the boundary; all 264 integration and
+115 unit tests plus default-feature checks pass. Overall phase 2 and object preparation review
+remain pending. Detailed evidence and limitations are in Beryl's capacity failure record.
 
 # Phase 2: Enforce Capacity Throughout Preparation (pending)
 
@@ -30,7 +21,7 @@ owners are charged once. Finite shaping inputs remain required; dependency-priva
 allocator/RSS accounting are outside this reservation.
 
 Initial index admission and allocation-free retirement close the latest overall review findings.
-Current implementation passes 250 integration and 115 unit tests plus the default-feature check.
+Current implementation passes 264 integration and 115 unit tests plus the default-feature check.
 Independent overall resource review remains required before preserved resident reservation.
 Detailed accepted components and evidence limitations are retained in Beryl's
 `doc/failures/prepublication-capacity.md`.

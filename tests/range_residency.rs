@@ -33,6 +33,52 @@ fn requested_key(demand: PageDemand) -> PageRequestKey {
 }
 
 #[test]
+fn overlap_eviction_precedes_fifo_eviction_under_byte_pressure() {
+    let mut residency = RangeResidency::new(binding(1, 24), limits(4, 12, 4, 32));
+    let demands = [
+        adjacent(0, PageDirection::Forward, 4),
+        adjacent(8, PageDirection::Forward, 4),
+        adjacent(16, PageDirection::Forward, 4),
+        adjacent(16, PageDirection::Backward, 8),
+    ];
+    let keys: Vec<_> = demands
+        .into_iter()
+        .enumerate()
+        .map(|(index, demand)| {
+            requested_key(
+                residency
+                    .demand(
+                        PageRequestId::new(index as u64 + 1),
+                        PagePurpose::GeometryTarget,
+                        demand,
+                    )
+                    .unwrap(),
+            )
+        })
+        .collect();
+    for (index, range) in [(0, (0, 4)), (1, (8, 12)), (2, (16, 20))] {
+        residency
+            .admit(page(keys[index], index as u64 + 1, range, "abcd", 24).unwrap())
+            .unwrap();
+    }
+    assert_eq!(
+        residency
+            .admit(page(keys[3], 4, (8, 16), "abcdefgh", 24).unwrap())
+            .unwrap(),
+        gpui_text_input::PageAdmission::Admitted {
+            page: PageId::new(4),
+            evicted_pages: 2
+        }
+    );
+    let retained: Vec<_> = residency
+        .take_resident_pages()
+        .into_iter()
+        .map(|page| page.id())
+        .collect();
+    assert_eq!(retained, vec![PageId::new(3), PageId::new(4)]);
+}
+
+#[test]
 fn coalesced_demand_redemands_as_resident_or_its_own_exact_request_after_settlement() {
     let demand = adjacent(0, PageDirection::Forward, 4);
 

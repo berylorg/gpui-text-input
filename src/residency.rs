@@ -7,6 +7,7 @@ use crate::range_source::{
     PageRequest, PageRequestId, PageRequestKey, RangeBinding, RangeContractError, RangePage,
 };
 
+mod admission;
 mod types;
 
 pub use types::*;
@@ -696,169 +697,14 @@ impl RangeResidency {
         Ok(self.commit_prepared_admit(prepared))
     }
 
-    /// Prepares one page admission without mutating residency, request, or cancellation state.
     pub(crate) fn prepare_admit(
         &self,
         page: RangePage,
     ) -> Result<PreparedRangePageAdmission, PageAdmissionError> {
-        let key = page.key();
-        self.check_current(key)?;
-        #[cfg(test)]
-        if self.force_next_admission_limit.replace(false) {
-            return Err(PageAdmissionError::LimitExceeded(
-                ResidencyLimitKind::ResidentBytes,
-            ));
-        }
-        let Some(pending_index) = self.pending.iter().position(|pending| *pending == key) else {
-            if self.cancelled.contains(&key) {
-                return Err(PageAdmissionError::Cancelled(key));
-            }
-            return Err(PageAdmissionError::Unavailable(key));
-        };
-
-        if let Err(error) = self.validate_page(&page) {
-            return Err(PageAdmissionError::Malformed(error));
-        }
-        if page.retained_bytes() > self.limits.max_resident_bytes() {
-            return Err(PageAdmissionError::LimitExceeded(
-                ResidencyLimitKind::ResidentBytes,
-            ));
-        }
-
-        let mut disposition = vec![ResidentDisposition::Retain; self.resident.len()];
-        let mut evicted_pages: usize = 0;
-        let mut surviving_pages = self.resident.len();
-        let mut surviving_payload_bytes = self.resident_bytes;
-        for (index, resident) in self.resident.iter().enumerate() {
-            let overlaps = resident.range().overlaps(page.range()) || resident.id() == page.id();
-            if overlaps {
-                disposition[index] = ResidentDisposition::Evict;
-                surviving_pages =
-                    surviving_pages
-                        .checked_sub(1)
-                        .ok_or(PageAdmissionError::LimitExceeded(
-                            ResidencyLimitKind::ResidentPages,
-                        ))?;
-                surviving_payload_bytes = surviving_payload_bytes
-                    .checked_sub(resident.retained_bytes())
-                    .ok_or(PageAdmissionError::LimitExceeded(
-                        ResidencyLimitKind::ResidentBytes,
-                    ))?;
-                evicted_pages =
-                    evicted_pages
-                        .checked_add(1)
-                        .ok_or(PageAdmissionError::LimitExceeded(
-                            ResidencyLimitKind::ResidentPages,
-                        ))?;
-            }
-        }
-
-        let mut index = 0;
-        while surviving_pages >= self.limits.max_resident_pages()
-            || surviving_payload_bytes
-                .checked_add(page.retained_bytes())
-                .is_none_or(|bytes| bytes > self.limits.max_resident_bytes())
-        {
-            while disposition[index] == ResidentDisposition::Evict {
-                index += 1;
-            }
-            disposition[index] = ResidentDisposition::Evict;
-            surviving_pages =
-                surviving_pages
-                    .checked_sub(1)
-                    .ok_or(PageAdmissionError::LimitExceeded(
-                        ResidencyLimitKind::ResidentPages,
-                    ))?;
-            surviving_payload_bytes = surviving_payload_bytes
-                .checked_sub(self.resident[index].retained_bytes())
-                .ok_or(PageAdmissionError::LimitExceeded(
-                    ResidencyLimitKind::ResidentBytes,
-                ))?;
-            index += 1;
-            evicted_pages =
-                evicted_pages
-                    .checked_add(1)
-                    .ok_or(PageAdmissionError::LimitExceeded(
-                        ResidencyLimitKind::ResidentPages,
-                    ))?;
-        }
-
-        let page_id = page.id();
-        let resident_bytes = surviving_payload_bytes
-            .checked_add(page.retained_bytes())
-            .ok_or(PageAdmissionError::LimitExceeded(
-                ResidencyLimitKind::ResidentBytes,
-            ))?;
-        let _projected = self
-            .resident
-            .iter()
-            .zip(disposition.iter())
-            .filter(|(_, disposition)| **disposition == ResidentDisposition::Retain)
-            .try_fold((0usize, 0usize), |(bytes, items), (resident, _)| {
-                Some((
-                    bytes.checked_add(resident.retained_charge().bytes())?,
-                    items.checked_add(resident.retained_charge().items())?,
-                ))
-            })
-            .and_then(|(bytes, items)| {
-                Some((
-                    bytes.checked_add(page.retained_charge().bytes())?,
-                    items.checked_add(page.retained_charge().items())?,
-                ))
-            })
-            .ok_or(PageAdmissionError::LimitExceeded(
-                ResidencyLimitKind::ResidentBytes,
-            ))?;
-        let projected_pages =
-            surviving_pages
-                .checked_add(1)
-                .ok_or(PageAdmissionError::LimitExceeded(
-                    ResidencyLimitKind::ResidentPages,
-                ))?;
-        let destination = VecDeque::with_capacity(projected_pages);
-        let retained_bytes = page
-            .retained_charge()
-            .bytes()
-            .checked_add(
-                disposition
-                    .capacity()
-                    .checked_mul(std::mem::size_of::<ResidentDisposition>())
-                    .ok_or(PageAdmissionError::LimitExceeded(
-                        ResidencyLimitKind::ResidentBytes,
-                    ))?,
-            )
-            .and_then(|bytes| {
-                bytes.checked_add(
-                    destination
-                        .capacity()
-                        .checked_mul(std::mem::size_of::<RangePage>())?,
-                )
-            })
-            .ok_or(PageAdmissionError::LimitExceeded(
-                ResidencyLimitKind::ResidentBytes,
-            ))?;
-        let retained_items = page
-            .retained_charge()
-            .items()
-            .checked_add(disposition.capacity())
-            .and_then(|items| items.checked_add(destination.capacity()))
-            .ok_or(PageAdmissionError::LimitExceeded(
-                ResidencyLimitKind::ResidentPages,
-            ))?;
-        Ok(PreparedRangePageAdmission {
-            page,
-            pending_index,
-            disposition,
-            destination,
-            admission: PageAdmission::Admitted {
-                page: page_id,
-                evicted_pages,
-            },
-            resident_bytes,
-            projected_pages,
-            retained_bytes,
-            retained_items,
-        })
+        Ok(self
+            .prepare_admit_storage(&page, |_, _| true)?
+            .expect("unlimited preparation accepts storage")
+            .with_page(page))
     }
 
     /// Commits a prepared page admission by moving into already allocated destination storage.

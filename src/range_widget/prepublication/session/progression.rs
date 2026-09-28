@@ -14,13 +14,7 @@ impl RangePrepublicationSession {
             return self.advance_admitted_geometry(text_system, effects);
         }
         if self.delivered.is_some() {
-            let coexistence = self
-                .response_coexistence_charge()
-                .ok_or(RangePrepublicationFailure::Arithmetic)?;
-            if !charge_fits(coexistence, self.available) {
-                return Ok(false);
-            }
-            return self.process_delivered(text_system, effects).map(|_| true);
+            return self.process_delivered(text_system, effects);
         }
         if self.waiting.is_some() {
             return Ok(false);

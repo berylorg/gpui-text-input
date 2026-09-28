@@ -141,8 +141,62 @@ impl RangePrepublicationSession {
     pub(super) fn process_delivered(
         &mut self,
         _text_system: &WindowTextSystem,
-        _effects: &mut EffectBuffer,
-    ) -> Result<(), RangePrepublicationFailure> {
+        effects: &mut EffectBuffer,
+    ) -> Result<bool, RangePrepublicationFailure> {
+        let coexistence = add_charge(
+            self.response_coexistence_charge()
+                .ok_or(RangePrepublicationFailure::Arithmetic)?,
+            multiply_charge(
+                RangeSurfaceCharge {
+                    bytes: std::mem::size_of::<RangePrepublicationEffect>(),
+                    items: 1,
+                },
+                effects.len(),
+            )
+            .ok_or(RangePrepublicationFailure::Arithmetic)?,
+        )?;
+        let storage = if let Some(DeliveredResponse::Page(page)) = self.delivered.as_ref() {
+            if !matches!(
+                self.waiting,
+                Some(Waiting::RestorationPage { .. } | Waiting::GeometryPage { .. })
+            ) {
+                return Err(RangePrepublicationFailure::Stale);
+            }
+            let configured = configured_capacity(self.environment.config());
+            let available = self.available;
+            let mut peak = coexistence;
+            let mut failure = None;
+            let prepared = self.residency.prepare_admit_storage(page, |bytes, items| {
+                let charge = match add_charge(coexistence, RangeSurfaceCharge { bytes, items }) {
+                    Ok(charge) => charge,
+                    Err(error) => {
+                        failure = Some(error);
+                        return false;
+                    }
+                };
+                peak.bytes = peak.bytes.max(charge.bytes);
+                peak.items = peak.items.max(charge.items);
+                if !charge_fits(charge, configured) {
+                    failure = Some(RangePrepublicationFailure::TerminalCapacity);
+                    return false;
+                }
+                charge_fits(charge, available)
+            });
+            self.observe_charge(peak);
+            if let Some(failure) = failure {
+                return Err(failure);
+            }
+            let Some(prepared) = prepared.map_err(classify_page_admission)? else {
+                self.ledger_blocked = true;
+                return Ok(false);
+            };
+            Some(prepared)
+        } else {
+            if !charge_fits(coexistence, self.available) {
+                return Ok(false);
+            }
+            None
+        };
         let response = self.delivered.take().expect("delivered response checked");
         let waiting = self
             .waiting
@@ -164,9 +218,11 @@ impl RangePrepublicationSession {
                 }
             }
             (Waiting::RestorationPage { cleanup, .. }, DeliveredResponse::Page(page)) => {
-                let page_id = match self.residency.admit(page) {
-                    Ok(crate::PageAdmission::Admitted { page, .. }) => page,
-                    Err(error) => return Err(classify_page_admission(error)),
+                let page_id = match self
+                    .residency
+                    .commit_prepared_admit(storage.expect("text storage prepared").with_page(page))
+                {
+                    crate::PageAdmission::Admitted { page, .. } => page,
                 };
                 let page = self
                     .residency
@@ -197,9 +253,11 @@ impl RangePrepublicationSession {
                 self.retain_object_custody(page_id, cleanup)?;
             }
             (Waiting::GeometryPage { job, cleanup, .. }, DeliveredResponse::Page(page)) => {
-                let page_id = match self.residency.admit(page) {
-                    Ok(crate::PageAdmission::Admitted { page, .. }) => page,
-                    Err(error) => return Err(classify_page_admission(error)),
+                let page_id = match self
+                    .residency
+                    .commit_prepared_admit(storage.expect("text storage prepared").with_page(page))
+                {
+                    crate::PageAdmission::Admitted { page, .. } => page,
                 };
                 self.retain_text_custody(page_id, cleanup)?;
                 self.waiting = Some(waiting);
@@ -238,6 +296,6 @@ impl RangePrepublicationSession {
             }
             _ => return Err(RangePrepublicationFailure::Stale),
         }
-        Ok(())
+        Ok(true)
     }
 }

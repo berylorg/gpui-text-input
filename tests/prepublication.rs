@@ -29,6 +29,10 @@ mod admitted_response;
 #[cfg(feature = "test-support")]
 mod initial_index;
 
+#[path = "prepublication/delivered_text.rs"]
+#[cfg(feature = "test-support")]
+mod delivered_text;
+
 #[path = "prepublication/candidate_highlights.rs"]
 #[cfg(feature = "test-support")]
 mod candidate_highlights;

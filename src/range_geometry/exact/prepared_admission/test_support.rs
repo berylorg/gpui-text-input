@@ -480,6 +480,17 @@ pub fn session_initial_index_identity(session: &crate::RangePrepublicationSessio
     session.initial_index_identity_for_test()
 }
 
+pub fn session_delivered_text_preparation(
+    session: &crate::RangePrepublicationSession,
+) -> Option<(
+    crate::PageRequestKey,
+    u64,
+    crate::RangeSurfaceCharge,
+    crate::RangeSurfaceCharge,
+)> {
+    session.delivered_text_preparation_for_test()
+}
+
 pub fn session_initial_index_peak(
     session: &crate::RangePrepublicationSession,
 ) -> Option<crate::RangeSurfaceCharge> {
