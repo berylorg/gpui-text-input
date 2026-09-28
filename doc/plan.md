@@ -4,11 +4,11 @@ Implement the capacity prerequisite for preserved resident adoption from
 [the package contract](design.md#range-backed-preserved-resident-adoption), coordinated by
 the Beryl root plan. Resident protection, accounting and publication remain separate work.
 
-# Phase 46: Reserve Transient Inline Style Runs Through Layout (finished)
+# Phase 47: Qualify Shared Presentation Preparation Peaks (finished)
 
-Inline-object and oversize style-run buffers remain charged through GPUI reservation and output
-coexistence, without double counting ordinary text's transferred runs. Independent resource review
-accepted the boundary; all 213 integration tests passed.
+Independent review accepted the preparation ownership map recorded in Beryl's capacity failure
+note. It covers prospective display credit before metadata and separate continuation-only GPUI
+startup admission. No production code changed; full preparation capacity remains pending.
 
 # Phase 2: Enforce Capacity Throughout Preparation (pending)
 
@@ -21,6 +21,9 @@ The admitted response state now retains delivered or resident inputs without re-
 current capacity is unavailable. Internal immutable preparation accepts enclosing ceilings; derive
 the session budget with shared presentation charged once and route typed retryable refusals through
 that state. Admitted responses retain successor identities without per-attempt counter mutation.
+Observe configured and enclosing charges separately at each peak; final retained overlap cannot
+correct earlier peaks. Prospective display credit must not subsidize GPUI continuation-only startup.
+Carry it through pre-copy, detached custody, output before metadata and publication observations.
 Deferred presentation backing now shares correctly and participates in retained overlap queries.
 Explicit preparation admission now carries typed configured/enclosing refusal attribution.
 Do not infer host attribution from ambiguous GPUI errors. Five older baseline unit failures remain
