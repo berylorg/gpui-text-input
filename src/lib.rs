@@ -53,6 +53,8 @@ pub use range_edit::{
     MutationPositions, MutationProposal, MutationSettlement, MutationState, MutationStreamFinish,
     MutationTotals, ObjectChange, ObjectTarget, OperationId, RangeEditCoordinator, SuccessorObject,
 };
+#[cfg(feature = "test-support")]
+pub use range_geometry::preparation_test_support;
 pub use range_geometry::{
     BlockTarget, BlockTargetPublication, ExactGeometryAdmission, ExactGeometryAggregate,
     ExactGeometryCheckpoint, ExactGeometryCounts, ExactGeometryError, ExactGeometryFailure,

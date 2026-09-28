@@ -1,4 +1,7 @@
 use std::sync::Arc;
+#[cfg(feature = "test-support")]
+#[path = "exact_geometry/preparation_ceiling.rs"]
+mod preparation_ceiling;
 use gpui_text_input::{ExactGeometryCounts, ObjectRequestKey, PageRequestKey};
 
 use gpui::{

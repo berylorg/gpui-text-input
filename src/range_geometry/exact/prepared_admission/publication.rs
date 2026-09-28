@@ -669,6 +669,8 @@ impl ExactGeometryOwner {
         &self,
         page_payload_bytes: usize,
         page_items: usize,
+        max_bytes: usize,
+        max_items: usize,
     ) -> Result<AdmissionBudget, ExactGeometryFailure> {
         let counts = self.counts();
         Ok(AdmissionBudget {
@@ -680,8 +682,8 @@ impl ExactGeometryOwner {
             })?,
             page_payload_bytes,
             page_items,
-            max_bytes: self.limits.max_retained_bytes,
-            max_items: self.limits.max_retained_items,
+            max_bytes: max_bytes.min(self.limits.max_retained_bytes),
+            max_items: max_items.min(self.limits.max_retained_items),
             peak_bytes: 0,
             peak_items: 0,
             failure_stage: None,

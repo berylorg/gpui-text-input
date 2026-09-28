@@ -21,6 +21,8 @@ use super::{
 mod publication;
 mod release;
 mod target_arrays;
+#[cfg(feature = "test-support")]
+pub mod test_support;
 
 #[derive(Debug)]
 pub(crate) struct PreparedTargetResponse {
@@ -283,7 +285,16 @@ impl ExactGeometryOwner {
         text_system: &WindowTextSystem,
         successor: TargetResponseSuccessor,
     ) -> Result<PreparedTargetResponse, ExactGeometryFailure> {
-        self.prepare_response_page_inner(key, page, text_system, false, false, successor)
+        self.prepare_response_page_with_capacity(
+            key,
+            page,
+            text_system,
+            false,
+            false,
+            successor,
+            self.limits.max_retained_bytes,
+            self.limits.max_retained_items,
+        )
     }
 
     pub(crate) fn prepare_target_resident_page(
@@ -293,7 +304,16 @@ impl ExactGeometryOwner {
         text_system: &WindowTextSystem,
         successor: TargetResponseSuccessor,
     ) -> Result<PreparedTargetResponse, ExactGeometryFailure> {
-        self.prepare_response_page_inner(key, page, text_system, true, false, successor)
+        self.prepare_response_page_with_capacity(
+            key,
+            page,
+            text_system,
+            true,
+            false,
+            successor,
+            self.limits.max_retained_bytes,
+            self.limits.max_retained_items,
+        )
     }
 
     pub(crate) fn prepare_index_page(
@@ -303,7 +323,16 @@ impl ExactGeometryOwner {
         text_system: &WindowTextSystem,
         successor: TargetResponseSuccessor,
     ) -> Result<PreparedTargetResponse, ExactGeometryFailure> {
-        self.prepare_response_page_inner(key, page, text_system, false, true, successor)
+        self.prepare_response_page_with_capacity(
+            key,
+            page,
+            text_system,
+            false,
+            true,
+            successor,
+            self.limits.max_retained_bytes,
+            self.limits.max_retained_items,
+        )
     }
 
     pub(crate) fn prepare_index_resident_page(
@@ -313,10 +342,20 @@ impl ExactGeometryOwner {
         text_system: &WindowTextSystem,
         successor: TargetResponseSuccessor,
     ) -> Result<PreparedTargetResponse, ExactGeometryFailure> {
-        self.prepare_response_page_inner(key, page, text_system, true, true, successor)
+        self.prepare_response_page_with_capacity(
+            key,
+            page,
+            text_system,
+            true,
+            true,
+            successor,
+            self.limits.max_retained_bytes,
+            self.limits.max_retained_items,
+        )
     }
 
-    fn prepare_response_page_inner(
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_response_page_with_capacity(
         &self,
         key: crate::GeometryJobKey,
         page: &RangePage,
@@ -324,6 +363,8 @@ impl ExactGeometryOwner {
         resident: bool,
         index: bool,
         successor: TargetResponseSuccessor,
+        max_bytes: usize,
+        max_items: usize,
     ) -> Result<PreparedTargetResponse, ExactGeometryFailure> {
         let active = self.response_active(key, index)?;
         let Some(PendingInput::Text(expected)) = active.pending.as_deref().copied() else {
@@ -337,6 +378,8 @@ impl ExactGeometryOwner {
         let mut budget = self.prepared_budget(
             page.retained_charge().bytes(),
             page.retained_charge().items(),
+            max_bytes,
+            max_items,
         )?;
         admit_response_continuation(&mut budget, active)?;
         let (mut candidate, shared) = copy_response_continuation(active)
@@ -441,7 +484,7 @@ impl ExactGeometryOwner {
         text_system: &WindowTextSystem,
         successor: TargetResponseSuccessor,
     ) -> Result<PreparedTargetResponse, ExactGeometryFailure> {
-        self.prepare_response_object_page(
+        self.prepare_response_object_page_with_capacity(
             key,
             text_page,
             object_page,
@@ -449,6 +492,8 @@ impl ExactGeometryOwner {
             false,
             false,
             successor,
+            self.limits.max_retained_bytes,
+            self.limits.max_retained_items,
         )
     }
 
@@ -460,7 +505,7 @@ impl ExactGeometryOwner {
         text_system: &WindowTextSystem,
         successor: TargetResponseSuccessor,
     ) -> Result<PreparedTargetResponse, ExactGeometryFailure> {
-        self.prepare_response_object_page(
+        self.prepare_response_object_page_with_capacity(
             key,
             text_page,
             object_page,
@@ -468,6 +513,8 @@ impl ExactGeometryOwner {
             false,
             true,
             successor,
+            self.limits.max_retained_bytes,
+            self.limits.max_retained_items,
         )
     }
 
@@ -479,7 +526,7 @@ impl ExactGeometryOwner {
         text_system: &WindowTextSystem,
         successor: TargetResponseSuccessor,
     ) -> Result<PreparedTargetResponse, ExactGeometryFailure> {
-        self.prepare_response_object_page(
+        self.prepare_response_object_page_with_capacity(
             key,
             text_page,
             object_page,
@@ -487,6 +534,8 @@ impl ExactGeometryOwner {
             true,
             false,
             successor,
+            self.limits.max_retained_bytes,
+            self.limits.max_retained_items,
         )
     }
 
@@ -498,7 +547,7 @@ impl ExactGeometryOwner {
         text_system: &WindowTextSystem,
         successor: TargetResponseSuccessor,
     ) -> Result<PreparedTargetResponse, ExactGeometryFailure> {
-        self.prepare_response_object_page(
+        self.prepare_response_object_page_with_capacity(
             key,
             text_page,
             object_page,
@@ -506,11 +555,13 @@ impl ExactGeometryOwner {
             true,
             true,
             successor,
+            self.limits.max_retained_bytes,
+            self.limits.max_retained_items,
         )
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn prepare_response_object_page(
+    pub(crate) fn prepare_response_object_page_with_capacity(
         &self,
         key: crate::GeometryJobKey,
         text_page: &RangePage,
@@ -519,6 +570,8 @@ impl ExactGeometryOwner {
         index: bool,
         resident: bool,
         successor: TargetResponseSuccessor,
+        max_bytes: usize,
+        max_items: usize,
     ) -> Result<PreparedTargetResponse, ExactGeometryFailure> {
         let active = self.response_active(key, index)?;
         let Some(PendingInput::Object(expected)) = active.pending.as_deref().copied() else {
@@ -556,7 +609,7 @@ impl ExactGeometryOwner {
             .ok_or_else(|| {
                 self.prepared_validation_failure(ExactGeometryError::CapacityExceeded)
             })?;
-        let mut budget = self.prepared_budget(page_bytes, page_items)?;
+        let mut budget = self.prepared_budget(page_bytes, page_items, max_bytes, max_items)?;
         admit_response_continuation(&mut budget, active)?;
         let (mut candidate, shared) = copy_response_continuation(active)
             .map_err(|error| self.prepared_validation_failure(error))?;

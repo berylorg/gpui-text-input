@@ -4,11 +4,12 @@ Implement the capacity prerequisite for preserved resident adoption from
 [the package contract](design.md#range-backed-preserved-resident-adoption), coordinated by
 the Beryl root plan. Resident protection, accounting and publication remain separate work.
 
-# Phase 40: Retain Admitted Geometry Response Custody (finished)
+# Phase 41: Carry Enclosing Ceilings Through Immutable Response Preparation (finished)
 
-Admission and preparation now occupy separate bounded work steps, retaining exact waiting identity
-and resident IDs across unavailable current capacity without re-admission. Independent review
-accepted ownership and cleanup; all 209 regression tests passed. Host scan ceilings remain below.
+Internal immutable preparation accepts enclosing ceilings through scan, publication and successor
+preparation, independently clamped to configured limits. Independent review accepted the boundary;
+all 210 integration tests passed. Five older unit failures reproduce on baseline and remain recorded
+in the Beryl capacity failure note. Session budget derivation and retry attribution remain below.
 
 # Phase 2: Enforce Capacity Throughout Preparation (pending)
 
@@ -18,8 +19,9 @@ byte/item budgets during progress and exact cleanup with independent resource re
 preserved-resident reservation must not rely on the admission API until this boundary is accepted.
 Cover prepared target transitions and prepared-publication collections under the host ceiling.
 The admitted response state now retains delivered or resident inputs without re-admission when
-current capacity is unavailable. Propagate host ceilings into immutable preparation and route typed
-retryable refusals through that state; enclosing budget derivation remains required.
+current capacity is unavailable. Internal immutable preparation accepts enclosing ceilings; derive
+the session budget with shared presentation charged once and route typed retryable refusals through
+that state. Do not infer host attribution from ambiguous GPUI errors.
 Returned GPUI custody now uses the geometry budget before invocation.
 Direct response admission accepts enclosing ceilings; host derivation and peak propagation remain
 required before combined resident reservation can use them.

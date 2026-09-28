@@ -21,6 +21,8 @@ mod checkpoint;
 mod lifecycle;
 mod owner;
 mod prepared_admission;
+#[cfg(feature = "test-support")]
+pub use prepared_admission::test_support as preparation_test_support;
 mod scan;
 mod target;
 mod target_output;

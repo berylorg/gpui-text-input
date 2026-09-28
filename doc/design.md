@@ -716,6 +716,11 @@ without advancing; subsequent cancellation, terminal capacity failure, or dispos
 No failure, cancellation, capacity outcome, or stale completion publishes a partial candidate,
 retains unbounded work, revives detached widget state, or changes authoritative text or history.
 
+The optional `test-support` feature exposes `preparation_test_support` for integration qualification
+of immutable response preparation. Its probe reports required capacity and terminal/successor facts,
+and can explicitly commit the prepared result. It delegates to ordinary preparation and commit;
+it is absent without the feature and does not define a production host admission interface.
+
 ## Range-Backed Preserved Resident Adoption
 
 A host may replace a quiescent resident's publication with a ready prepublication candidate

@@ -2,6 +2,8 @@
 
 mod exact;
 mod types;
+#[cfg(feature = "test-support")]
+pub use exact::preparation_test_support;
 
 pub(crate) use exact::{
     PreparedGeometryTransition, PreparedTargetResponse, PreparedTargetSuccessor,
