@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "composite_objects/returned_capacity.rs"]
+mod returned_capacity;
+
 fn object(id: u128, anchor: u64, order: u128, width: f32) -> InlineObjectFact {
     let presentation = InlineObjectPresentation::new(
         id as u64,
@@ -194,7 +197,7 @@ fn inline_style_storage_is_admitted_before_layout(cx: &mut TestAppContext) {
                         .unwrap_err();
                     assert_eq!(failure.admission_required_bytes(), expected.0);
                     assert_eq!(failure.admission_required_items(), expected.1);
-                    if attempt < 2 {
+                    if attempt == 0 {
                         assert!(matches!(
                             failure.error(),
                             ExactGeometryError::Layout(

@@ -132,7 +132,15 @@ fn target_fragment_backing_is_admitted_before_initial_and_repeated_growth(cx: &m
                     assert!(accepted_records > 0);
                 } else {
                     let failure = result.unwrap_err();
-                    assert_eq!(failure.error(), &ExactGeometryError::CapacityExceeded);
+                    assert!(matches!(
+                        failure.error(),
+                        ExactGeometryError::CapacityExceeded
+                            | ExactGeometryError::Layout(
+                                gpui::StreamingLayoutError::CapacityExceeded(
+                                    gpui::StreamingLayoutComponent::Total
+                                )
+                            )
+                    ));
                     assert_eq!(
                         failure.stage(),
                         gpui_text_input::ExactGeometryFailureStage::Scan

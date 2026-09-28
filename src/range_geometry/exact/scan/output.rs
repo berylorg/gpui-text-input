@@ -1,5 +1,7 @@
 use super::*;
 
+mod reservation;
+
 pub(super) fn admit_layout(
     job: &mut ActiveJob,
     text_system: &WindowTextSystem,
@@ -7,13 +9,15 @@ pub(super) fn admit_layout(
     limits: ExactGeometryLimits,
     retain_checkpoint: bool,
     budget: &mut AdmissionBudget,
+    next_position: gpui::StreamingLayoutPosition,
     admit: impl FnOnce(
         &mut gpui::StreamingLayoutSession<'_>,
     ) -> Result<gpui::StreamingLayoutAdmission, gpui::StreamingLayoutError>,
 ) -> Result<bool, ExactGeometryError> {
     let prior = job.scanner.continuation;
+    let reserved_binding = reservation::binding(job, binding, next_position, budget)?;
     let (admission, session_item_charge) = {
-        let mut session = text_system.resume_streaming_layout_session(binding.clone(), prior)?;
+        let mut session = text_system.resume_streaming_layout_session(reserved_binding, prior)?;
         let admission = admit(&mut session)?;
         let retained_items = session.retained_item_charge();
         (admission, retained_items)
@@ -21,8 +25,6 @@ pub(super) fn admit_layout(
     // The returned admission remains live while its continuation and any retained fragment handles
     // enter scanner state. The prior continuation is replaced, but the admission copy coexists at
     // this peak and is therefore charged.
-    job.scanner.continuation = admission.continuation;
-    job.scanner.continuation_items = session_item_charge.total()?;
     let fragment_bytes = super::super::accounting::fragment_record_bytes(admission.fragments.len());
     let full_transient_bytes = admission
         .charge
@@ -34,6 +36,9 @@ pub(super) fn admit_layout(
         .total()?
         .checked_add(admission.fragments.len())
         .ok_or(ExactGeometryError::CapacityExceeded)?;
+    budget.observe(job, full_transient_bytes, full_transient_items)?;
+    job.scanner.continuation = admission.continuation;
+    job.scanner.continuation_items = session_item_charge.total()?;
     let (retained, transient_bytes, transient_items) =
         if matches!(job.kind, ActiveKind::Target { .. }) {
             let ActiveKind::Target { target, anchor, .. } = job.kind else {

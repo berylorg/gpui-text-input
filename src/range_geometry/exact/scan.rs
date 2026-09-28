@@ -420,9 +420,16 @@ fn admit_inline_object(
     // the exact object-source cursor that produced it.
     job.scanner.object_cursor = Some(object.cursor());
     let fragment_start = job.scanner.fragments.len();
-    let retained = admit_layout(job, text_system, binding, limits, true, budget, |session| {
-        session.admit_inline_object(input)
-    })?;
+    let retained = admit_layout(
+        job,
+        text_system,
+        binding,
+        limits,
+        true,
+        budget,
+        trailing.into(),
+        |session| session.admit_inline_object(input),
+    )?;
     if retained {
         let matching_fragments = job.scanner.fragments[fragment_start..]
             .iter()
@@ -516,9 +523,16 @@ fn complete_grapheme(
             delimiter_range: Some(delimiter_start..end_position.into()),
             next_position: end_position.into(),
         };
-        admit_layout(job, text_system, binding, limits, true, budget, |session| {
-            session.finalize_logical_line(finalization)
-        })?;
+        admit_layout(
+            job,
+            text_system,
+            binding,
+            limits,
+            true,
+            budget,
+            end_position.into(),
+            |session| session.finalize_logical_line(finalization),
+        )?;
     } else if let Some(grapheme) = job.scanner.grapheme_text.as_ref() {
         if job
             .scanner
@@ -643,6 +657,7 @@ fn admit_text_segment(
         limits,
         retain_checkpoint,
         budget,
+        end_position.into(),
         |session| session.admit_text(segment),
     )?;
     Ok(())
@@ -697,9 +712,16 @@ fn admit_compact_atom(
     job.scanner.segment_start = range.end().get();
     job.scanner.grapheme_start = range.end().get();
     job.scanner.grapheme_start_cursor = end_cursor.clone();
-    admit_layout(job, text_system, binding, limits, true, budget, |session| {
-        session.admit_oversize_atom(atom)
-    })?;
+    admit_layout(
+        job,
+        text_system,
+        binding,
+        limits,
+        true,
+        budget,
+        end_position.into(),
+        |session| session.admit_oversize_atom(atom),
+    )?;
     Ok(())
 }
 
@@ -757,6 +779,7 @@ pub(super) fn finalize_source(
         limits,
         false,
         budget,
+        end.position,
         |session| session.end_source(end),
     )?;
     super::target_output::finish_target_source(job);

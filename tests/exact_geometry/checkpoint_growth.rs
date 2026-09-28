@@ -97,7 +97,15 @@ fn terminal_checkpoints_preserve_origin_and_bounded_eviction(cx: &mut TestAppCon
                         assert!(checkpoints.last().unwrap().is_terminal());
                     } else {
                         let failure = result.unwrap_err();
-                        assert_eq!(failure.error(), &ExactGeometryError::CapacityExceeded);
+                        assert!(matches!(
+                            failure.error(),
+                            ExactGeometryError::CapacityExceeded
+                                | ExactGeometryError::Layout(
+                                    gpui::StreamingLayoutError::CapacityExceeded(
+                                        gpui::StreamingLayoutComponent::Total
+                                    )
+                                )
+                        ));
                         assert_eq!(failure.release().jobs, vec![job]);
                         assert_eq!(owner.counts().active_job_items, 0);
                         assert!(owner.index().is_none());

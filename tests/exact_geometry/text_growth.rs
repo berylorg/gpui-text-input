@@ -148,7 +148,18 @@ fn text_conversion_refusal_preserves_scanner_storage_until_release(cx: &mut Test
             let failure = owner
                 .admit_object_page(job, &page, &objects, text_system)
                 .unwrap_err();
-            assert_eq!(failure.error(), &ExactGeometryError::CapacityExceeded);
+            assert!(
+                matches!(failure.error(), ExactGeometryError::CapacityExceeded)
+                    || (released_text == 0
+                        && matches!(
+                            failure.error(),
+                            ExactGeometryError::Layout(
+                                gpui::StreamingLayoutError::CapacityExceeded(
+                                    gpui::StreamingLayoutComponent::Total
+                                )
+                            )
+                        ))
+            );
             assert_eq!(
                 failure.release().counts.scan_buffer_bytes,
                 released_text + newline_capacity
