@@ -416,14 +416,12 @@ impl ExactGeometryOwner {
             .len()
             .checked_add(delta.scanner.fragments.len())
             .ok_or_else(|| prepared_capacity_failure(&budget))?;
-        let fragments = Vec::with_capacity(fragment_capacity);
         let presentation_capacity = current
             .scanner
             .object_presentations
             .len()
             .checked_add(delta.scanner.object_presentations.len())
             .ok_or_else(|| prepared_capacity_failure(&budget))?;
-        let object_presentations = Vec::with_capacity(presentation_capacity);
         let checkpoint_capacity = current
             .scanner
             .checkpoints
@@ -431,29 +429,27 @@ impl ExactGeometryOwner {
             .checked_add(delta.scanner.checkpoints.len())
             .map(|capacity| capacity.min(self.limits.max_checkpoints))
             .ok_or_else(|| prepared_capacity_failure(&budget))?;
-        let checkpoints = VecDeque::with_capacity(checkpoint_capacity);
-        let destination_bytes = fragments
-            .capacity()
+        let destination_bytes = fragment_capacity
             .checked_mul(size_of::<StreamingLayoutFragment>())
             .and_then(|bytes| {
-                checkpoints
-                    .capacity()
+                checkpoint_capacity
                     .checked_mul(size_of::<ExactGeometryCheckpoint>())
                     .and_then(|checkpoints| bytes.checked_add(checkpoints))
             })
             .and_then(|bytes| {
-                object_presentations
-                    .capacity()
+                presentation_capacity
                     .checked_mul(size_of::<TargetInlineObjectPresentation>())
                     .and_then(|presentations| bytes.checked_add(presentations))
             })
             .ok_or_else(|| prepared_capacity_failure(&budget))?;
-        let destination_items = fragments
-            .capacity()
-            .checked_add(checkpoints.capacity())
-            .and_then(|items| items.checked_add(object_presentations.capacity()))
+        let destination_items = fragment_capacity
+            .checked_add(checkpoint_capacity)
+            .and_then(|items| items.checked_add(presentation_capacity))
             .ok_or_else(|| prepared_capacity_failure(&budget))?;
         observe_prepared(&mut budget, &delta, destination_bytes, destination_items)?;
+        let fragments = Vec::with_capacity(fragment_capacity);
+        let object_presentations = Vec::with_capacity(presentation_capacity);
+        let checkpoints = VecDeque::with_capacity(checkpoint_capacity);
         let output_charge = accounting::add_fragment_charge(
             current.scanner.output_charge,
             delta.scanner.output_charge,
