@@ -195,7 +195,21 @@ pub(super) fn process_object_page(
             return Err(ExactGeometryError::SourceContract);
         }
         let next = objects.first().ok_or(ExactGeometryError::SourceContract)?;
-        admit_inline_object(
+        let bytes = std::mem::size_of::<DeferredObject>()
+            .checked_sub(std::mem::size_of::<InlineObjectFact>())
+            .and_then(|bytes| bytes.checked_add(deferred.fact.retained_bytes().ok()?))
+            .ok_or(ExactGeometryError::CapacityExceeded)?;
+        let fixed_bytes = budget.fixed_bytes;
+        let fixed_items = budget.fixed_items;
+        let detached_bytes = fixed_bytes
+            .checked_add(bytes)
+            .ok_or(ExactGeometryError::CapacityExceeded)?;
+        let detached_items = fixed_items
+            .checked_add(4)
+            .ok_or(ExactGeometryError::CapacityExceeded)?;
+        budget.fixed_bytes = detached_bytes;
+        budget.fixed_items = detached_items;
+        let result = admit_inline_object(
             job,
             text_page,
             &deferred.fact,
@@ -206,7 +220,10 @@ pub(super) fn process_object_page(
             limits,
             source_len,
             budget,
-        )?;
+        );
+        budget.fixed_bytes = fixed_bytes;
+        budget.fixed_items = fixed_items;
+        result?;
     }
     while index < objects.len() {
         let object = &objects[index];
