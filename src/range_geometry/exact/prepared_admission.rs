@@ -24,6 +24,15 @@ mod target_arrays;
 #[cfg(feature = "test-support")]
 pub mod test_support;
 
+#[derive(Clone, Copy)]
+pub(crate) enum ResponseCapacity {
+    Geometry((usize, usize)),
+    Enclosing {
+        current: (usize, usize),
+        limit: (usize, usize),
+    },
+}
+
 #[derive(Debug)]
 pub(crate) struct PreparedTargetResponse {
     state: PreparedTargetResponseState,
@@ -297,8 +306,10 @@ impl ExactGeometryOwner {
             false,
             false,
             successor,
-            self.limits.max_retained_bytes,
-            self.limits.max_retained_items,
+            ResponseCapacity::Geometry((
+                self.limits.max_retained_bytes,
+                self.limits.max_retained_items,
+            )),
         )
     }
 
@@ -316,8 +327,10 @@ impl ExactGeometryOwner {
             true,
             false,
             successor,
-            self.limits.max_retained_bytes,
-            self.limits.max_retained_items,
+            ResponseCapacity::Geometry((
+                self.limits.max_retained_bytes,
+                self.limits.max_retained_items,
+            )),
         )
     }
 
@@ -335,8 +348,10 @@ impl ExactGeometryOwner {
             false,
             true,
             successor,
-            self.limits.max_retained_bytes,
-            self.limits.max_retained_items,
+            ResponseCapacity::Geometry((
+                self.limits.max_retained_bytes,
+                self.limits.max_retained_items,
+            )),
         )
     }
 
@@ -354,8 +369,10 @@ impl ExactGeometryOwner {
             true,
             true,
             successor,
-            self.limits.max_retained_bytes,
-            self.limits.max_retained_items,
+            ResponseCapacity::Geometry((
+                self.limits.max_retained_bytes,
+                self.limits.max_retained_items,
+            )),
         )
     }
 
@@ -368,8 +385,7 @@ impl ExactGeometryOwner {
         resident: bool,
         index: bool,
         successor: TargetResponseSuccessor,
-        max_bytes: usize,
-        max_items: usize,
+        capacity: ResponseCapacity,
     ) -> Result<PreparedTargetResponse, ExactGeometryFailure> {
         let active = self.response_active(key, index)?;
         let Some(PendingInput::Text(expected)) = active.pending.as_deref().copied() else {
@@ -383,8 +399,7 @@ impl ExactGeometryOwner {
         let mut budget = self.prepared_budget(
             page.retained_charge().bytes(),
             page.retained_charge().items(),
-            max_bytes,
-            max_items,
+            capacity,
         )?;
         admit_response_continuation(&mut budget, active)?;
         let (mut candidate, shared) = copy_response_continuation(active)
@@ -497,8 +512,10 @@ impl ExactGeometryOwner {
             false,
             false,
             successor,
-            self.limits.max_retained_bytes,
-            self.limits.max_retained_items,
+            ResponseCapacity::Geometry((
+                self.limits.max_retained_bytes,
+                self.limits.max_retained_items,
+            )),
         )
     }
 
@@ -518,8 +535,10 @@ impl ExactGeometryOwner {
             false,
             true,
             successor,
-            self.limits.max_retained_bytes,
-            self.limits.max_retained_items,
+            ResponseCapacity::Geometry((
+                self.limits.max_retained_bytes,
+                self.limits.max_retained_items,
+            )),
         )
     }
 
@@ -539,8 +558,10 @@ impl ExactGeometryOwner {
             true,
             false,
             successor,
-            self.limits.max_retained_bytes,
-            self.limits.max_retained_items,
+            ResponseCapacity::Geometry((
+                self.limits.max_retained_bytes,
+                self.limits.max_retained_items,
+            )),
         )
     }
 
@@ -560,8 +581,10 @@ impl ExactGeometryOwner {
             true,
             true,
             successor,
-            self.limits.max_retained_bytes,
-            self.limits.max_retained_items,
+            ResponseCapacity::Geometry((
+                self.limits.max_retained_bytes,
+                self.limits.max_retained_items,
+            )),
         )
     }
 
@@ -575,8 +598,7 @@ impl ExactGeometryOwner {
         index: bool,
         resident: bool,
         successor: TargetResponseSuccessor,
-        max_bytes: usize,
-        max_items: usize,
+        capacity: ResponseCapacity,
     ) -> Result<PreparedTargetResponse, ExactGeometryFailure> {
         let active = self.response_active(key, index)?;
         let Some(PendingInput::Object(expected)) = active.pending.as_deref().copied() else {
@@ -614,7 +636,7 @@ impl ExactGeometryOwner {
             .ok_or_else(|| {
                 self.prepared_validation_failure(ExactGeometryError::CapacityExceeded)
             })?;
-        let mut budget = self.prepared_budget(page_bytes, page_items, max_bytes, max_items)?;
+        let mut budget = self.prepared_budget(page_bytes, page_items, capacity)?;
         admit_response_continuation(&mut budget, active)?;
         let (mut candidate, shared) = copy_response_continuation(active)
             .map_err(|error| self.prepared_validation_failure(error))?;

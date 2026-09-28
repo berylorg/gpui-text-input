@@ -4,11 +4,11 @@ Implement the capacity prerequisite for preserved resident adoption from
 [the package contract](design.md#range-backed-preserved-resident-adoption), coordinated by
 the Beryl root plan. Resident protection, accounting and publication remain separate work.
 
-# Phase 55: Identify Shared Presentation Backing Before Scanner Metadata (finished)
+# Phase 56: Map Actual Response Preparation Into Enclosing Custody (finished)
 
-Active scanner overlap now uses live GPUI fragment backing before target metadata exists, while
-retaining deferred-fact overlap. Independent resource review accepted the query; all 226 integration
-tests passed. Session credit propagation remains separate.
+Actual text and object preparation now accept enclosing current charge and limit with checked
+owner/input baselines and independent configured ceilings. All 226 integration tests passed;
+independent resource review accepted this boundary. Shared credits and session routing remain pending.
 
 # Phase 2: Enforce Capacity Throughout Preparation (pending)
 
@@ -24,8 +24,10 @@ that state. Admitted responses retain successor identities without per-attempt c
 Observe configured and enclosing charges separately at each peak; final retained overlap cannot
 correct earlier peaks. Prospective display credit must not subsidize GPUI continuation-only startup.
 The independent observer now follows actual nested admissions, supports checked baseline mapping,
-and reports enclosing peaks in prepared results and failures. Production still uses identity mapping;
-derive live session baselines and per-observation credits, then consume those peaks in the session.
+and reports enclosing peaks in prepared results and failures. Actual response preparation now accepts
+typed enclosing current charge and limit with a checked raw owner/input baseline. Ordinary callers
+still use identity ceilings; derive live session baselines and per-observation credits, then consume
+those peaks in the session.
 Zero-credit GPUI allowances now respect both mapped views, and actual continuation startup is
 explicitly admitted before invocation. Shared-output allowance derivation is accepted; connect
 per-observation ownership evidence before prospective display credits can be enabled.

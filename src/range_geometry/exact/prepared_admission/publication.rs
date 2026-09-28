@@ -673,31 +673,52 @@ impl ExactGeometryOwner {
         &self,
         page_payload_bytes: usize,
         page_items: usize,
-        max_bytes: usize,
-        max_items: usize,
+        capacity: ResponseCapacity,
     ) -> Result<AdmissionBudget, ExactGeometryFailure> {
         let counts = self.counts();
-        Ok(AdmissionBudget {
-            observations: Some(
-                super::super::capacity_observation::CapacityObservations::new(
-                    (
-                        self.limits.max_retained_bytes,
-                        self.limits.max_retained_items,
-                    ),
-                    (max_bytes, max_items),
-                ),
+        let fixed_bytes = checked_total_bytes(counts)
+            .map_err(|_| self.prepared_validation_failure(ExactGeometryError::CapacityExceeded))?;
+        let fixed_items = checked_total_items(counts)
+            .map_err(|_| self.prepared_validation_failure(ExactGeometryError::CapacityExceeded))?;
+        let configured = (
+            self.limits.max_retained_bytes,
+            self.limits.max_retained_items,
+        );
+        let (observations, maximum) = match capacity {
+            ResponseCapacity::Geometry(limit) => (
+                super::super::capacity_observation::CapacityObservations::new(configured, limit),
+                (configured.0.min(limit.0), configured.1.min(limit.1)),
             ),
+            ResponseCapacity::Enclosing { current, limit } => {
+                let baseline = (
+                    fixed_bytes.checked_add(page_payload_bytes),
+                    fixed_items.checked_add(page_items),
+                );
+                let (Some(bytes), Some(items)) = baseline else {
+                    return Err(
+                        self.prepared_validation_failure(ExactGeometryError::CapacityExceeded)
+                    );
+                };
+                (
+                    super::super::capacity_observation::CapacityObservations::with_baselines(
+                        configured,
+                        limit,
+                        (bytes, items),
+                        current,
+                    ),
+                    configured,
+                )
+            }
+        };
+        Ok(AdmissionBudget {
+            observations: Some(observations),
             refused_capacity: None,
-            fixed_bytes: checked_total_bytes(counts).map_err(|_| {
-                self.prepared_validation_failure(ExactGeometryError::CapacityExceeded)
-            })?,
-            fixed_items: checked_total_items(counts).map_err(|_| {
-                self.prepared_validation_failure(ExactGeometryError::CapacityExceeded)
-            })?,
+            fixed_bytes,
+            fixed_items,
             page_payload_bytes,
             page_items,
-            max_bytes: max_bytes.min(self.limits.max_retained_bytes),
-            max_items: max_items.min(self.limits.max_retained_items),
+            max_bytes: maximum.0,
+            max_items: maximum.1,
             peak_bytes: 0,
             peak_items: 0,
             failure_stage: None,

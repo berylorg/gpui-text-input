@@ -716,6 +716,13 @@ without advancing; subsequent cancellation, terminal capacity failure, or dispos
 No failure, cancellation, capacity outcome, or stale completion publishes a partial candidate,
 retains unbounded work, revives detached widget state, or changes authoritative text or history.
 
+Immutable response preparation accepts internal geometry-relative ceilings or an enclosing current
+charge and limit. The enclosing form derives its raw baseline from the checked geometry owner and
+borrowed response inputs, then measures each preparation observation as current charge plus growth
+above that baseline. Configured geometry limits remain independent. The enclosing caller must include
+the existing owner and borrowed inputs in its current charge; this input does not itself establish
+shared-display credits or complete prepublication-session capacity routing.
+
 The optional `test-support` feature exposes `preparation_test_support` for integration qualification
 of immutable response preparation. Its probe reports raw required capacity, optional independently
 observed enclosing peaks for prepared results and failures, and terminal/successor facts,
@@ -730,6 +737,8 @@ before GPUI binding construction, and independently supplied configured/enclosin
 observations and their separate high-water marks, including nested transition admissions and
 unattributed arithmetic failure. Its baseline-mapping probe qualifies checked conversion from
 raw preparation growth to enclosing custody with observation-specific incremental shared credit.
+Actual text and object response probes also accept an enclosing current charge and limit, qualifying
+the derived baseline through scanner and nested publication observations.
 The remaining-capacity probe also qualifies mapped headroom with distinct baselines and no
 prospective output credit before GPUI startup. The startup probe admits the prior continuation's
 actual byte/item charge independently of output allowance and qualifies it against GPUI accounting.

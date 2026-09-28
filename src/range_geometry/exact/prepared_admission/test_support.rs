@@ -247,6 +247,61 @@ pub fn prepare_response(
     target: BlockTarget,
     capacity: (usize, usize),
 ) -> Result<PreparedResponseProbe, ExactGeometryFailure> {
+    prepare_response_with_budget(
+        owner,
+        key,
+        page,
+        objects,
+        text_system,
+        resident,
+        index,
+        successor_ids,
+        target,
+        ResponseCapacity::Geometry(capacity),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_response_with_enclosing(
+    owner: &ExactGeometryOwner,
+    key: crate::GeometryJobKey,
+    page: &RangePage,
+    objects: Option<&ObjectPage>,
+    text_system: &WindowTextSystem,
+    resident: bool,
+    index: bool,
+    successor_ids: (GeometryJobId, PageRequestId, ObjectRequestId),
+    target: BlockTarget,
+    current: (usize, usize),
+    limit: (usize, usize),
+) -> Result<PreparedResponseProbe, ExactGeometryFailure> {
+    prepare_response_with_budget(
+        owner,
+        key,
+        page,
+        objects,
+        text_system,
+        resident,
+        index,
+        successor_ids,
+        target,
+        ResponseCapacity::Enclosing { current, limit },
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_response_with_budget(
+    owner: &ExactGeometryOwner,
+    key: crate::GeometryJobKey,
+    page: &RangePage,
+    objects: Option<&ObjectPage>,
+    text_system: &WindowTextSystem,
+    resident: bool,
+    index: bool,
+    successor_ids: (GeometryJobId, PageRequestId, ObjectRequestId),
+    target: BlockTarget,
+    capacity: ResponseCapacity,
+) -> Result<PreparedResponseProbe, ExactGeometryFailure> {
     let successor = TargetResponseSuccessor {
         target_job_id: successor_ids.0,
         page_id: successor_ids.1,
@@ -266,8 +321,7 @@ pub fn prepare_response(
             index,
             resident,
             successor,
-            capacity.0,
-            capacity.1,
+            capacity,
         ),
         None => owner.prepare_response_page_with_capacity(
             key,
@@ -276,8 +330,7 @@ pub fn prepare_response(
             resident,
             index,
             successor,
-            capacity.0,
-            capacity.1,
+            capacity,
         ),
     }
     .map(PreparedResponseProbe)
