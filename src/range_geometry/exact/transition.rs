@@ -414,6 +414,21 @@ impl ExactGeometryOwner {
                 .as_deref()
                 .is_some_and(|active| matches!(active.kind, ActiveKind::Index))
         {
+            let current = self.counts();
+            let desired = accounting::desired_counts();
+            let required_bytes = current
+                .total_bytes()
+                .checked_add(desired.total_bytes())
+                .ok_or(ExactGeometryError::CapacityExceeded)?;
+            let required_items = current
+                .total_items()
+                .checked_add(desired.total_items())
+                .ok_or(ExactGeometryError::CapacityExceeded)?;
+            if required_bytes > self.limits.max_retained_bytes
+                || required_items > self.limits.max_retained_items
+            {
+                return Err(ExactGeometryError::CapacityExceeded);
+            }
             return self.finish_prepared(
                 self.key,
                 None,

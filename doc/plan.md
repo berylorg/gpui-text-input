@@ -4,11 +4,11 @@ Implement the capacity prerequisite for preserved resident adoption from
 [the package contract](design.md#range-backed-preserved-resident-adoption), coordinated by
 the Beryl root plan. Resident protection, accounting and publication remain separate work.
 
-# Phase 18: Remove Temporary Target Origin Checkpoint Allocation (finished)
+# Phase 19: Admit Prepared Desired Target Before Allocation (finished)
 
-Prepared replacement-origin and local-target fallback transitions obtain origin checkpoints without
-allocating a discarded queue. Independent review accepted checkpoint equivalence and unchanged
-refusal custody; all 188 geometry, prepublication and widget tests passed.
+Incomplete-index target preparation checks current-owner plus desired-target capacity before boxing.
+Independent review accepted checked arithmetic, exact fit and unchanged refusal custody; all 188
+geometry, prepublication and widget tests passed.
 
 # Phase 2: Enforce Capacity Throughout Preparation (pending)
 
