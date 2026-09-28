@@ -753,8 +753,8 @@ own ownership mapping. Direct and geometry-relative admission retain raw charges
 Active object-response publication derives candidate-only display credit from retained scanner
 output and deferred backing shared with the borrowed page or original continuation. That credit
 applies through successor-record and destination admission while those owners remain live. It
-does not discount existing owner payload again or relax configured geometry limits. Terminal
-index publication requires separate ownership mapping. Complete object-response source finalization
+does not discount existing owner payload again or relax configured geometry limits.
+Complete object-response source finalization
 and terminal checkpoint admission carry the proven retained output credit while the original
 and borrowed inputs remain live. These operations do not remove existing inline output; newly
 produced text receives no display credit. The stack budget restores its prior credit on success
@@ -766,6 +766,13 @@ into the publication preserves that credited backing; original scanner payload r
 baseline and receives no additional credit. Existing payload-transfer deductions remain unchanged.
 The terminal call consumes its stack budget on success or error, so its credit cannot enter a later
 index transition. Configured and geometry-relative observations retain their raw charges.
+
+Terminal index publication uses zero incremental display credit. Index scans discard returned
+fragments and restore their transient credit; complete object responses consume deferred custody
+before publication. Checkpoints contain no display payload, and a nested target begins with empty
+output and deferred custody or publishes an empty terminal target. The same observer follows those
+nested admissions and cleanup without a display deduction. Existing borrowed owner/input backing
+remains in the baseline; raw configured accounting and payload-transfer deductions are unchanged.
 
 Deferred inline custody exists only while an incomplete object page awaits its object successor.
 A complete object page consumes that custody before requesting forward text or grapheme context.

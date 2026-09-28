@@ -11,6 +11,9 @@ mod shared_deferred;
 #[path = "composite_objects/source_finalization.rs"]
 mod source_finalization;
 #[cfg(feature = "test-support")]
+#[path = "composite_objects/terminal_index.rs"]
+mod terminal_index;
+#[cfg(feature = "test-support")]
 #[path = "composite_objects/terminal_target.rs"]
 mod terminal_target;
 #[cfg(feature = "test-support")]
