@@ -1,10 +1,96 @@
 use super::*;
 
 #[gpui::test]
+fn index_layout_peak_includes_discarded_fragment_records(cx: &mut TestAppContext) {
+    with_text_system(cx, |text_system| {
+        let source = "abcdefghijklmnopqrs";
+        let mut session = text_system
+            .streaming_layout_session(layout(16, 10000.))
+            .unwrap();
+        let layout = session
+            .admit_text(gpui::StreamingTextSegment {
+                input_id: 41,
+                segment_policy_id: 73,
+                ordinal: 0,
+                logical_range: StreamingLayoutPosition::at(0)..StreamingLayoutPosition::at(16),
+                text: SharedString::new(source[..16].to_owned()),
+                runs: vec![TextRun {
+                    len: 16,
+                    font: font(".SystemUIFont"),
+                    color: black(),
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                }],
+            })
+            .unwrap();
+        let mut required = (512 * 1024, 32 * 1024);
+        for attempt in 0..4 {
+            let (bytes, items) = match attempt {
+                0 | 1 => required,
+                2 => (required.0 - 1, required.1),
+                _ => (required.0, required.1 - 1),
+            };
+            let mut owner =
+                owner_with_retained_items(source, 16, 10000., 2, bytes, items, style()).unwrap();
+            let job = start_index(&mut owner, 1);
+            let page = page(&mut owner, job, source, 0, 18, 1);
+            assert_eq!(
+                owner
+                    .admit_page(job, &page, text_system)
+                    .unwrap()
+                    .progress(),
+                ExactGeometryProgress::NeedObjects
+            );
+            let objects = empty_object_page(&mut owner, job, &page, 1);
+            let before = owner.counts();
+            let expected = (
+                before.total_bytes()
+                    + page.retained_charge().bytes()
+                    + objects.retained_charge().bytes()
+                    + 8
+                    + layout.charge.total().unwrap()
+                    + std::mem::size_of::<StreamingLayoutFragment>()
+                    + 3 * std::mem::size_of::<gpui_text_input::ExactGeometryCheckpoint>(),
+                before.total_items()
+                    + page.retained_charge().items()
+                    + 1
+                    + layout.item_charge.total().unwrap()
+                    + 1
+                    + 3,
+            );
+            let result = owner.admit_object_page(job, &page, &objects, text_system);
+            if attempt < 2 {
+                let admission = result.unwrap();
+                assert_eq!(admission.progress(), ExactGeometryProgress::Scanning);
+                required = (
+                    admission.admission_required_bytes(),
+                    admission.admission_required_items(),
+                );
+                assert_eq!(required, expected);
+                assert_eq!(owner.counts().output_record_bytes, 0);
+            } else {
+                let failure = result.unwrap_err();
+                assert_eq!(failure.error(), &ExactGeometryError::CapacityExceeded);
+                assert_eq!(
+                    failure.stage(),
+                    gpui_text_input::ExactGeometryFailureStage::Checkpoint
+                );
+                assert_eq!(failure.release().jobs, vec![job]);
+                assert_eq!(failure.release().object_pages, vec![objects.key()]);
+                assert_eq!(failure.release().counts.checkpoints, 1);
+                assert_eq!(owner.counts().active_job_items, 0);
+                assert!(owner.index().is_none());
+            }
+        }
+    });
+}
+
+#[gpui::test]
 fn target_fragment_backing_is_admitted_before_initial_and_repeated_growth(cx: &mut TestAppContext) {
     with_text_system(cx, |text_system| {
         for fragments in [1, 5, 9] {
-            let source = "a".repeat(fragments * 16 + 3);
+            let source = format!("{}\nb\nc\nd\n", "a".repeat(fragments * 16 + 3));
             let mut required = (0, 0);
             let mut accepted_records = 0;
             for attempt in 0..4 {
@@ -33,7 +119,7 @@ fn target_fragment_backing_is_admitted_before_initial_and_repeated_growth(cx: &m
                     )
                     .unwrap()
                     .key();
-                let page = page(&mut owner, job, &source, 0, source.len() - 1, 2);
+                let page = page(&mut owner, job, &source, 0, fragments * 16 + 2, 2);
                 let result = admit_page_with_empty_objects(&mut owner, job, &page, text_system);
                 if attempt < 2 {
                     let admission = result.unwrap();

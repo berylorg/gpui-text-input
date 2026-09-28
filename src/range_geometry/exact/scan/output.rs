@@ -23,8 +23,17 @@ pub(super) fn admit_layout(
     // this peak and is therefore charged.
     job.scanner.continuation = admission.continuation;
     job.scanner.continuation_items = session_item_charge.total()?;
-    let full_transient_bytes = admission.charge.total()?;
-    let full_transient_items = admission.item_charge.total()?;
+    let fragment_bytes = super::super::accounting::fragment_record_bytes(admission.fragments.len());
+    let full_transient_bytes = admission
+        .charge
+        .total()?
+        .checked_add(fragment_bytes)
+        .ok_or(ExactGeometryError::CapacityExceeded)?;
+    let full_transient_items = admission
+        .item_charge
+        .total()?
+        .checked_add(admission.fragments.len())
+        .ok_or(ExactGeometryError::CapacityExceeded)?;
     let (retained, transient_bytes, transient_items) =
         if matches!(job.kind, ActiveKind::Target { .. }) {
             let ActiveKind::Target { target, anchor, .. } = job.kind else {
@@ -59,15 +68,8 @@ pub(super) fn admit_layout(
                 job,
                 full_transient_bytes
                     .checked_add(backing_bytes)
-                    .and_then(|bytes| {
-                        bytes.checked_add(super::super::accounting::fragment_record_bytes(
-                            admission.fragments.len(),
-                        ))
-                    })
                     .ok_or(ExactGeometryError::CapacityExceeded)?,
-                full_transient_items
-                    .checked_add(admission.fragments.len())
-                    .ok_or(ExactGeometryError::CapacityExceeded)?,
+                full_transient_items,
             )?;
             if backing_bytes != 0 {
                 job.scanner
@@ -110,7 +112,7 @@ pub(super) fn admit_layout(
                 // enum records coexist; the payload charge remains single-counted in scanner output.
                 (
                     true,
-                    super::super::accounting::fragment_record_bytes(admission.fragments.len())
+                    fragment_bytes
                         .saturating_add(std::mem::size_of::<StreamingLayoutContinuation>()),
                     admission.fragments.len().saturating_add(1),
                 )

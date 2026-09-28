@@ -4,11 +4,12 @@ Implement the capacity prerequisite for preserved resident adoption from
 [the package contract](design.md#range-backed-preserved-resident-adoption), coordinated by
 the Beryl root plan. Resident protection, accounting and publication remain separate work.
 
-# Phase 28: Retain Grapheme Custody Through Layout (finished)
+# Phase 29: Account Discarded Layout Fragment Custody (finished)
 
-Pending graphemes remain scanner-owned through layout; newline storage drops before finalization.
-Independent resource review accepted accounting and cleanup. All 54 geometry tests passed after
-updating release expectations; 136 widget/prepublication regressions also passed.
+Returned fragment records remain charged through index and nonretained target layout/checkpoint
+peaks. Independent resource review accepted the change. All 55 geometry tests passed, including
+exact byte/item refusal and cleanup; 136 widget/prepublication regressions also passed.
+Pre-call reservation remains pending.
 
 # Phase 2: Enforce Capacity Throughout Preparation (pending)
 

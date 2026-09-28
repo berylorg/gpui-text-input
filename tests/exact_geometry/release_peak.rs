@@ -307,7 +307,7 @@ fn window_scan_and_finalize_errors_release_named_terminal_state(cx: &mut TestApp
 #[gpui::test]
 fn publication_replacement_peak_is_exact_and_preserves_prior_on_one_under(cx: &mut TestAppContext) {
     with_text_system(cx, |text_system| {
-        let source = "a\nb\nc";
+        let source = "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nm\nn\no\np\nq";
         let exercise = |cap: usize| {
             let mut owner = owner(source, 16, 16, cap, 16);
             let first = start_index(&mut owner, 1);

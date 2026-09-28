@@ -197,14 +197,14 @@ fn borrowed_context_page_peak_accepts_exact_byte_cap_and_rejects_one_under(
     cx: &mut TestAppContext,
 ) {
     with_text_system(cx, |text_system| {
-        let source = format!("{}{}TARGET", "a".repeat(4096), "😀".repeat(24));
+        let source = format!("{}{}TARGET", "a".repeat(6144), "😀".repeat(24));
         let exercise = |cap| {
             let mut owner = ExactGeometryOwner::new(
                 binding(&source, 1),
                 PresentationGeneration::new(1),
                 layout(8, 24.),
                 style(),
-                ExactGeometryLimits::new(4096, 2, cap, 16 * 1024).unwrap(),
+                ExactGeometryLimits::new(6144, 2, cap, 16 * 1024).unwrap(),
             )
             .unwrap();
             let job = start_index(&mut owner, 1);
