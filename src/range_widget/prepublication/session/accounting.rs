@@ -220,20 +220,7 @@ impl RangePrepublicationSession {
         failure: RangePrepublicationFailure,
         _effects: &mut EffectBuffer,
     ) {
-        self.environment
-            .cleanup()
-            .mark_session_ready(self.generation);
-        self.release_all_resident_custody();
-        self.cancel_waiting();
-        self.delivered = None;
-        self.admitted_geometry = None;
-        self.candidate = None;
-        if let Some(geometry) = self.geometry.as_mut() {
-            let _ = geometry.dispose();
-        }
-        let _ = self.residency.dispose();
-        let _ = self.object_residency.dispose();
-        self.geometry_job = None;
+        self.release_local_owners();
         self.stage = SessionStage::Failed(failure);
     }
 
@@ -242,15 +229,18 @@ impl RangePrepublicationSession {
         self.fail(failure, &mut pending);
     }
 
-    pub(super) fn cancel_waiting(&mut self) {
-        match self.waiting.take() {
-            Some(Waiting::RestorationPage { key, .. } | Waiting::GeometryPage { key, .. }) => {
-                let _ = self.residency.cancel(key);
-            }
-            Some(Waiting::RestorationObject { key, .. } | Waiting::GeometryObject { key, .. }) => {
-                let _ = self.object_residency.cancel(key);
-            }
-            Some(Waiting::Validation(_)) | None => {}
-        }
+    pub(super) fn release_local_owners(&mut self) {
+        self.environment
+            .cleanup()
+            .mark_session_ready(self.generation);
+        self.release_all_resident_custody();
+        self.waiting = None;
+        self.delivered = None;
+        self.admitted_geometry = None;
+        self.candidate = None;
+        self.geometry = None;
+        self.residency.discard_all();
+        self.object_residency.discard_all();
+        self.geometry_job = None;
     }
 }

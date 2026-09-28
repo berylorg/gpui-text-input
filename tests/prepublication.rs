@@ -25,6 +25,9 @@ use gpui_text_input::{
 #[path = "prepublication/admitted_response.rs"]
 mod admitted_response;
 
+#[path = "prepublication/teardown.rs"]
+mod teardown;
+
 #[path = "prepublication/initial_index.rs"]
 #[cfg(feature = "test-support")]
 mod initial_index;

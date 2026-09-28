@@ -352,9 +352,3 @@ impl ExactGeometryOwner {
         Ok(LayoutEpoch::new(next))
     }
 }
-
-impl Drop for ExactGeometryOwner {
-    fn drop(&mut self) {
-        let _ = self.release_all(true);
-    }
-}

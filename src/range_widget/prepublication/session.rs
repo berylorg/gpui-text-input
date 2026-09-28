@@ -455,20 +455,7 @@ impl RangePrepublicationSession {
     }
 
     pub fn cancel(&mut self) {
-        self.environment
-            .cleanup()
-            .mark_session_ready(self.generation);
-        self.release_all_resident_custody();
-        self.cancel_waiting();
-        self.delivered = None;
-        self.admitted_geometry = None;
-        self.candidate = None;
-        if let Some(geometry) = self.geometry.as_mut() {
-            let _ = geometry.dispose();
-        }
-        let _ = self.residency.dispose();
-        let _ = self.object_residency.dispose();
-        self.geometry_job = None;
+        self.release_local_owners();
         self.stage = SessionStage::Cancelled;
     }
 

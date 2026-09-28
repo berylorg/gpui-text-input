@@ -890,12 +890,16 @@ impl RangeResidency {
     /// Releases every resident page and pending request without installing another binding.
     pub fn dispose(&mut self) -> Vec<PageRequestKey> {
         let cancelled = self.pending.iter().copied().collect();
+        self.discard_all();
+        cancelled
+    }
+
+    pub(crate) fn discard_all(&mut self) {
         self.resident = VecDeque::new();
         self.pending = VecDeque::new();
         self.cancelled = VecDeque::new();
         self.resident_bytes = 0;
         self.pending_bytes = 0;
-        cancelled
     }
 
     /// Explicitly evicts one resident page and releases its retained bytes.

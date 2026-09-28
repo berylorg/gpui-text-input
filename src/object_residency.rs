@@ -765,6 +765,11 @@ impl ObjectResidency {
     /// Releases every resident page and pending request without installing another binding.
     pub fn dispose(&mut self) -> Vec<ObjectRequestKey> {
         let cancelled = self.pending.iter().copied().collect();
+        self.discard_all();
+        cancelled
+    }
+
+    pub(crate) fn discard_all(&mut self) {
         self.resident = VecDeque::new();
         self.pending = VecDeque::new();
         self.cancelled = VecDeque::new();
@@ -773,7 +778,6 @@ impl ObjectResidency {
         self.resident_presentation_bytes = 0;
         self.pending_bytes = 0;
         self.pending_objects = 0;
-        cancelled
     }
 
     /// Explicitly evicts one bounded resident page and releases exact retained capacity.
