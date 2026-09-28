@@ -4,11 +4,11 @@ Implement the capacity prerequisite for preserved resident adoption from
 [the package contract](design.md#range-backed-preserved-resident-adoption), coordinated by
 the Beryl root plan. Resident protection, accounting and publication remain separate work.
 
-# Phase 9: Admit Terminal Index Checkpoint Staging Before Allocation (finished)
+# Phase 10: Admit Prepared Successor Requests Before Allocation (finished)
 
-Terminal prepared-index checkpoint queue and vector storage are admitted before allocation,
-including the incoming queue record and coexisting staging backing. Independent resource review
-accepted the change; all 187 geometry, prepublication and range-widget tests passed.
+Prepared successor requests validate without allocation and admit their modeled byte/item charge
+before boxing, preserving current geometry and exact refusal custody. Independent resource review
+accepted the boundary; all 187 geometry, prepublication and range-widget tests passed.
 
 # Phase 2: Enforce Capacity Throughout Preparation (pending)
 

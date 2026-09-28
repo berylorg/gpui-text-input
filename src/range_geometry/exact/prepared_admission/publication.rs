@@ -414,9 +414,15 @@ impl ExactGeometryOwner {
         mut budget: AdmissionBudget,
         successor: TargetResponseSuccessor,
     ) -> Result<PreparedTargetResponse, ExactGeometryFailure> {
-        let successor = self
-            .prepare_target_successor(&mut delta, progress, successor)
+        let (pending, successor) = self
+            .prepare_target_successor(&delta, progress, successor)
             .map_err(|error| prepared_failure(error, ExactGeometryFailureStage::Scan, &budget))?;
+        let pending_bytes = match pending {
+            PendingInput::Text(_) => size_of::<PageRequestKey>(),
+            PendingInput::Object(_) => size_of::<ObjectRequestKey>(),
+        };
+        observe_prepared(&mut budget, &delta, pending_bytes, 1)?;
+        delta.pending = Some(Box::new(pending));
         let is_index = matches!(delta.kind, ActiveKind::Index);
         let current = self.response_active(delta.key, is_index)?;
         let fragment_capacity = current
@@ -488,10 +494,10 @@ impl ExactGeometryOwner {
 
     pub(super) fn prepare_target_successor(
         &self,
-        active: &mut ActiveJob,
+        active: &ActiveJob,
         progress: ExactGeometryProgress,
         successor: TargetResponseSuccessor,
-    ) -> Result<PreparedTargetSuccessor, ExactGeometryError> {
+    ) -> Result<(PendingInput, PreparedTargetSuccessor), ExactGeometryError> {
         if active.pending.is_some() {
             return Err(ExactGeometryError::PageAlreadyPending);
         }
@@ -528,8 +534,10 @@ impl ExactGeometryOwner {
                     self.limits.max_page_bytes,
                 )
                 .map_err(|_| ExactGeometryError::InvalidLimits)?;
-                active.pending = Some(Box::new(PendingInput::Text(key)));
-                Ok(PreparedTargetSuccessor::Page(PageRequest::new(key)))
+                Ok((
+                    PendingInput::Text(key),
+                    PreparedTargetSuccessor::Page(PageRequest::new(key)),
+                ))
             }
             ExactGeometryProgress::NeedObjects => {
                 if self
@@ -563,11 +571,13 @@ impl ExactGeometryOwner {
                     demand,
                 )
                 .map_err(|_| ExactGeometryError::SourceContract)?;
-                active.pending = Some(Box::new(PendingInput::Object(key)));
-                Ok(PreparedTargetSuccessor::Object {
-                    request: ObjectRequest::new(key),
-                    text_page: page.id,
-                })
+                Ok((
+                    PendingInput::Object(key),
+                    PreparedTargetSuccessor::Object {
+                        request: ObjectRequest::new(key),
+                        text_page: page.id,
+                    },
+                ))
             }
             _ => Err(ExactGeometryError::WrongInputKind),
         }
