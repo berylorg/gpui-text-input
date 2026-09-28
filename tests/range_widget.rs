@@ -5062,7 +5062,7 @@ fn shared_large_object_presentation_is_charged_once_through_publication(
         assert!(diagnostics.current.resident_object_bytes >= display_len);
         diagnostics.high_water.owned_bytes
     });
-    assert_eq!(exact_bytes, 903_568);
+    assert_eq!(exact_bytes, 903_584);
 
     let (exact, cx) = cx.add_window_view(|window, cx| {
         RangeTextInput::new(configured(exact_bytes), window, cx).unwrap()

@@ -717,7 +717,8 @@ No failure, cancellation, capacity outcome, or stale completion publishes a part
 retains unbounded work, revives detached widget state, or changes authoritative text or history.
 
 The optional `test-support` feature exposes `preparation_test_support` for integration qualification
-of immutable response preparation. Its probe reports required capacity and terminal/successor facts,
+of immutable response preparation. Its probe reports raw required capacity, optional independently
+observed enclosing peaks for prepared results and failures, and terminal/successor facts,
 can explicitly commit the prepared result, and can read an admitted session response's reserved
 successor identities. It can query current and prepared presentation overlap with supplied object
 pages without exposing allocation addresses, and distinguish explicit enclosing-only and configured

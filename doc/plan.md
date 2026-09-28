@@ -4,12 +4,12 @@ Implement the capacity prerequisite for preserved resident adoption from
 [the package contract](design.md#range-backed-preserved-resident-adoption), coordinated by
 the Beryl root plan. Resident protection, accounting and publication remain separate work.
 
-# Phase 50: Map Preparation Observations To Enclosing Ownership (finished)
+# Phase 51: Retain Enclosing Preparation Peak Evidence (finished)
 
-Checked per-observation translation preserves configured charges and bounds incremental shared
-credit; nested admissions retain both baselines. Independent review accepted the scoped change,
-with all 218 integration tests passing. Production identity mapping remains until session and
-credit propagation are ready.
+Prepared results and failures now preserve optional independent enclosing peaks. Validation and
+direct paths without an observer report none. Independent review accepted the scoped change after
+the fixed metadata-size snapshot correction; all 219 integration tests passed. Session consumption
+and full host admission remain pending.
 
 # Phase 2: Enforce Capacity Throughout Preparation (pending)
 
@@ -24,8 +24,10 @@ the session budget with shared presentation charged once and route typed retryab
 that state. Admitted responses retain successor identities without per-attempt counter mutation.
 Observe configured and enclosing charges separately at each peak; final retained overlap cannot
 correct earlier peaks. Prospective display credit must not subsidize GPUI continuation-only startup.
-The independent observer now follows actual nested admissions. Map both views at each observation
-when adding credits, and propagate enclosing peaks to the session.
+The independent observer now follows actual nested admissions, supports checked baseline mapping,
+and reports enclosing peaks in prepared results and failures. Production still uses identity mapping;
+derive live session baselines and per-observation credits, then consume those peaks in the session.
+Remaining GPUI allowances must respect both mapped views before credits can be enabled.
 Carry it through pre-copy, detached custody, output before metadata and publication observations.
 Deferred presentation backing now shares correctly and participates in retained overlap queries.
 Explicit preparation admission now carries typed configured/enclosing refusal attribution.

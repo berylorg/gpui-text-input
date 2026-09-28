@@ -781,6 +781,10 @@ impl ExactGeometryOwner {
             .and_then(|items| items.checked_add(release_items).ok_or(()))
             .map_err(|_| prepared_capacity_failure(&budget))?;
         Ok(PreparedTargetResponse {
+            enclosing_peak: budget
+                .observations
+                .as_ref()
+                .map(|observations| observations.enclosing_peak),
             state,
             successor,
             progress,
@@ -798,6 +802,7 @@ impl ExactGeometryOwner {
     ) -> ExactGeometryFailure {
         ExactGeometryFailure {
             capacity_refusal: None,
+            enclosing_peak: None,
             error,
             stage: ExactGeometryFailureStage::Validation,
             release: ExactGeometryRelease::default(),

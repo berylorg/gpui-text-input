@@ -505,6 +505,7 @@ pub enum ExactGeometryError {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ExactGeometryFailure {
     pub(super) capacity_refusal: Option<CapacityRefusal>,
+    pub(super) enclosing_peak: Option<(usize, usize)>,
     pub(super) error: ExactGeometryError,
     pub(super) stage: ExactGeometryFailureStage,
     pub(super) release: ExactGeometryRelease,
@@ -519,6 +520,10 @@ pub(crate) enum CapacityRefusal {
 }
 
 impl ExactGeometryFailure {
+    pub(crate) const fn enclosing_peak(&self) -> Option<(usize, usize)> {
+        self.enclosing_peak
+    }
+
     pub const fn error(&self) -> &ExactGeometryError {
         &self.error
     }

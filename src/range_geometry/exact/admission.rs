@@ -543,6 +543,7 @@ impl ExactGeometryOwner {
     fn nonterminal_failure(&self, error: ExactGeometryError) -> ExactGeometryFailure {
         ExactGeometryFailure {
             capacity_refusal: None,
+            enclosing_peak: None,
             error,
             stage: ExactGeometryFailureStage::Validation,
             release: ExactGeometryRelease::default(),
@@ -576,6 +577,7 @@ impl ExactGeometryOwner {
         }
         ExactGeometryFailure {
             capacity_refusal: None,
+            enclosing_peak: None,
             error,
             stage,
             release: ExactGeometryRelease {
@@ -681,6 +683,7 @@ fn candidate_failure(
 ) -> ExactGeometryFailure {
     ExactGeometryFailure {
         capacity_refusal: None,
+        enclosing_peak: None,
         error,
         stage: ExactGeometryFailureStage::Publication,
         release: {

@@ -34,6 +34,7 @@ pub(crate) struct PreparedTargetResponse {
     retained_items: usize,
     admission_required_bytes: usize,
     admission_required_items: usize,
+    enclosing_peak: Option<(usize, usize)>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -78,6 +79,10 @@ struct PreparedActiveTarget {
 }
 
 impl PreparedTargetResponse {
+    pub(crate) const fn enclosing_peak(&self) -> Option<(usize, usize)> {
+        self.enclosing_peak
+    }
+
     pub(crate) fn presentation_overlap_bytes<'a>(
         &self,
         pages: impl Iterator<Item = &'a crate::ObjectPage> + Clone,
@@ -783,6 +788,10 @@ fn prepared_failure(
     };
     ExactGeometryFailure {
         capacity_refusal,
+        enclosing_peak: budget
+            .observations
+            .as_ref()
+            .map(|observations| observations.enclosing_peak),
         error,
         stage,
         release: ExactGeometryRelease::default(),

@@ -43,6 +43,23 @@ impl PreparationCapacityProbe {
         (self.0.configured_peak, self.0.enclosing_peak)
     }
 
+    pub fn into_failure(self, error: ExactGeometryError) -> ExactGeometryFailure {
+        let budget = AdmissionBudget {
+            peak_bytes: self.0.configured_peak.0,
+            peak_items: self.0.configured_peak.1,
+            observations: Some(self.0),
+            refused_capacity: None,
+            fixed_bytes: 0,
+            fixed_items: 0,
+            page_payload_bytes: 0,
+            page_items: 0,
+            max_bytes: usize::MAX,
+            max_items: usize::MAX,
+            failure_stage: None,
+        };
+        prepared_failure(error, ExactGeometryFailureStage::Finalize, &budget)
+    }
+
     pub fn observe_nested(
         &mut self,
         base: (usize, usize),
@@ -104,6 +121,10 @@ pub fn is_enclosing_capacity_refusal(failure: &ExactGeometryFailure) -> bool {
     failure.capacity_refusal == Some(super::super::types::CapacityRefusal::Enclosing)
 }
 
+pub fn enclosing_failure_peak(failure: &ExactGeometryFailure) -> Option<(usize, usize)> {
+    failure.enclosing_peak()
+}
+
 pub fn is_configured_capacity_refusal(failure: &ExactGeometryFailure) -> bool {
     failure.capacity_refusal == Some(super::super::types::CapacityRefusal::Configured)
 }
@@ -125,6 +146,10 @@ pub fn session_response_successor_ids(
 pub struct PreparedResponseProbe(PreparedTargetResponse);
 
 impl PreparedResponseProbe {
+    pub fn enclosing_peak(&self) -> Option<(usize, usize)> {
+        self.0.enclosing_peak()
+    }
+
     pub fn presentation_overlap(&self, pages: &[&ObjectPage]) -> Option<usize> {
         self.0.presentation_overlap_bytes(pages.iter().copied())
     }

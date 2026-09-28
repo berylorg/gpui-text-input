@@ -1,8 +1,34 @@
 use super::*;
 use gpui_text_input::preparation_test_support::{
-    PreparationCapacityProbe, is_configured_capacity_refusal, is_enclosing_capacity_refusal,
-    preparation_remaining_capacity, prepare_response,
+    PreparationCapacityProbe, enclosing_failure_peak, is_configured_capacity_refusal,
+    is_enclosing_capacity_refusal, preparation_remaining_capacity, prepare_response,
 };
+
+#[test]
+fn prepared_failure_retains_independent_enclosing_peak_evidence() {
+    for arithmetic_failure in [false, true] {
+        let mut probe =
+            PreparationCapacityProbe::with_baselines((200, 20), (130, 13), (100, 10), (80, 8));
+        probe.observe_preparation((200, 20), (60, 6)).unwrap();
+        assert!(probe.observe_nested((100, 10), (51, 5)).is_err());
+        if arithmetic_failure {
+            assert!(probe.observe_nested((100, 10), (usize::MAX, 0)).is_err());
+        }
+        let failure = probe.into_failure(ExactGeometryError::CapacityExceeded);
+        assert_eq!(enclosing_failure_peak(&failure), Some((131, 13)));
+        assert_eq!(
+            (
+                failure.admission_required_bytes(),
+                failure.admission_required_items()
+            ),
+            (200, 20)
+        );
+        assert_eq!(is_enclosing_capacity_refusal(&failure), !arithmetic_failure);
+        assert!(!is_configured_capacity_refusal(&failure));
+        assert_eq!(failure.release(), &ExactGeometryRelease::default());
+        assert_eq!(enclosing_failure_peak(&failure.clone()), Some((131, 13)));
+    }
+}
 
 #[test]
 fn preparation_maps_each_peak_without_discounting_configured_custody() {
@@ -196,6 +222,7 @@ fn pre_shaping_reservation_requires_positive_capacity_in_both_dimensions() {
             assert!(!is_configured_capacity_refusal(&failure));
             assert_eq!(failure.error(), &ExactGeometryError::CapacityExceeded);
             assert_eq!(failure.release(), &ExactGeometryRelease::default());
+            assert_eq!(enclosing_failure_peak(&failure), Some(exact));
             assert_eq!(
                 (
                     failure.admission_required_bytes(),
@@ -225,6 +252,7 @@ fn pre_shaping_reservation_requires_positive_capacity_in_both_dimensions() {
         assert!(!is_configured_capacity_refusal(&failure));
         assert!(!is_enclosing_capacity_refusal(&failure));
         assert_eq!(failure.release(), &ExactGeometryRelease::default());
+        assert_eq!(enclosing_failure_peak(&failure), Some((0, 0)));
     }
 }
 
@@ -278,6 +306,7 @@ fn immutable_response_preparation_obeys_enclosing_ceilings(cx: &mut TestAppConte
                     };
                 let prepared = prepare(&owner, None, (usize::MAX, usize::MAX)).unwrap();
                 let (bytes, items) = prepared.required_capacity();
+                assert_eq!(prepared.enclosing_peak(), Some((bytes, items)));
                 if index {
                     for (bytes, items) in [(bytes - 1, 8192), (512 * 1024, items - 1)] {
                         let mut limited = make_owner(bytes, items);
@@ -321,6 +350,8 @@ fn immutable_response_preparation_obeys_enclosing_ceilings(cx: &mut TestAppConte
                 });
                 let request = prepared.object_request().unwrap();
                 prepared.commit(&mut owner);
+                let stale = prepare(&owner, None, (usize::MAX, usize::MAX)).unwrap_err();
+                assert_eq!(enclosing_failure_peak(&stale), None);
                 let objects = ObjectPage::new(
                     ObjectPageId::new(90_000),
                     request.key(),
@@ -335,6 +366,7 @@ fn immutable_response_preparation_obeys_enclosing_ceilings(cx: &mut TestAppConte
                 assert_eq!(prepared.terminal_index(), index);
                 assert!(index || prepared.terminal_target());
                 let (bytes, items) = prepared.required_capacity();
+                assert_eq!(prepared.enclosing_peak(), Some((bytes, items)));
                 check_refusals(&owner, bytes, items, |capacity| {
                     prepare(&owner, Some(&objects), capacity)
                 });
@@ -368,6 +400,13 @@ fn check_refusals(
         assert_eq!(result.is_ok(), succeeds, "{result:?}");
         if let Err(failure) = result {
             assert_eq!(failure.release(), &ExactGeometryRelease::default());
+            assert_eq!(
+                enclosing_failure_peak(&failure),
+                Some((
+                    failure.admission_required_bytes(),
+                    failure.admission_required_items(),
+                ))
+            );
             if matches!(failure.error(), ExactGeometryError::Layout(_)) {
                 assert!(!is_enclosing_capacity_refusal(&failure));
             } else {
