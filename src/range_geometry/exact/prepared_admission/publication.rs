@@ -1,4 +1,5 @@
 use super::*;
+use super::release::{ReleaseKey, push_release_key};
 
 impl ExactGeometryOwner {
     #[allow(clippy::too_many_arguments)]
@@ -214,7 +215,13 @@ impl ExactGeometryOwner {
                 &budget,
             ));
         }
-        release.jobs.push(delta.key);
+        push_release_key(
+            &mut release,
+            ReleaseKey::Job(delta.key),
+            (conversion_bytes, conversion_items),
+            &delta,
+            &mut budget,
+        )?;
         release.counts = checked_add_counts(release.counts, completion_release_counts(&delta))
             .map_err(|_| prepared_capacity_failure(&budget))?;
         self.finish_target_response(
@@ -371,11 +378,23 @@ impl ExactGeometryOwner {
             .checked_add(prepared_target.retained_items())
             .ok_or_else(|| prepared_capacity_failure(&budget))?;
         observe_prepared(&mut budget, &delta, additional_bytes, additional_items)?;
-        release.jobs.push(delta.key);
+        push_release_key(
+            &mut release,
+            ReleaseKey::Job(delta.key),
+            (additional_bytes, additional_items),
+            &delta,
+            &mut budget,
+        )?;
         release.counts = checked_add_counts(release.counts, completion_release_counts(&delta))
             .map_err(|_| prepared_capacity_failure(&budget))?;
         if let Some(prior) = self.index.as_deref() {
-            release.jobs.push(prior.key);
+            push_release_key(
+                &mut release,
+                ReleaseKey::Job(prior.key),
+                (additional_bytes, additional_items),
+                &delta,
+                &mut budget,
+            )?;
             let mut counts = ExactGeometryCounts::default();
             counts.publication_bytes = size_of::<ExactGeometryIndex>();
             counts.publication_items = 1;
@@ -386,17 +405,35 @@ impl ExactGeometryOwner {
         }
         for key in &prepared_target.release().jobs {
             if !release.jobs.contains(key) {
-                release.jobs.push(*key);
+                push_release_key(
+                    &mut release,
+                    ReleaseKey::Job(*key),
+                    (additional_bytes, additional_items),
+                    &delta,
+                    &mut budget,
+                )?;
             }
         }
         for key in &prepared_target.release().pages {
             if !release.pages.contains(key) {
-                release.pages.push(*key);
+                push_release_key(
+                    &mut release,
+                    ReleaseKey::Page(*key),
+                    (additional_bytes, additional_items),
+                    &delta,
+                    &mut budget,
+                )?;
             }
         }
         for key in &prepared_target.release().object_pages {
             if !release.object_pages.contains(key) {
-                release.object_pages.push(*key);
+                push_release_key(
+                    &mut release,
+                    ReleaseKey::ObjectPage(*key),
+                    (additional_bytes, additional_items),
+                    &delta,
+                    &mut budget,
+                )?;
             }
         }
         release.counts = checked_add_counts(release.counts, prepared_target.release().counts)

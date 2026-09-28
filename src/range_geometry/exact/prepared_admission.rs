@@ -19,6 +19,7 @@ use super::{
 };
 
 mod publication;
+mod release;
 
 #[derive(Debug)]
 pub(crate) struct PreparedTargetResponse {
