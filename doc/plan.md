@@ -4,14 +4,13 @@ Implement the capacity prerequisite for preserved resident adoption from
 [the package contract](design.md#range-backed-preserved-resident-adoption), coordinated by
 the Beryl root plan. Resident protection, accounting and publication remain separate work.
 
-# Phase 73: Admit Surface Box Conversion Overlap (finished)
+# Phase 74: Account Retained Prepared Surface Storage (finished)
 
-All four surface collections now admit possible capacity-plus-length overlap before boxing and
-carry final lengths into subsequent conversions. Enclosing accounting preserves session custody
-on host-only refusal. All 246 integration tests, default-feature compilation and independent
-semantic/resource review passed. Later candidate/Ready/adoption transitions remain pending; see
-the Beryl capacity evidence note.
-
+Prepared surfaces now retain a separate post-preparation collection charge using boxed lengths,
+page ordering, caret and placeholder, excluding released scratch maps and spare vector capacity.
+Session transition checks consume that charge while earlier and mounted preparation peaks remain
+separate. All 247 integration tests, default-feature compilation and independent semantic/resource
+review passed. Candidate/Ready/adoption custody transitions remain pending.
 # Phase 2: Enforce Capacity Throughout Preparation (pending)
 
 Apply the admitted budget before geometry scan growth and candidate preparation allocations,

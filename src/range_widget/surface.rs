@@ -208,6 +208,7 @@ pub(super) struct PreparedCoherentRangeSurface {
     fillers: [Option<RangeSurfaceFiller>; 2],
     charge: RangeSurfaceCharge,
     candidate_charge: RangeSurfaceCharge,
+    retained_charge: RangeSurfaceCharge,
 }
 
 impl PreparedCoherentRangeSurface {
@@ -237,6 +238,10 @@ impl PreparedCoherentRangeSurface {
 
     pub(super) const fn candidate_charge(&self) -> RangeSurfaceCharge {
         self.candidate_charge
+    }
+
+    pub(super) const fn retained_charge(&self) -> RangeSurfaceCharge {
+        self.retained_charge
     }
 
     pub(super) fn object_selected_by(
@@ -599,6 +604,13 @@ impl CoherentRangeSurface {
             &mut collection_charge,
             &mut admit_collections,
         )?;
+        let retained_charge = boxed_collection::add(
+            collection_charge,
+            RangeSurfaceCharge {
+                bytes: page_order_bytes,
+                items: page_order_items,
+            },
+        )?;
         Ok(PreparedCoherentRangeSurface {
             binding,
             geometry: target.key().geometry(),
@@ -626,6 +638,7 @@ impl CoherentRangeSurface {
             fillers,
             charge,
             candidate_charge,
+            retained_charge,
         })
     }
 

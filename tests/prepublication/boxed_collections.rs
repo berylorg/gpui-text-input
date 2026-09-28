@@ -82,6 +82,41 @@ fn boxed_collections_admit_overlap_and_release_excess_before_next_conversion() {
 }
 
 #[test]
+fn boxed_collections_keep_non_collection_storage_after_releasing_spare_capacity() {
+    let original = values();
+    let allocated = original.iter().map(Vec::capacity).sum::<usize>();
+    let extra = RangeSurfaceCharge {
+        bytes: 37,
+        items: 2,
+    };
+    let mut peak = charge(0);
+    let (boxed, retained) = RangePrepublicationSession::test_box_collections(
+        original,
+        RangeSurfaceCharge {
+            bytes: charge(allocated).bytes + extra.bytes,
+            items: allocated + extra.items,
+        },
+        charge(0),
+        MAX,
+        MAX,
+        &mut peak,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(&*boxed[0], &[11, 12]);
+    assert_eq!(&*boxed[1], &[21, 22, 23]);
+    assert_eq!(
+        retained,
+        RangeSurfaceCharge {
+            bytes: charge(5).bytes + extra.bytes,
+            items: 5 + extra.items,
+        }
+    );
+    assert!(peak.bytes > retained.bytes);
+    assert!(peak.items > retained.items);
+}
+
+#[test]
 fn boxed_collections_empty_exact_storage_and_enclosing_overflow() {
     for values in [
         [Vec::new(), Vec::new()],

@@ -307,7 +307,7 @@ impl RangePrepublicationSession {
                 bytes: std::mem::size_of_val(&prepared),
                 items: 1,
             },
-            prepared.candidate_charge(),
+            prepared.retained_charge(),
             RangeSurfaceCharge {
                 bytes: pages
                     .capacity()
