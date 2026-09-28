@@ -4,11 +4,12 @@ Implement the capacity prerequisite for preserved resident adoption from
 [the package contract](design.md#range-backed-preserved-resident-adoption), coordinated by
 the Beryl root plan. Resident protection, accounting and publication remain separate work.
 
-# Phase 22: Admit Prepared Transition Cleanup Storage (finished)
+# Phase 23: Admit Prepared Replacement Inputs (finished)
 
-Transition cleanup previews stay on the stack until backing passes combined admission with
-live owners, successor and replacement inputs. Actual capacity reaches transition peak evidence.
-Independent resource review accepted refusal and key preservation; all 188 regressions passed.
+All six prepared replacement-input paths admit combined owner/input capacity before allocation.
+Cloned styles charge length-sized run backing while moved styles retain actual capacity charges.
+Independent resource review accepted the corrected exact-fit accounting; all 188 geometry,
+widget and prepublication regression cases passed on the final revision.
 
 # Phase 2: Enforce Capacity Throughout Preparation (pending)
 

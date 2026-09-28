@@ -190,6 +190,7 @@ impl ExactGeometryOwner {
         validation::validate_inputs(&layout, &style)?;
         let binding = self.inputs()?.binding;
         let epoch = self.next_transition_epoch()?;
+        self.admit_replacement_inputs(&layout, &style, false)?;
         let inputs = Box::new(OwnerInputs {
             binding,
             presentation_generation: self.key.presentation_generation(),
@@ -212,6 +213,7 @@ impl ExactGeometryOwner {
         request_id: PageRequestId,
     ) -> Result<PreparedGeometryTransition, ExactGeometryError> {
         let current = self.inputs()?;
+        self.admit_replacement_inputs(&current.layout, &current.style, true)?;
         let inputs = Box::new(OwnerInputs {
             binding: current.binding,
             presentation_generation,
@@ -236,6 +238,7 @@ impl ExactGeometryOwner {
     ) -> Result<PreparedGeometryTransition, ExactGeometryError> {
         let current = self.inputs()?;
         let epoch = self.next_transition_epoch()?;
+        self.admit_replacement_inputs(&current.layout, &current.style, true)?;
         let inputs = Box::new(OwnerInputs {
             binding,
             presentation_generation,
@@ -262,6 +265,7 @@ impl ExactGeometryOwner {
         validation::validate_inputs(&layout, &style)?;
         let binding = self.inputs()?.binding;
         let epoch = self.next_transition_epoch()?;
+        self.admit_replacement_inputs(&layout, &style, false)?;
         let inputs = Box::new(OwnerInputs {
             binding,
             presentation_generation: self.key.presentation_generation(),
@@ -285,6 +289,7 @@ impl ExactGeometryOwner {
         target: BlockTarget,
     ) -> Result<PreparedGeometryTransition, ExactGeometryError> {
         let current = self.inputs()?;
+        self.admit_replacement_inputs(&current.layout, &current.style, true)?;
         let inputs = Box::new(OwnerInputs {
             binding: current.binding,
             presentation_generation,
@@ -310,6 +315,7 @@ impl ExactGeometryOwner {
     ) -> Result<PreparedGeometryTransition, ExactGeometryError> {
         let current = self.inputs()?;
         let epoch = self.next_transition_epoch()?;
+        self.admit_replacement_inputs(&current.layout, &current.style, true)?;
         let inputs = Box::new(OwnerInputs {
             binding,
             presentation_generation,
@@ -323,6 +329,38 @@ impl ExactGeometryOwner {
             epoch,
         );
         self.prepare_replacement_origin_target(inputs, key, job_id, request_id, target, true)
+    }
+
+    fn admit_replacement_inputs(
+        &self,
+        layout: &StreamingLayoutBinding,
+        style: &StreamingGeometryStyle,
+        clone_style: bool,
+    ) -> Result<(), ExactGeometryError> {
+        let current = self.counts();
+        let mut inputs = accounting::initial_owner_counts(layout, style);
+        if clone_style {
+            let unused_bytes = style.oversize.runs.capacity()
+                .checked_sub(style.oversize.runs.len())
+                .and_then(|unused| unused.checked_mul(size_of::<gpui::TextRun>()))
+                .ok_or(ExactGeometryError::CapacityExceeded)?;
+            inputs.input_bytes = inputs.input_bytes.checked_sub(unused_bytes)
+                .ok_or(ExactGeometryError::CapacityExceeded)?;
+        }
+        let required_bytes = current
+            .total_bytes()
+            .checked_add(inputs.input_bytes)
+            .ok_or(ExactGeometryError::CapacityExceeded)?;
+        let required_items = current
+            .total_items()
+            .checked_add(inputs.input_items)
+            .ok_or(ExactGeometryError::CapacityExceeded)?;
+        if required_bytes > self.limits.max_retained_bytes
+            || required_items > self.limits.max_retained_items
+        {
+            return Err(ExactGeometryError::CapacityExceeded);
+        }
+        Ok(())
     }
 
     fn prepare_replacement_origin_target(
