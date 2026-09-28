@@ -43,6 +43,7 @@ enum SessionStage {
     CandidateTaken,
 }
 
+#[derive(Clone, Copy)]
 enum Waiting {
     Validation(RangePrepublicationValidationRequest),
     RestorationPage {
@@ -63,6 +64,21 @@ enum Waiting {
         key: crate::ObjectRequestKey,
         text_page: PageId,
         cleanup: RangePrepublicationCleanupToken,
+    },
+}
+
+#[derive(Clone, Copy)]
+enum AdmittedGeometryResponse {
+    Page {
+        job: GeometryJobKey,
+        page: PageId,
+        resident: bool,
+    },
+    Object {
+        job: GeometryJobKey,
+        text_page: PageId,
+        page: ObjectPageId,
+        resident: bool,
     },
 }
 
@@ -122,6 +138,7 @@ pub struct RangePrepublicationSession {
     geometry_job: Option<GeometryJobKey>,
     waiting: Option<Waiting>,
     delivered: Option<DeliveredResponse>,
+    admitted_geometry: Option<AdmittedGeometryResponse>,
     candidate: Option<RangePrepublicationCandidate>,
     text_custody: Vec<TextCustody>,
     object_custody: Vec<ObjectCustody>,
@@ -193,6 +210,7 @@ impl RangePrepublicationSession {
             geometry_job: None,
             waiting: None,
             delivered: None,
+            admitted_geometry: None,
             candidate: None,
             text_custody,
             object_custody,
@@ -241,6 +259,15 @@ impl RangePrepublicationSession {
                 if self.delivered.is_some() {
                     let charge = self.response_coexistence_charge();
                     if charge.is_some_and(|charge| !charge_fits(charge, self.available)) {
+                        RangePrepublicationStatus::CapacityBlocked
+                    } else {
+                        RangePrepublicationStatus::Advancing
+                    }
+                } else if self.admitted_geometry.is_some() {
+                    if self
+                        .current_charge()
+                        .is_some_and(|charge| !charge_fits(charge, self.available))
+                    {
                         RangePrepublicationStatus::CapacityBlocked
                     } else {
                         RangePrepublicationStatus::Advancing
@@ -316,7 +343,10 @@ impl RangePrepublicationSession {
                     break;
                 }
             }
-            if self.waiting.is_some() && self.delivered.is_none() {
+            if self.waiting.is_some()
+                && self.delivered.is_none()
+                && self.admitted_geometry.is_none()
+            {
                 break;
             }
         }
@@ -335,6 +365,7 @@ impl RangePrepublicationSession {
         self.release_all_resident_custody();
         self.cancel_waiting();
         self.delivered = None;
+        self.admitted_geometry = None;
         self.candidate = None;
         if let Some(geometry) = self.geometry.as_mut() {
             let _ = geometry.dispose();

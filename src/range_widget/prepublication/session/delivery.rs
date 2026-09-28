@@ -86,7 +86,7 @@ impl RangePrepublicationSession {
         ) {
             return RangePrepublicationDelivery::Obsolete;
         }
-        if self.delivered.is_some() {
+        if self.delivered.is_some() || self.admitted_geometry.is_some() {
             if self.response_matches_waiting(&response) {
                 self.fail_without_effects(RangePrepublicationFailure::ExactKeyCollision);
                 return RangePrepublicationDelivery::Terminal(
@@ -140,7 +140,7 @@ impl RangePrepublicationSession {
 
     pub(super) fn process_delivered(
         &mut self,
-        text_system: &WindowTextSystem,
+        _text_system: &WindowTextSystem,
         _effects: &mut EffectBuffer,
     ) -> Result<(), RangePrepublicationFailure> {
         let response = self.delivered.take().expect("delivered response checked");
@@ -202,7 +202,12 @@ impl RangePrepublicationSession {
                     Err(error) => return Err(classify_page_admission(error)),
                 };
                 self.retain_text_custody(page_id, cleanup)?;
-                self.process_geometry_page(job, page_id, text_system, false)?;
+                self.waiting = Some(waiting);
+                self.admitted_geometry = Some(AdmittedGeometryResponse::Page {
+                    job,
+                    page: page_id,
+                    resident: false,
+                });
             }
             (
                 Waiting::GeometryObject {
@@ -223,7 +228,13 @@ impl RangePrepublicationSession {
                         .map_err(classify_object_admission)?,
                 );
                 self.retain_object_custody(page_id, cleanup)?;
-                self.process_geometry_object(job, text_page, page_id, text_system, false)?;
+                self.waiting = Some(waiting);
+                self.admitted_geometry = Some(AdmittedGeometryResponse::Object {
+                    job,
+                    text_page,
+                    page: page_id,
+                    resident: false,
+                });
             }
             _ => return Err(RangePrepublicationFailure::Stale),
         }

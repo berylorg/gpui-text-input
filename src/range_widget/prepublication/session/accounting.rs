@@ -196,6 +196,7 @@ impl RangePrepublicationSession {
         self.release_all_resident_custody();
         self.cancel_waiting();
         self.delivered = None;
+        self.admitted_geometry = None;
         self.candidate = None;
         if let Some(geometry) = self.geometry.as_mut() {
             let _ = geometry.dispose();

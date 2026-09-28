@@ -33,7 +33,7 @@ fn resident_geometry_request_refusal_preserves_custody_and_resumes(cx: &mut Test
                     } else {
                         RangeSurfaceCharge {
                             bytes: usize::MAX,
-                            items: if mode == 1 { 0 } else { before.items },
+                            items: if mode == 1 { 0 } else { before.items - 1 },
                         }
                     });
                     let step = session.service(window.text_system());

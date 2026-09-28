@@ -10,6 +10,9 @@ impl RangePrepublicationSession {
         text_system: &WindowTextSystem,
         effects: &mut EffectBuffer,
     ) -> Result<bool, RangePrepublicationFailure> {
+        if self.admitted_geometry.is_some() {
+            return self.advance_admitted_geometry(text_system);
+        }
         if self.delivered.is_some() {
             let coexistence = self
                 .response_coexistence_charge()

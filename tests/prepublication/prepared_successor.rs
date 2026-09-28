@@ -52,6 +52,9 @@ fn prepared_successor_waits_for_cleanup_admission_and_releases_exact_custody(
                 }
             }
             let consumed = consumed.expect("index page was delivered");
+            let admitted = session.service(window.text_system());
+            assert_eq!(admitted.spent, 1);
+            assert!(admitted.effects.is_empty());
             let prepared = session.service(window.text_system());
             assert_eq!(prepared.spent, 1);
             assert!(prepared.effects.is_empty());

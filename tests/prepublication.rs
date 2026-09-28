@@ -22,6 +22,9 @@ use gpui_text_input::{
     TextInputAtomClipboardPolicy, TextInputEnterKey, TextInputRichPastePolicy, TextInputTheme,
 };
 
+#[path = "prepublication/admitted_response.rs"]
+mod admitted_response;
+
 fn binding(source: &str, revision: u64) -> RangeBinding {
     RangeBinding::new(
         BindingId::new(41),

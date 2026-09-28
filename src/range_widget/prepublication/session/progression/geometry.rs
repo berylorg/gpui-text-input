@@ -6,7 +6,7 @@ use crate::range_geometry::{
 impl RangePrepublicationSession {
     pub(super) fn advance_geometry(
         &mut self,
-        text_system: &WindowTextSystem,
+        _text_system: &WindowTextSystem,
         effects: &mut EffectBuffer,
     ) -> Result<bool, RangePrepublicationFailure> {
         if matches!(self.stage, SessionStage::Target)
@@ -107,7 +107,12 @@ impl RangePrepublicationSession {
                     {
                         return Err(RangePrepublicationFailure::Stale);
                     }
-                    self.process_geometry_object(job, text_page, page, text_system, true)?;
+                    self.admitted_geometry = Some(AdmittedGeometryResponse::Object {
+                        job,
+                        text_page,
+                        page,
+                        resident: true,
+                    });
                     Ok(true)
                 }
                 ObjectDemand::Requested(resident_request) => {
@@ -184,7 +189,11 @@ impl RangePrepublicationSession {
                     {
                         return Err(RangePrepublicationFailure::Stale);
                     }
-                    self.process_geometry_page(job, page, text_system, true)?;
+                    self.admitted_geometry = Some(AdmittedGeometryResponse::Page {
+                        job,
+                        page,
+                        resident: true,
+                    });
                     Ok(true)
                 }
                 PageDemand::Requested(resident_request) => {
@@ -206,6 +215,44 @@ impl RangePrepublicationSession {
                 }
             }
         }
+    }
+
+    pub(super) fn advance_admitted_geometry(
+        &mut self,
+        text_system: &WindowTextSystem,
+    ) -> Result<bool, RangePrepublicationFailure> {
+        let charge = self
+            .current_charge()
+            .ok_or(RangePrepublicationFailure::Arithmetic)?;
+        if !charge_fits(charge, configured_capacity(self.environment.config())) {
+            return Err(RangePrepublicationFailure::TerminalCapacity);
+        }
+        if !charge_fits(charge, self.available) {
+            return Ok(false);
+        }
+        match self
+            .admitted_geometry
+            .ok_or(RangePrepublicationFailure::Stale)?
+        {
+            AdmittedGeometryResponse::Page {
+                job,
+                page,
+                resident,
+            } => {
+                self.process_geometry_page(job, page, text_system, resident)?;
+            }
+            AdmittedGeometryResponse::Object {
+                job,
+                text_page,
+                page,
+                resident,
+            } => {
+                self.process_geometry_object(job, text_page, page, text_system, resident)?;
+            }
+        }
+        self.admitted_geometry = None;
+        self.waiting = None;
+        Ok(true)
     }
 
     pub(in crate::range_widget::prepublication::session) fn process_geometry_page(
