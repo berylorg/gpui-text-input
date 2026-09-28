@@ -693,6 +693,66 @@ without advancing; subsequent cancellation, terminal capacity failure, or dispos
 No failure, cancellation, capacity outcome, or stale completion publishes a partial candidate,
 retains unbounded work, revives detached widget state, or changes authoritative text or history.
 
+## Range-Backed Preserved Resident Adoption
+
+A host may replace a quiescent resident's publication with a ready prepublication candidate
+without replacing the resident widget or its GPUI entity. This is a separate checked adoption
+boundary; ordinary rebind and restoration import retain their existing contracts. The host first
+fences interaction and exports the exact predecessor restoration seed with no active composition
+or unsettled operation. Admission requires that same live resident, binding, coherent publication,
+seed and quiescent cut to remain current. Disabled input alone is not proof of quiescence.
+
+The host owns proof that the successor source preserves the predecessor's authoritative content,
+inline-object identities and order, and history meaning. The widget cannot infer correspondence
+from equal revisions, extents, offsets or history availability. The host supplies an explicit
+predecessor/successor association and a successor seed whose binding and opaque history authority
+come from the fresh source. Caret, directed selection, gap witnesses, logical scroll anchor and
+intra-anchor continuation remain exactly the exported positions. This boundary does not translate
+positions across an edit or choose a different history root. The ordinary prepublication session
+validates those positions and the successor source and history through fresh bounded effects.
+
+Realization remains outside the resident and uses the existing prepublication engine, source
+protocol and cleanup ledger. The host drives its finite steps while the resident remains fenced.
+The predecessor retains its coherent paint, focus handle and subscriptions; it admits no user
+mutation or new source-dependent interaction. Focus loss is permitted, but realization or adoption
+must not steal focus or replace its identity. Render, focus and layout callbacks must not advance
+the predecessor or dispatch old-source work during this cut. Environment changes invalidate the
+candidate; they do not silently reflow or discard the protected predecessor presentation.
+
+Final adoption synchronously rechecks the exact predecessor and successor association, current
+successor source/history validation, preserved positions, window-affine text-system identity,
+presentation generation, layout inputs, environment and configured capacities. It prepares all
+fallible work before changing resident state. Retained-byte and semantic-item admission accounts
+for the simultaneous predecessor, session/candidate, cleanup records and transition peak under
+one finite host-supplied envelope, including preparations before the final call. Existing owners
+are charged once; moving them neither duplicates charges nor creates an uncharged interval.
+Capacity refusal must leave the predecessor paintable. It cannot evict that surface to make room
+or raise the configured limits implicitly.
+
+Success consumes the candidate once and publishes its coherent binding, geometry, caret,
+selection, scroll and exact history frontier together through the ordinary staged-publication
+boundary. Resident identity, focus handle, subscriptions and the host's interaction fence survive.
+Scrollbar interaction ownership advances to the successor without retaining a route to the old
+binding. Adoption emits no edit, history operation, activation or gate-release authority. Old
+resident owners retire only after successful publication; their exact cancellation/release custody
+remains in the bounded ledger until the host drains and acknowledges it.
+
+Refusal returns a typed content-free outcome and leaves the resident, publication and fence
+unchanged. It retains no implicit adoption intent or scheduled retry. A supplied candidate is
+consumed or rejected once; rejection marks its registered cleanup ready through the existing
+non-callback destruction path. The host retains ledger custody after refusal, abandonment or
+disposal and drains it explicitly. Stale or duplicate completions cannot affect either publication.
+Retry requires a newly admitted candidate after prior effects and cleanup have settled; unresolved
+cleanup cannot be mistaken for readiness or permit slot reuse.
+
+Acceptance requires focused integration evidence for same-resident success with non-origin scroll,
+directed selection, inline gaps and history; focus and subscription preservation; changed
+predecessor, source, history and environment refusal; pending-work refusal; exact-fit and
+insufficient combined capacity; stale/duplicate delivery, cancellation and cleanup after both
+success and rejection. Verify that refusal preserves paint and that success remains fenced.
+Independent semantic lifecycle and resource review is required. Host persistence correspondence,
+service dispatch and whole-application reopening remain outside this widget boundary.
+
 ## Range-Backed Atomic Interaction Publication
 
 The range-backed widget owns one bounded staged-publication boundary for layout, presentation,
