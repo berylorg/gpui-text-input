@@ -93,6 +93,117 @@ fn continuation_startup_overflow_clears_prior_refusal_without_peak_fabrication()
 }
 
 #[test]
+fn shared_output_allowance_matches_every_bounded_output_observation() {
+    for baseline in [0, 3] {
+        for current in [0, 2, 6] {
+            for growth in 0..=3 {
+                for existing in 0..=growth {
+                    for configured_room in 0..=5 {
+                        for host_room in 0..=5 {
+                            for prospective in [0, 1, 3, 9] {
+                                let raw = baseline + growth;
+                                let configured = raw + configured_room;
+                                let enclosing = current + growth - existing + host_room;
+                                let mut probe = PreparationCapacityProbe::with_baselines(
+                                    (configured, configured),
+                                    (enclosing, enclosing),
+                                    (baseline, baseline),
+                                    (current, current),
+                                );
+                                let allowance = probe
+                                    .output_capacity(
+                                        (raw, raw),
+                                        (existing, existing),
+                                        (prospective, prospective),
+                                    )
+                                    .unwrap();
+                                assert_eq!(probe.peaks(), ((0, 0), (0, 0)));
+                                for output in 0..=6 {
+                                    let credit = existing + output.min(prospective);
+                                    let admitted = probe
+                                        .observe_preparation(
+                                            (raw + output, raw + output),
+                                            (credit, credit),
+                                        )
+                                        .is_ok();
+                                    assert_eq!(admitted, output <= allowance.0);
+                                    assert_eq!(allowance.0, allowance.1);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn shared_output_allowance_preserves_independent_limits_and_mapping_bounds() {
+    let mut probe =
+        PreparationCapacityProbe::with_baselines((200, 20), (150, 15), (100, 10), (80, 8));
+    assert_eq!(
+        probe.output_capacity((150, 15), (10, 1), (7, 0)).unwrap(),
+        (37, 3)
+    );
+    assert_eq!(
+        probe
+            .output_capacity((150, 15), (10, 1), (1000, 1000))
+            .unwrap(),
+        (50, 5)
+    );
+    probe.observe_preparation((187, 18), (17, 1)).unwrap();
+    assert!(probe.observe_preparation((188, 18), (17, 1)).is_err());
+    assert!(probe.enclosing_refusal());
+    assert!(probe.observe_preparation((201, 21), (51, 5)).is_err());
+    assert!(probe.configured_refusal());
+
+    let max = (usize::MAX, usize::MAX);
+    let mut near_max = PreparationCapacityProbe::with_baselines(
+        max,
+        max,
+        (10, 10),
+        (usize::MAX - 4, usize::MAX - 4),
+    );
+    assert_eq!(
+        near_max.output_capacity((12, 12), (2, 2), max).unwrap(),
+        (2, 2)
+    );
+    near_max.observe_preparation((14, 14), (4, 4)).unwrap();
+    assert!(near_max.observe_preparation((15, 15), (5, 5)).is_err());
+    assert!(!near_max.configured_refusal());
+    assert!(!near_max.enclosing_refusal());
+
+    let low = PreparationCapacityProbe::with_baselines(max, max, (0, 0), (0, 0));
+    assert_eq!(
+        low.output_capacity((1, 2), (0, 0), max).unwrap(),
+        (usize::MAX - 1, usize::MAX - 2)
+    );
+    for (occupied, existing) in [
+        ((99, 15), (0, 0)),
+        ((150, 9), (0, 0)),
+        ((150, 15), (51, 0)),
+        ((150, 15), (0, 6)),
+    ] {
+        assert_eq!(
+            probe.output_capacity(occupied, existing, max),
+            Err(ExactGeometryError::CapacityExceeded)
+        );
+    }
+    let overflow = PreparationCapacityProbe::with_baselines(max, max, (0, 0), max);
+    assert_eq!(
+        overflow.output_capacity((1, 1), (1, 1), max),
+        Err(ExactGeometryError::CapacityExceeded)
+    );
+    let occupied_over_limit = PreparationCapacityProbe::new((10, 10), (10, 10));
+    assert!(
+        occupied_over_limit
+            .output_capacity((11, 11), (0, 0), max)
+            .is_err()
+    );
+}
+
+#[test]
 fn pre_shaping_allowance_uses_mapped_headroom_without_future_credit() {
     for (current, enclosing, expected) in [
         ((80, 8), (150, 15), (20, 2)),

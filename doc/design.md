@@ -730,6 +730,8 @@ raw preparation growth to enclosing custody with observation-specific incrementa
 The remaining-capacity probe also qualifies mapped headroom with distinct baselines and no
 prospective output credit before GPUI startup. The startup probe admits the prior continuation's
 actual byte/item charge independently of output allowance and qualifies it against GPUI accounting.
+The output-allowance probe qualifies existing versus prospective shared credits, configured and
+enclosing bounds, and representability of the checked pre-credit mapping at the returned limit.
 The feature exposes the observation type for source-backed
 transition integration fixtures. It delegates to ordinary preparation and commit;
 it is absent without the feature and does not define a production host admission interface.

@@ -4,11 +4,11 @@ Implement the capacity prerequisite for preserved resident adoption from
 [the package contract](design.md#range-backed-preserved-resident-adoption), coordinated by
 the Beryl root plan. Resident protection, accounting and publication remain separate work.
 
-# Phase 53: Admit GPUI Continuation Startup Explicitly (finished)
+# Phase 54: Derive Shared Output Capacity Allowances (finished)
 
-The actual prior continuation charge is admitted before GPUI invocation with zero prospective credit
-and explicit configured/enclosing refusal evidence. Independent review accepted the boundary;
-all 223 integration tests passed. Live session mapping and shared-output credits remain pending.
+Mapped output allowances separate existing and prospective shared credit while preserving
+configured bounds and checked mapping representability. Independent review accepted the calculation;
+all 225 integration tests passed. Production remains zero-credit until ownership evidence is wired.
 
 # Phase 2: Enforce Capacity Throughout Preparation (pending)
 
@@ -27,8 +27,8 @@ The independent observer now follows actual nested admissions, supports checked 
 and reports enclosing peaks in prepared results and failures. Production still uses identity mapping;
 derive live session baselines and per-observation credits, then consume those peaks in the session.
 Zero-credit GPUI allowances now respect both mapped views, and actual continuation startup is
-explicitly admitted before invocation. Shared-output allowance derivation remains necessary
-before prospective display credits can be enabled.
+explicitly admitted before invocation. Shared-output allowance derivation is accepted; connect
+per-observation ownership evidence before prospective display credits can be enabled.
 Carry it through pre-copy, detached custody, output before metadata and publication observations.
 Deferred presentation backing now shares correctly and participates in retained overlap queries.
 Explicit preparation admission now carries typed configured/enclosing refusal attribution.

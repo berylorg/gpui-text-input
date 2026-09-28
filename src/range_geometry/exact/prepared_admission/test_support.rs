@@ -43,6 +43,16 @@ impl PreparationCapacityProbe {
         (self.0.configured_peak, self.0.enclosing_peak)
     }
 
+    pub fn output_capacity(
+        &self,
+        occupied: (usize, usize),
+        existing_credit: (usize, usize),
+        prospective_credit: (usize, usize),
+    ) -> Result<(usize, usize), ExactGeometryError> {
+        self.0
+            .output_capacity(occupied, existing_credit, prospective_credit)
+    }
+
     pub fn into_failure(self, error: ExactGeometryError) -> ExactGeometryFailure {
         prepared_failure(
             error,

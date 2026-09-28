@@ -40,15 +40,37 @@ impl CapacityObservations {
         &self,
         occupied: (usize, usize),
     ) -> Result<(usize, usize), ExactGeometryError> {
-        let remaining =
-            |raw: usize, baseline: usize, current: usize, configured: usize, enclosing: usize| {
-                let mapped = current.checked_add(raw.checked_sub(baseline)?)?;
-                Some(
-                    configured
-                        .checked_sub(raw)?
-                        .min(enclosing.checked_sub(mapped)?),
-                )
-            };
+        self.output_capacity(occupied, (0, 0), (0, 0))
+    }
+
+    pub(super) fn output_capacity(
+        &self,
+        occupied: (usize, usize),
+        existing_credit: (usize, usize),
+        prospective_credit: (usize, usize),
+    ) -> Result<(usize, usize), ExactGeometryError> {
+        let remaining = |raw: usize,
+                         baseline: usize,
+                         current: usize,
+                         configured: usize,
+                         enclosing: usize,
+                         existing: usize,
+                         prospective: usize| {
+            let growth = raw.checked_sub(baseline)?;
+            if existing > growth {
+                return None;
+            }
+            let uncredited = current.checked_add(growth)?;
+            let mapped = uncredited.checked_sub(existing)?;
+            let headroom = enclosing.checked_sub(mapped)?;
+            let maximum = configured.checked_sub(raw)?.min(usize::MAX - uncredited);
+            // Bound the extension before addition; unused prospective credit is not charged.
+            Some(if maximum > headroom {
+                headroom + prospective.min(maximum - headroom)
+            } else {
+                maximum
+            })
+        };
         Ok((
             remaining(
                 occupied.0,
@@ -56,6 +78,8 @@ impl CapacityObservations {
                 self.enclosing_baseline.0,
                 self.configured_limit.0,
                 self.enclosing_limit.0,
+                existing_credit.0,
+                prospective_credit.0,
             )
             .ok_or(ExactGeometryError::CapacityExceeded)?,
             remaining(
@@ -64,6 +88,8 @@ impl CapacityObservations {
                 self.enclosing_baseline.1,
                 self.configured_limit.1,
                 self.enclosing_limit.1,
+                existing_credit.1,
+                prospective_credit.1,
             )
             .ok_or(ExactGeometryError::CapacityExceeded)?,
         ))
