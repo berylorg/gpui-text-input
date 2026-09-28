@@ -155,6 +155,7 @@ impl RangePrepublicationSession {
             )
             .ok_or(RangePrepublicationFailure::Arithmetic)?,
         )?;
+        let mut object_storage = None;
         let storage = if let Some(DeliveredResponse::Page(page)) = self.delivered.as_ref() {
             if !matches!(
                 self.waiting,
@@ -191,6 +192,48 @@ impl RangePrepublicationSession {
                 return Ok(false);
             };
             Some(prepared)
+        } else if let Some(DeliveredResponse::ObjectPage(page)) = self.delivered.as_ref() {
+            if !matches!(
+                self.waiting,
+                Some(Waiting::RestorationObject { .. } | Waiting::GeometryObject { .. })
+            ) {
+                return Err(RangePrepublicationFailure::Stale);
+            }
+            let configured = configured_capacity(self.environment.config());
+            let available = self.available;
+            let mut peak = coexistence;
+            let mut failure = None;
+            let prepared = self.object_residency.prepare_delivered_storage(
+                page,
+                &self.residency,
+                |bytes, items| {
+                    let charge = match add_charge(coexistence, RangeSurfaceCharge { bytes, items })
+                    {
+                        Ok(charge) => charge,
+                        Err(error) => {
+                            failure = Some(error);
+                            return false;
+                        }
+                    };
+                    peak.bytes = peak.bytes.max(charge.bytes);
+                    peak.items = peak.items.max(charge.items);
+                    if !charge_fits(charge, configured) {
+                        failure = Some(RangePrepublicationFailure::TerminalCapacity);
+                        return false;
+                    }
+                    charge_fits(charge, available)
+                },
+            );
+            self.observe_charge(peak);
+            if let Some(failure) = failure {
+                return Err(failure);
+            }
+            let Some(prepared) = prepared.map_err(classify_object_admission)? else {
+                self.ledger_blocked = true;
+                return Ok(false);
+            };
+            object_storage = Some(prepared);
+            None
         } else {
             if !charge_fits(coexistence, self.available) {
                 return Ok(false);
@@ -234,14 +277,12 @@ impl RangePrepublicationSession {
                 self.retain_text_custody(page_id, cleanup)?;
             }
             (Waiting::RestorationObject { cleanup, .. }, DeliveredResponse::ObjectPage(page)) => {
-                let proofs = self
-                    .residency
-                    .prove_object_page_anchors(self.seed.binding, &page)
-                    .map_err(|_| RangePrepublicationFailure::MalformedResponse)?;
                 let page_id = object_page_id(
-                    self.object_residency
-                        .admit(page, proofs)
-                        .map_err(classify_object_admission)?,
+                    self.object_residency.commit_prepared_admit(
+                        object_storage
+                            .expect("object storage prepared")
+                            .with_page(page),
+                    ),
                 );
                 let page = self
                     .object_residency
@@ -276,14 +317,12 @@ impl RangePrepublicationSession {
                 },
                 DeliveredResponse::ObjectPage(page),
             ) => {
-                let proofs = self
-                    .residency
-                    .prove_object_page_anchors(self.seed.binding, &page)
-                    .map_err(|_| RangePrepublicationFailure::MalformedResponse)?;
                 let page_id = object_page_id(
-                    self.object_residency
-                        .admit(page, proofs)
-                        .map_err(classify_object_admission)?,
+                    self.object_residency.commit_prepared_admit(
+                        object_storage
+                            .expect("object storage prepared")
+                            .with_page(page),
+                    ),
                 );
                 self.retain_object_custody(page_id, cleanup)?;
                 self.waiting = Some(waiting);

@@ -413,37 +413,49 @@ impl RangeResidency {
         expected_binding: RangeBinding,
         page: &ObjectPage,
     ) -> Result<ObjectAnchorProofs, ObjectAnchorProofError> {
-        if expected_binding != self.binding
-            || page.key().binding() != expected_binding.binding()
-            || page.key().revision() != expected_binding.revision()
-        {
-            return Err(ObjectAnchorProofError::Stale(page.key()));
-        }
-
-        let mut proofs = Vec::new();
-        let mut previous = None;
-        for object in page.objects() {
-            if previous == Some(object.anchor()) {
-                continue;
-            }
-            proofs.push(
-                self.prove_scalar_boundary(object.anchor())
-                    .map_err(ObjectAnchorProofError::Scalar)?,
-            );
-            previous = Some(object.anchor());
-        }
-        if proofs
-            .iter()
-            .any(|proof| proof.range_binding() != expected_binding)
-        {
-            return Err(ObjectAnchorProofError::Stale(page.key()));
-        }
+        let proofs = self
+            .object_page_anchor_proofs(expected_binding, page)?
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(ObjectAnchorProofs::new(
             expected_binding,
             page.id(),
             page.key(),
             proofs,
         ))
+    }
+
+    pub(crate) fn object_page_anchor_proofs<'a>(
+        &'a self,
+        expected_binding: RangeBinding,
+        page: &'a ObjectPage,
+    ) -> Result<
+        impl Iterator<Item = Result<ScalarBoundaryProof, ObjectAnchorProofError>> + 'a,
+        ObjectAnchorProofError,
+    > {
+        if expected_binding != self.binding
+            || page.key().binding() != expected_binding.binding()
+            || page.key().revision() != expected_binding.revision()
+        {
+            return Err(ObjectAnchorProofError::Stale(page.key()));
+        }
+        let mut previous = None;
+        Ok(page.objects().iter().filter_map(move |object| {
+            if previous == Some(object.anchor()) {
+                return None;
+            }
+            previous = Some(object.anchor());
+            Some(
+                self.prove_scalar_boundary(object.anchor())
+                    .map_err(ObjectAnchorProofError::Scalar)
+                    .and_then(|proof| {
+                        if proof.range_binding() == expected_binding {
+                            Ok(proof)
+                        } else {
+                            Err(ObjectAnchorProofError::Stale(page.key()))
+                        }
+                    }),
+            )
+        }))
     }
 
     /// Moves every resident page into one publication candidate.

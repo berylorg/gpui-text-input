@@ -183,6 +183,31 @@ impl RangePrepublicationSession {
     }
 
     #[cfg(feature = "test-support")]
+    pub(crate) fn delivered_object_preparation_for_test(
+        &self,
+    ) -> Option<(
+        crate::ObjectRequestKey,
+        u64,
+        RangeSurfaceCharge,
+        RangeSurfaceCharge,
+    )> {
+        let DeliveredResponse::ObjectPage(page) = self.delivered.as_ref()? else {
+            return None;
+        };
+        let current = self.response_coexistence_charge()?;
+        let mut peak = current;
+        self.object_residency
+            .prepare_delivered_storage(page, &self.residency, |bytes, items| {
+                let charge = add_charge(current, RangeSurfaceCharge { bytes, items }).unwrap();
+                peak.bytes = peak.bytes.max(charge.bytes);
+                peak.items = peak.items.max(charge.items);
+                true
+            })
+            .ok()??;
+        Some((page.key(), self.next_id, current, peak))
+    }
+
+    #[cfg(feature = "test-support")]
     pub(crate) fn initial_index_identity_for_test(&self) -> Option<u64> {
         (matches!(self.stage, SessionStage::Restoration)
             && self.waiting.is_none()

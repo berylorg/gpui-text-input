@@ -10,6 +10,7 @@ use crate::range_source::{
 };
 use crate::residency::ObjectAnchorProofs;
 
+mod admission;
 #[cfg(test)]
 mod tests;
 mod types;
@@ -632,272 +633,22 @@ impl ObjectResidency {
         Ok(self.commit_prepared_admit(prepared))
     }
 
-    /// Prepares one object-page admission without mutating any owner state.
     pub(crate) fn prepare_admit(
         &self,
         page: ObjectPage,
         anchor_proofs: ObjectAnchorProofs,
     ) -> Result<PreparedObjectPageAdmission, ObjectPageAdmissionError> {
-        let key = page.key();
-        if !self.is_current(key) {
-            return Err(ObjectPageAdmissionError::Stale(key));
-        }
-        #[cfg(test)]
-        if self.force_next_admission_limit.replace(false) {
-            return Err(ObjectPageAdmissionError::LimitExceeded(
-                ObjectResidencyLimitKind::ResidentBytes,
-            ));
-        }
-        let Some(pending_index) = self.pending.iter().position(|pending| *pending == key) else {
-            return if self.cancelled.contains(&key) {
-                Err(ObjectPageAdmissionError::Cancelled(key))
-            } else {
-                Err(ObjectPageAdmissionError::Unavailable(key))
-            };
-        };
-        self.validate_page(&page, &anchor_proofs)
-            .map_err(ObjectPageAdmissionError::Malformed)?;
-        let charge = page.retained_charge();
-        if charge.bytes() > self.limits.max_resident_bytes() {
-            return Err(ObjectPageAdmissionError::LimitExceeded(
-                ObjectResidencyLimitKind::ResidentBytes,
-            ));
-        }
-        if charge.objects() > self.limits.max_resident_objects() {
-            return Err(ObjectPageAdmissionError::LimitExceeded(
-                ObjectResidencyLimitKind::ResidentObjects,
-            ));
-        }
-        if charge.presentation_bytes() > self.limits.max_resident_presentation_bytes() {
-            return Err(ObjectPageAdmissionError::LimitExceeded(
-                ObjectResidencyLimitKind::ResidentPresentationBytes,
-            ));
-        }
-
-        let reconciled_index = self
-            .resident
-            .iter()
-            .position(|resident| resident.id() == page.id());
-        let mut disposition = vec![ResidentDisposition::Retain; self.resident.len()];
-        let mut surviving_pages = self.resident.len();
-        let mut surviving_bytes = self.resident_bytes;
-        let mut surviving_objects = self.resident_objects;
-        let mut surviving_presentation_bytes = self.resident_presentation_bytes;
-        if let Some(index) = reconciled_index {
-            disposition[index] = ResidentDisposition::Evict;
-            let existing = self.resident[index].retained_charge();
-            surviving_pages =
-                surviving_pages
-                    .checked_sub(1)
-                    .ok_or(ObjectPageAdmissionError::LimitExceeded(
-                        ObjectResidencyLimitKind::ResidentPages,
-                    ))?;
-            surviving_bytes = surviving_bytes.checked_sub(existing.bytes()).ok_or(
-                ObjectPageAdmissionError::LimitExceeded(ObjectResidencyLimitKind::ResidentBytes),
-            )?;
-            surviving_objects = surviving_objects.checked_sub(existing.objects()).ok_or(
-                ObjectPageAdmissionError::LimitExceeded(ObjectResidencyLimitKind::ResidentObjects),
-            )?;
-            surviving_presentation_bytes = surviving_presentation_bytes
-                .checked_sub(existing.presentation_bytes())
-                .ok_or(ObjectPageAdmissionError::LimitExceeded(
-                    ObjectResidencyLimitKind::ResidentPresentationBytes,
-                ))?;
-        }
-
-        let mut evicted_pages: usize = 0;
-        let mut evicted_objects: usize = 0;
-        for (resident_index, existing) in self.resident.iter().enumerate() {
-            if disposition[resident_index] == ResidentDisposition::Evict {
-                continue;
-            }
-            let repeated_payload = existing
-                .objects()
-                .iter()
-                .any(|left| page.objects().iter().any(|right| left.id() == right.id()));
-            if repeated_payload {
-                disposition[resident_index] = ResidentDisposition::Evict;
-                let existing_charge = existing.retained_charge();
-                surviving_pages = surviving_pages.checked_sub(1).ok_or(
-                    ObjectPageAdmissionError::LimitExceeded(
-                        ObjectResidencyLimitKind::ResidentPages,
-                    ),
-                )?;
-                surviving_bytes = surviving_bytes.checked_sub(existing_charge.bytes()).ok_or(
-                    ObjectPageAdmissionError::LimitExceeded(
-                        ObjectResidencyLimitKind::ResidentBytes,
-                    ),
-                )?;
-                surviving_objects = surviving_objects
-                    .checked_sub(existing_charge.objects())
-                    .ok_or(ObjectPageAdmissionError::LimitExceeded(
-                        ObjectResidencyLimitKind::ResidentObjects,
-                    ))?;
-                surviving_presentation_bytes = surviving_presentation_bytes
-                    .checked_sub(existing_charge.presentation_bytes())
-                    .ok_or(ObjectPageAdmissionError::LimitExceeded(
-                        ObjectResidencyLimitKind::ResidentPresentationBytes,
-                    ))?;
-                evicted_objects = evicted_objects
-                    .checked_add(existing_charge.objects())
-                    .ok_or(ObjectPageAdmissionError::LimitExceeded(
-                        ObjectResidencyLimitKind::ResidentObjects,
-                    ))?;
-                evicted_pages =
-                    evicted_pages
-                        .checked_add(1)
-                        .ok_or(ObjectPageAdmissionError::LimitExceeded(
-                            ObjectResidencyLimitKind::ResidentPages,
-                        ))?;
-            }
-        }
-
-        let mut resident_index = 0;
-        while surviving_pages >= self.limits.max_resident_pages()
-            || surviving_objects
-                .checked_add(charge.objects())
-                .is_none_or(|objects| objects > self.limits.max_resident_objects())
-            || surviving_bytes
-                .checked_add(charge.bytes())
-                .is_none_or(|bytes| bytes > self.limits.max_resident_bytes())
-            || surviving_presentation_bytes
-                .checked_add(charge.presentation_bytes())
-                .is_none_or(|bytes| bytes > self.limits.max_resident_presentation_bytes())
-        {
-            while disposition[resident_index] == ResidentDisposition::Evict {
-                resident_index += 1;
-            }
-            disposition[resident_index] = ResidentDisposition::Evict;
-            let existing = self.resident[resident_index].retained_charge();
-            surviving_pages =
-                surviving_pages
-                    .checked_sub(1)
-                    .ok_or(ObjectPageAdmissionError::LimitExceeded(
-                        ObjectResidencyLimitKind::ResidentPages,
-                    ))?;
-            surviving_bytes = surviving_bytes.checked_sub(existing.bytes()).ok_or(
-                ObjectPageAdmissionError::LimitExceeded(ObjectResidencyLimitKind::ResidentBytes),
-            )?;
-            surviving_objects = surviving_objects.checked_sub(existing.objects()).ok_or(
-                ObjectPageAdmissionError::LimitExceeded(ObjectResidencyLimitKind::ResidentObjects),
-            )?;
-            surviving_presentation_bytes = surviving_presentation_bytes
-                .checked_sub(existing.presentation_bytes())
-                .ok_or(ObjectPageAdmissionError::LimitExceeded(
-                    ObjectResidencyLimitKind::ResidentPresentationBytes,
-                ))?;
-            evicted_objects = evicted_objects.checked_add(existing.objects()).ok_or(
-                ObjectPageAdmissionError::LimitExceeded(ObjectResidencyLimitKind::ResidentObjects),
-            )?;
-            evicted_pages =
-                evicted_pages
-                    .checked_add(1)
-                    .ok_or(ObjectPageAdmissionError::LimitExceeded(
-                        ObjectResidencyLimitKind::ResidentPages,
-                    ))?;
-            resident_index += 1;
-        }
-
-        let resident_bytes = surviving_bytes.checked_add(charge.bytes()).ok_or(
-            ObjectPageAdmissionError::LimitExceeded(ObjectResidencyLimitKind::ResidentBytes),
-        )?;
-        let resident_objects = surviving_objects.checked_add(charge.objects()).ok_or(
-            ObjectPageAdmissionError::LimitExceeded(ObjectResidencyLimitKind::ResidentObjects),
-        )?;
-        let resident_presentation_bytes = surviving_presentation_bytes
-            .checked_add(charge.presentation_bytes())
-            .ok_or(ObjectPageAdmissionError::LimitExceeded(
-                ObjectResidencyLimitKind::ResidentPresentationBytes,
-            ))?;
-        let _projected = self
-            .resident
-            .iter()
-            .zip(disposition.iter())
-            .filter(|(_, disposition)| **disposition == ResidentDisposition::Retain)
-            .try_fold((0usize, 0usize), |(bytes, items), (resident, _)| {
-                Some((
-                    bytes.checked_add(resident.retained_charge().bytes())?,
-                    items.checked_add(
-                        resident
-                            .retained_charge()
-                            .allocated_items()
-                            .checked_add(1)?,
-                    )?,
-                ))
-            })
-            .and_then(|(bytes, items)| {
-                Some((
-                    bytes.checked_add(charge.bytes())?,
-                    items.checked_add(charge.allocated_items().checked_add(1)?)?,
-                ))
-            })
-            .ok_or(ObjectPageAdmissionError::LimitExceeded(
-                ObjectResidencyLimitKind::ResidentBytes,
-            ))?;
-        let projected_pages =
-            surviving_pages
-                .checked_add(1)
-                .ok_or(ObjectPageAdmissionError::LimitExceeded(
-                    ObjectResidencyLimitKind::ResidentPages,
-                ))?;
-        let destination = VecDeque::with_capacity(projected_pages);
-        let retained_bytes = charge
-            .bytes()
-            .checked_add(
-                disposition
-                    .capacity()
-                    .checked_mul(std::mem::size_of::<ResidentDisposition>())
-                    .ok_or(ObjectPageAdmissionError::LimitExceeded(
-                        ObjectResidencyLimitKind::ResidentBytes,
-                    ))?,
-            )
-            .and_then(|bytes| {
-                bytes.checked_add(
-                    destination
-                        .capacity()
-                        .checked_mul(std::mem::size_of::<ObjectPage>())?,
-                )
-            })
-            .ok_or(ObjectPageAdmissionError::LimitExceeded(
-                ObjectResidencyLimitKind::ResidentBytes,
-            ))?;
-        let retained_items = charge
-            .allocated_items()
-            .checked_add(1)
-            .and_then(|items| items.checked_add(disposition.capacity()))
-            .and_then(|items| items.checked_add(destination.capacity()))
-            .ok_or(ObjectPageAdmissionError::LimitExceeded(
-                ObjectResidencyLimitKind::ResidentObjects,
-            ))?;
-        let page_id = page.id();
-        let admission = if reconciled_index.is_some() {
-            ObjectPageAdmission::Reconciled {
-                page: page_id,
-                evicted_pages,
-                evicted_objects,
-            }
-        } else {
-            ObjectPageAdmission::Admitted {
-                page: page_id,
-                evicted_pages,
-                evicted_objects,
-            }
-        };
-        Ok(PreparedObjectPageAdmission {
-            page,
-            pending_index,
-            disposition,
-            destination,
-            admission,
-            resident_bytes,
-            resident_objects,
-            resident_presentation_bytes,
-            projected_pages,
-            retained_bytes,
-            retained_items,
+        self.prepare_storage(
+            &page,
+            || self.validate_page(&page, &anchor_proofs),
+            |_, _| true,
+        )
+        .map(|storage| {
+            storage
+                .expect("unrestricted storage admission")
+                .with_page(page)
         })
     }
-
     /// Commits a prepared object-page admission without allocation or revalidation.
     pub(crate) fn commit_prepared_admit(
         &mut self,
@@ -1067,11 +818,25 @@ impl ObjectResidency {
         page: &ObjectPage,
         anchor_proofs: &ObjectAnchorProofs,
     ) -> Result<(), ObjectContractError> {
+        self.validate_page_proofs(
+            page,
+            anchor_proofs.range_binding(),
+            anchor_proofs.page(),
+            anchor_proofs.key(),
+            anchor_proofs.proofs().iter().copied().map(Ok),
+        )
+    }
+
+    fn validate_page_proofs(
+        &self,
+        page: &ObjectPage,
+        range_binding: RangeBinding,
+        proof_page: ObjectPageId,
+        proof_key: ObjectRequestKey,
+        mut proofs: impl Iterator<Item = Result<crate::ScalarBoundaryProof, ObjectContractError>>,
+    ) -> Result<(), ObjectContractError> {
         self.validate_demand_extent(page.key().demand())?;
-        if anchor_proofs.range_binding() != self.binding
-            || anchor_proofs.page() != page.id()
-            || anchor_proofs.key() != page.key()
-        {
+        if range_binding != self.binding || proof_page != page.id() || proof_key != page.key() {
             let anchor = page.objects().first().map_or_else(
                 || match page.key().demand() {
                     ObjectDemandEnvelope::Range { range, .. } => range.start(),
@@ -1090,7 +855,6 @@ impl ObjectResidency {
                 return Err(ObjectContractError::ConflictingPageIdentity { page: page.id() });
             }
         }
-        let mut proofs = anchor_proofs.proofs().iter().copied();
         let mut previous_anchor = None;
         for object in page.objects() {
             let point = ByteRange::new(object.anchor(), object.anchor())
@@ -1104,7 +868,7 @@ impl ObjectResidency {
                         .next()
                         .ok_or(ObjectContractError::ScalarBoundaryProofMismatch {
                             anchor: object.anchor(),
-                        })?;
+                        })??;
                 if proof.range_binding() != self.binding
                     || proof.binding() != page.key().binding()
                     || proof.revision() != page.key().revision()
@@ -1135,7 +899,7 @@ impl ObjectResidency {
         }
         if let Some(proof) = proofs.next() {
             return Err(ObjectContractError::ScalarBoundaryProofMismatch {
-                anchor: proof.offset(),
+                anchor: proof?.offset(),
             });
         }
         Ok(())

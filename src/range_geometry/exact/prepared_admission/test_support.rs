@@ -491,6 +491,17 @@ pub fn session_delivered_text_preparation(
     session.delivered_text_preparation_for_test()
 }
 
+pub fn session_delivered_object_preparation(
+    session: &crate::RangePrepublicationSession,
+) -> Option<(
+    crate::ObjectRequestKey,
+    u64,
+    crate::RangeSurfaceCharge,
+    crate::RangeSurfaceCharge,
+)> {
+    session.delivered_object_preparation_for_test()
+}
+
 pub fn session_initial_index_peak(
     session: &crate::RangePrepublicationSession,
 ) -> Option<crate::RangeSurfaceCharge> {
