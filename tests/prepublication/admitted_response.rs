@@ -76,6 +76,12 @@ fn admitted_geometry_response_retains_exact_custody_until_commit(cx: &mut TestAp
                     assert_eq!(admitted.status, RangePrepublicationStatus::Advancing);
                     assert!(drain_cleanup(&cleanup).is_empty());
                     let before = session.ownership();
+                    #[cfg(feature = "test-support")]
+                    let successor_ids =
+                        gpui_text_input::preparation_test_support::session_response_successor_ids(
+                            &session,
+                        )
+                        .expect("admitted response retains successor identities");
                     let records = cleanup.ownership().active;
                     session.set_available_capacity(if item_limit {
                         RangeSurfaceCharge {
@@ -110,6 +116,13 @@ fn admitted_geometry_response_retains_exact_custody_until_commit(cx: &mut TestAp
                             )
                         );
                         assert_eq!(cleanup.ownership().active, records);
+                        #[cfg(feature = "test-support")]
+                        assert_eq!(
+                            gpui_text_input::preparation_test_support::session_response_successor_ids(
+                                &session,
+                            ),
+                            Some(successor_ids)
+                        );
                         assert!(drain_cleanup(&cleanup).is_empty());
                     }
                     match outcome {
@@ -160,6 +173,15 @@ fn admitted_geometry_response_retains_exact_custody_until_commit(cx: &mut TestAp
                         ),
                         _ => unreachable!(),
                     }
+                    #[cfg(feature = "test-support")]
+                    if outcome != 1 {
+                        assert_eq!(
+                            gpui_text_input::preparation_test_support::session_response_successor_ids(
+                                &session,
+                            ),
+                            None
+                        );
+                    }
                     drop(session);
                     let released = drain_cleanup(&cleanup);
                     let exact = released
@@ -181,5 +203,94 @@ fn admitted_geometry_response_retains_exact_custody_until_commit(cx: &mut TestAp
                 }
             }
         }
+    });
+}
+
+#[cfg(feature = "test-support")]
+#[gpui::test]
+fn admitted_response_successor_ids_are_stable_and_never_reused(cx: &mut TestAppContext) {
+    use gpui_text_input::preparation_test_support::session_response_successor_ids;
+
+    let source = &format!("{}TARGET{}", "😀".repeat(24), "é".repeat(24));
+    let window = cx.add_empty_window();
+    window.update(|window, _| {
+        let mut config = config(source, 1, 32);
+        config.limits.max_realization_work_per_frame = 1;
+        config.layout.limits.segment_bytes = 8;
+        let (environment, cleanup) = make_environment(74, config, window.text_system());
+        let mut session = RangePrepublicationSession::new(seed(source, 1, 0), environment).unwrap();
+        let mut previous_delivery = false;
+        let mut previous_id = 0;
+        let mut resident_reservations = 0;
+        let mut delivered_reservations = 0;
+        let mut ready = false;
+        for id in 1..2000 {
+            let step = session.service(window.text_system());
+            assert!(!matches!(step.status, RangePrepublicationStatus::Failed(_)));
+            if let Some(ids) = session_response_successor_ids(&session) {
+                assert!(step.effects.is_empty());
+                assert!(ids[0] > previous_id);
+                assert_eq!(ids, [ids[0], ids[0] + 1, ids[0] + 2]);
+                previous_id = ids[2];
+                if previous_delivery {
+                    delivered_reservations += 1;
+                } else {
+                    resident_reservations += 1;
+                }
+                let before = session.ownership();
+                for items in [false, true] {
+                    session.set_available_capacity(if items {
+                        RangeSurfaceCharge {
+                            bytes: usize::MAX,
+                            items: before.items - 1,
+                        }
+                    } else {
+                        RangeSurfaceCharge {
+                            bytes: before.bytes - 1,
+                            items: usize::MAX,
+                        }
+                    });
+                    for _ in 0..3 {
+                        let blocked = session.service(window.text_system());
+                        assert_eq!(blocked.status, RangePrepublicationStatus::CapacityBlocked);
+                        assert_eq!(blocked.spent, 0);
+                        assert!(blocked.effects.is_empty());
+                        assert_eq!(session_response_successor_ids(&session), Some(ids));
+                        assert_eq!(session.ownership().bytes, before.bytes);
+                        assert_eq!(session.ownership().items, before.items);
+                    }
+                }
+                session.set_available_capacity(RangeSurfaceCharge {
+                    bytes: usize::MAX,
+                    items: usize::MAX,
+                });
+                let committed = session.service(window.text_system());
+                assert!(!matches!(
+                    committed.status,
+                    RangePrepublicationStatus::Failed(_)
+                ));
+                assert_eq!(committed.spent, 1);
+                assert!(committed.effects.is_empty());
+                assert_eq!(session_response_successor_ids(&session), None);
+            }
+            previous_delivery = !step.effects.is_empty();
+            for effect in step.effects {
+                assert_eq!(
+                    deliver(&mut session, source, id, &effect),
+                    RangePrepublicationDelivery::Accepted
+                );
+            }
+            let _ = drain_cleanup(&cleanup);
+            if session.status() == RangePrepublicationStatus::Ready {
+                ready = true;
+                break;
+            }
+        }
+        assert!(ready);
+        assert!(resident_reservations > 0);
+        assert!(delivered_reservations > 0);
+        drop(session);
+        let _ = drain_cleanup(&cleanup);
+        assert_eq!(cleanup.ownership().active, 0);
     });
 }

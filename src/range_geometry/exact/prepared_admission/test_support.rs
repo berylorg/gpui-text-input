@@ -1,5 +1,11 @@
 use super::*;
 
+pub fn session_response_successor_ids(
+    session: &crate::RangePrepublicationSession,
+) -> Option<[u64; 3]> {
+    session.response_successor_ids_for_test()
+}
+
 #[derive(Debug)]
 pub struct PreparedResponseProbe(PreparedTargetResponse);
 

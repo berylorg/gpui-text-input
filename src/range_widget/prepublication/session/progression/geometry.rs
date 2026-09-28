@@ -107,12 +107,12 @@ impl RangePrepublicationSession {
                     {
                         return Err(RangePrepublicationFailure::Stale);
                     }
-                    self.admitted_geometry = Some(AdmittedGeometryResponse::Object {
+                    self.retain_geometry_response(GeometryResponseInput::Object {
                         job,
                         text_page,
                         page,
                         resident: true,
-                    });
+                    })?;
                     Ok(true)
                 }
                 ObjectDemand::Requested(resident_request) => {
@@ -189,11 +189,11 @@ impl RangePrepublicationSession {
                     {
                         return Err(RangePrepublicationFailure::Stale);
                     }
-                    self.admitted_geometry = Some(AdmittedGeometryResponse::Page {
+                    self.retain_geometry_response(GeometryResponseInput::Page {
                         job,
                         page,
                         resident: true,
-                    });
+                    })?;
                     Ok(true)
                 }
                 PageDemand::Requested(resident_request) => {
@@ -233,15 +233,16 @@ impl RangePrepublicationSession {
         match self
             .admitted_geometry
             .ok_or(RangePrepublicationFailure::Stale)?
+            .input
         {
-            AdmittedGeometryResponse::Page {
+            GeometryResponseInput::Page {
                 job,
                 page,
                 resident,
             } => {
                 self.process_geometry_page(job, page, text_system, resident)?;
             }
-            AdmittedGeometryResponse::Object {
+            GeometryResponseInput::Object {
                 job,
                 text_page,
                 page,
@@ -339,12 +340,16 @@ impl RangePrepublicationSession {
     }
 
     fn geometry_response_successor(
-        &mut self,
+        &self,
     ) -> Result<TargetResponseSuccessor, RangePrepublicationFailure> {
+        let [job, page, object] = self
+            .admitted_geometry
+            .ok_or(RangePrepublicationFailure::Stale)?
+            .successor_ids;
         Ok(TargetResponseSuccessor {
-            target_job_id: GeometryJobId::new(self.next_id()?),
-            page_id: PageRequestId::new(self.next_id()?),
-            object_id: ObjectRequestId::new(self.next_id()?),
+            target_job_id: GeometryJobId::new(job),
+            page_id: PageRequestId::new(page),
+            object_id: ObjectRequestId::new(object),
             max_objects: self
                 .environment
                 .config()

@@ -68,7 +68,13 @@ enum Waiting {
 }
 
 #[derive(Clone, Copy)]
-enum AdmittedGeometryResponse {
+struct AdmittedGeometryResponse {
+    input: GeometryResponseInput,
+    successor_ids: [u64; 3],
+}
+
+#[derive(Clone, Copy)]
+enum GeometryResponseInput {
     Page {
         job: GeometryJobKey,
         page: PageId,
@@ -150,6 +156,12 @@ pub struct RangePrepublicationSession {
 }
 
 impl RangePrepublicationSession {
+    #[cfg(feature = "test-support")]
+    pub(crate) fn response_successor_ids_for_test(&self) -> Option<[u64; 3]> {
+        self.admitted_geometry
+            .map(|response| response.successor_ids)
+    }
+
     pub fn new(
         seed: crate::RangeRestorationSeed,
         environment: RangePrepublicationEnvironment,

@@ -4,12 +4,11 @@ Implement the capacity prerequisite for preserved resident adoption from
 [the package contract](design.md#range-backed-preserved-resident-adoption), coordinated by
 the Beryl root plan. Resident protection, accounting and publication remain separate work.
 
-# Phase 41: Carry Enclosing Ceilings Through Immutable Response Preparation (finished)
+# Phase 42: Retain Successor Identity With Admitted Geometry Responses (finished)
 
-Internal immutable preparation accepts enclosing ceilings through scan, publication and successor
-preparation, independently clamped to configured limits. Independent review accepted the boundary;
-all 210 integration tests passed. Five older unit failures reproduce on baseline and remain recorded
-in the Beryl capacity failure note. Session budget derivation and retry attribution remain below.
+Admitted responses reserve successor identities once, with atomic counter admission and unchanged
+identity across preparation attempts. Inline ownership is charged; commit and teardown clear the
+reservation. Independent review accepted the boundary; all 211 integration tests passed.
 
 # Phase 2: Enforce Capacity Throughout Preparation (pending)
 
@@ -21,7 +20,9 @@ Cover prepared target transitions and prepared-publication collections under the
 The admitted response state now retains delivered or resident inputs without re-admission when
 current capacity is unavailable. Internal immutable preparation accepts enclosing ceilings; derive
 the session budget with shared presentation charged once and route typed retryable refusals through
-that state. Do not infer host attribution from ambiguous GPUI errors.
+that state. Admitted responses retain successor identities without per-attempt counter mutation.
+Do not infer host attribution from ambiguous GPUI errors. Five older baseline unit failures remain
+recorded in the Beryl capacity failure note and require authority reconciliation.
 Returned GPUI custody now uses the geometry budget before invocation.
 Direct response admission accepts enclosing ceilings; host derivation and peak propagation remain
 required before combined resident reservation can use them.

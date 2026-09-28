@@ -49,6 +49,26 @@ impl RangePrepublicationSession {
         Ok(value)
     }
 
+    pub(super) fn retain_geometry_response(
+        &mut self,
+        input: GeometryResponseInput,
+    ) -> Result<(), RangePrepublicationFailure> {
+        if self.admitted_geometry.is_some() {
+            return Err(RangePrepublicationFailure::ExactKeyCollision);
+        }
+        let next = self
+            .next_id
+            .checked_add(3)
+            .ok_or(RangePrepublicationFailure::Arithmetic)?;
+        let successor_ids = [self.next_id, self.next_id + 1, self.next_id + 2];
+        self.admitted_geometry = Some(AdmittedGeometryResponse {
+            input,
+            successor_ids,
+        });
+        self.next_id = next;
+        Ok(())
+    }
+
     pub(super) fn reserve_cleanup(
         &mut self,
     ) -> Result<Option<RangePrepublicationCleanupToken>, RangePrepublicationFailure> {

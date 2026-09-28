@@ -203,11 +203,11 @@ impl RangePrepublicationSession {
                 };
                 self.retain_text_custody(page_id, cleanup)?;
                 self.waiting = Some(waiting);
-                self.admitted_geometry = Some(AdmittedGeometryResponse::Page {
+                self.retain_geometry_response(GeometryResponseInput::Page {
                     job,
                     page: page_id,
                     resident: false,
-                });
+                })?;
             }
             (
                 Waiting::GeometryObject {
@@ -229,12 +229,12 @@ impl RangePrepublicationSession {
                 );
                 self.retain_object_custody(page_id, cleanup)?;
                 self.waiting = Some(waiting);
-                self.admitted_geometry = Some(AdmittedGeometryResponse::Object {
+                self.retain_geometry_response(GeometryResponseInput::Object {
                     job,
                     text_page,
                     page: page_id,
                     resident: false,
-                });
+                })?;
             }
             _ => return Err(RangePrepublicationFailure::Stale),
         }
