@@ -4,13 +4,12 @@ Implement the capacity prerequisite for preserved resident adoption from
 [the package contract](design.md#range-backed-preserved-resident-adoption), coordinated by
 the Beryl root plan. Resident protection, accounting and publication remain separate work.
 
-# Phase 82: Admit Startup Geometry And Residency Owners (finished)
+# Phase 83: Qualify Shared Environment Accounting (finished)
 
-Startup now admits geometry, residency and custody storage before constructing the owners,
-then replaces projected charges with actual charges between allocations. Style-copy admission
-uses run length rather than source spare capacity. All 43 prepublication tests, default compilation
-and independent resource review passed. Shared environment accounting and transfer coexistence
-remain pending.
+Source and independent resource review confirm that pre-existing environment and finite shared
+pools remain separately bounded; session/candidate admission charges their occupied custody.
+Full-pool and per-record charges overlap and must not be blindly added in combined adoption.
+No runtime change or new accounting API is required. Transfer coexistence remains pending.
 
 # Phase 2: Enforce Capacity Throughout Preparation (pending)
 
