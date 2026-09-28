@@ -604,8 +604,6 @@ impl ExactGeometryOwner {
 
     pub(super) fn prepared_budget(
         &self,
-        _candidate: &ActiveJob,
-        _shared: SharedOutput,
         page_payload_bytes: usize,
         page_items: usize,
     ) -> Result<AdmissionBudget, ExactGeometryFailure> {

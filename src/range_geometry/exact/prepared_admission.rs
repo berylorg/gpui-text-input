@@ -306,14 +306,13 @@ impl ExactGeometryOwner {
         {
             return Err(self.prepared_validation_failure(ExactGeometryError::WrongPage(page.key())));
         }
-        let (mut candidate, shared) = copy_response_continuation(active)
-            .map_err(|error| self.prepared_validation_failure(error))?;
         let mut budget = self.prepared_budget(
-            &candidate,
-            shared,
             page.retained_charge().bytes(),
             page.retained_charge().items(),
         )?;
+        admit_response_continuation(&mut budget, active)?;
+        let (mut candidate, shared) = copy_response_continuation(active)
+            .map_err(|error| self.prepared_validation_failure(error))?;
         observe_prepared(&mut budget, &candidate, 0, 0)?;
         if page.range().len() > self.limits.max_page_bytes {
             return Err(prepared_failure(
@@ -529,9 +528,10 @@ impl ExactGeometryOwner {
             .ok_or_else(|| {
                 self.prepared_validation_failure(ExactGeometryError::CapacityExceeded)
             })?;
+        let mut budget = self.prepared_budget(page_bytes, page_items)?;
+        admit_response_continuation(&mut budget, active)?;
         let (mut candidate, shared) = copy_response_continuation(active)
             .map_err(|error| self.prepared_validation_failure(error))?;
-        let mut budget = self.prepared_budget(&candidate, shared, page_bytes, page_items)?;
         observe_prepared(&mut budget, &candidate, 0, 0)?;
         let inputs = self.inputs.as_deref().expect("active owner retains inputs");
         let source_end = inputs.binding.extent().byte_len();
@@ -631,13 +631,45 @@ impl ExactGeometryOwner {
     }
 }
 
+fn admit_response_continuation(
+    budget: &mut AdmissionBudget,
+    active: &ActiveJob,
+) -> Result<(), ExactGeometryFailure> {
+    let mut counts = accounting::active_counts(active);
+    counts.checkpoints = 0;
+    counts.checkpoint_bytes = 0;
+    counts.output_items = 0;
+    counts.output_record_bytes = 0;
+    counts.output_payload_bytes = 0;
+    counts.scan_buffer_bytes = active
+        .scanner
+        .segment_text
+        .len()
+        .checked_add(active.scanner.grapheme_text.as_ref().map_or(0, String::len))
+        .ok_or_else(|| prepared_capacity_failure(budget))?;
+    observe_prepared_counts(budget, counts, 0, 0)
+}
+
 fn observe_prepared(
     budget: &mut AdmissionBudget,
     active: &ActiveJob,
     transient_bytes: usize,
     transient_items: usize,
 ) -> Result<(), ExactGeometryFailure> {
-    let counts = accounting::active_counts(active);
+    observe_prepared_counts(
+        budget,
+        accounting::active_counts(active),
+        transient_bytes,
+        transient_items,
+    )
+}
+
+fn observe_prepared_counts(
+    budget: &mut AdmissionBudget,
+    counts: ExactGeometryCounts,
+    transient_bytes: usize,
+    transient_items: usize,
+) -> Result<(), ExactGeometryFailure> {
     let bytes = budget
         .fixed_bytes
         .checked_add(budget.page_payload_bytes)
