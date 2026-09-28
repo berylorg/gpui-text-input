@@ -4,12 +4,11 @@ Implement the capacity prerequisite for preserved resident adoption from
 [the package contract](design.md#range-backed-preserved-resident-adoption), coordinated by
 the Beryl root plan. Resident protection, accounting and publication remain separate work.
 
-# Phase 32: Reserve Returned Layout Capacity Before GPUI Admission (finished)
+# Phase 33: Account Composite Continuations Before Layout (finished)
 
-Per-call retained limits now reserve returned GPUI custody within remaining geometry capacity,
-including fragment records and continuation replacement peaks. Original layout errors remain
-unchanged. Independent resource review accepted the change; all 194 regression tests passed,
-including exact returned capacity and one-under byte/item refusal before continuation replacement.
+Initial and restored continuation charges now include exact object-gap witnesses; pristine origin
+specialization admits witness growth before mutation. Returned-layout reservation shares the
+calculation. Independent resource review accepted the change; all 196 regression tests passed.
 
 # Phase 2: Enforce Capacity Throughout Preparation (pending)
 

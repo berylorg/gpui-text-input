@@ -8,14 +8,7 @@ pub(super) fn binding(
 ) -> Result<StreamingLayoutBinding, ExactGeometryError> {
     budget.observe(job, 0, 0)?;
     let counts = super::super::super::accounting::active_counts(job);
-    let object_edges = usize::from(matches!(
-        next_position.gap.preceding,
-        gpui::StreamingObjectEdge::Object { .. }
-    )) + usize::from(matches!(
-        next_position.gap.following,
-        gpui::StreamingObjectEdge::Object { .. }
-    ));
-    let continuation_items = 3 + 2 * object_edges;
+    let continuation_items = super::super::super::accounting::continuation_items(next_position);
     let occupied_bytes = budget
         .fixed_bytes
         .checked_add(budget.page_payload_bytes)

@@ -67,9 +67,15 @@ pub(super) fn add_fragment_item_charge(
     })
 }
 
-pub(super) const fn ordinary_continuation_items() -> usize {
-    // One continuation retains its record, next composite position, and no-object gap witness.
-    3
+pub(super) fn continuation_items(position: gpui::StreamingLayoutPosition) -> usize {
+    let object_edges = usize::from(matches!(
+        position.gap.preceding,
+        gpui::StreamingObjectEdge::Object { .. }
+    )) + usize::from(matches!(
+        position.gap.following,
+        gpui::StreamingObjectEdge::Object { .. }
+    ));
+    3 + 2 * object_edges
 }
 
 pub(super) fn owner_counts(owner: &ExactGeometryOwner) -> ExactGeometryCounts {

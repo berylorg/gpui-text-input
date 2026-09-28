@@ -361,7 +361,13 @@ fn admit_inline_object(
         )?;
     }
     if pristine_object_origin {
+        let continuation_items = super::accounting::continuation_items(expected_leading.into());
+        let additional_items = continuation_items
+            .checked_sub(job.scanner.continuation_items)
+            .ok_or(ExactGeometryError::CapacityExceeded)?;
+        budget.observe(job, 0, additional_items)?;
         job.scanner.continuation.next_position = expected_leading.into();
+        job.scanner.continuation_items = continuation_items;
         for checkpoint in job
             .scanner
             .checkpoints

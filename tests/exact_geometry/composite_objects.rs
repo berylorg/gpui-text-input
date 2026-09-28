@@ -2,6 +2,8 @@ use super::*;
 
 #[path = "composite_objects/returned_capacity.rs"]
 mod returned_capacity;
+#[path = "composite_objects/continuation_capacity.rs"]
+mod continuation_capacity;
 
 fn object(id: u128, anchor: u64, order: u128, width: f32) -> InlineObjectFact {
     let presentation = InlineObjectPresentation::new(
@@ -364,6 +366,12 @@ fn anchored_predecessors_respect_before_between_and_after_same_anchor_gaps(
                     anchor,
                 )
                 .unwrap();
+            let expected_items = match expected_predecessor.gap {
+                InlineObjectGap::NoObjects => 3,
+                InlineObjectGap::Before(_) | InlineObjectGap::After(_) => 5,
+                InlineObjectGap::Between { .. } => 7,
+            };
+            assert_eq!(owner.counts().continuation_items, expected_items);
             let text_page = page(&mut owner, start.key(), "", 0, 0, job_id + 10);
             assert_eq!(
                 owner
