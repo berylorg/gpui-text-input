@@ -400,6 +400,7 @@ impl RangeTextInput {
         objects: &crate::ObjectResidency,
         cx: &mut Context<Self>,
     ) -> Result<crate::ClipboardKey, RangeTextInputError> {
+        self.require_unprotected_resident()?;
         let mut proofs = Vec::with_capacity(2);
         for position in [selection.start(), selection.end()] {
             let proof = crate::range_edit::SourcePositionProof::from_admitted_sources(

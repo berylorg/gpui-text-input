@@ -327,6 +327,7 @@ impl RangeTextInput {
         intent: PendingTargetIntent,
         cx: &mut Context<Self>,
     ) -> Result<Option<ExactGeometryProgress>, RangeTextInputError> {
+        self.require_unprotected_resident()?;
         self.pending_target_intent = Some(intent);
         self.service_pending_target_intent(cx)
     }

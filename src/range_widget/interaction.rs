@@ -208,6 +208,7 @@ impl RangeTextInput {
     }
 
     pub fn lease_host_operation(&self) -> Result<HostOperationLease, RangeTextInputError> {
+        self.require_unprotected_resident()?;
         self.config.settlement_coordinator.lease_host_operation()
     }
 
@@ -215,6 +216,7 @@ impl RangeTextInput {
         &self,
         operation: crate::OperationId,
     ) -> Result<(), RangeTextInputError> {
+        self.require_unprotected_resident()?;
         self.config
             .settlement_coordinator
             .admit_host_dispatch(operation)
@@ -272,6 +274,7 @@ impl RangeTextInput {
         text: &RangeResidency,
         objects: &ObjectResidency,
     ) -> Result<(), RangeTextInputError> {
+        self.require_unprotected_resident()?;
         if !matches!(
             self.edits.state(),
             crate::MutationState::Idle | crate::MutationState::Settled
@@ -729,6 +732,7 @@ impl RangeTextInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<MutationSettlement, RangeTextInputError> {
+        self.require_unprotected_resident()?;
         if self.edits.active_key() == Some(key) {
             let intended = self
                 .mutation_positions

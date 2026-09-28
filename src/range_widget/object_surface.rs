@@ -7,6 +7,7 @@ impl RangeTextInput {
         &mut self,
         expected: crate::RealizedInlineObjectAnchor,
     ) -> Result<crate::InlineObjectSurfaceAttachment, RangeTextInputError> {
+        self.require_unprotected_resident()?;
         if !self.mounted {
             return Err(RangeTextInputError::NotMounted);
         }

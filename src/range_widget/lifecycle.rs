@@ -17,6 +17,7 @@ impl RangeTextInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<RangeHistorySettlement, RangeTextInputError> {
+        self.require_unprotected_resident()?;
         if let Some(pending) = self.pending_history {
             if pending.intent() == intent && pending.is_admitted() {
                 if let RangeHistoryOutcome::Committed(commit) = outcome {
@@ -284,6 +285,7 @@ impl RangeTextInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), RangeTextInputError> {
+        self.require_unprotected_resident()?;
         if !self.mounted {
             return Err(RangeTextInputError::NotMounted);
         }
@@ -469,6 +471,7 @@ impl RangeTextInput {
         seed: RangeRestorationSeed,
         cx: &mut Context<Self>,
     ) -> Result<(), RangeTextInputError> {
+        self.require_unprotected_resident()?;
         if !self.mounted {
             return Err(RangeTextInputError::NotMounted);
         }
@@ -541,6 +544,7 @@ impl RangeTextInput {
                 });
         self.attached_inline_object_surface = None;
         self.mounted = false;
+        self.resident_protection = None;
         self.obsolete_realization_continuation();
         self.deferred_geometry_response = None;
         self.response_custody = std::collections::VecDeque::new();

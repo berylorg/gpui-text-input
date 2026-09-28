@@ -8,6 +8,7 @@ mod frame;
 mod geometry_boundary;
 mod lifecycle;
 mod priority;
+mod protection;
 mod release;
 mod seal;
 mod terminal_failure;
@@ -1210,7 +1211,7 @@ fn index_completion_with_changed_desired_is_a_noninteractive_replacement(
 fn terminal_target_replacement_accepts_fixed_exact_caps_and_rejects_one_under(
     cx: &mut gpui::TestAppContext,
 ) {
-    const EXACT_BYTES: usize = 140_154;
+    const EXACT_BYTES: usize = 140_682;
     const EXACT_ITEMS: usize = 309;
     for (bytes, items, succeeds) in [
         (EXACT_BYTES, 32_768, true),
@@ -2755,12 +2756,12 @@ fn committed_settlement_accepts_exact_fit_and_one_under_is_retryable(
         }
     );
     let transition_exact = RangeSurfaceCharge {
-        bytes: 143_824,
+        bytes: 144_352,
         items: 328,
     };
     assert_eq!(components.checked_total(), Some(transition_exact));
     let exact = RangeSurfaceCharge {
-        bytes: 144_304,
+        bytes: 144_832,
         items: 331,
     };
     let events = captured_events(&input, cx);

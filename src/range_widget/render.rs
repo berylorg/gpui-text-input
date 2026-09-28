@@ -253,6 +253,15 @@ impl Element for RangeTextInputElement {
             if !input.mounted {
                 return;
             }
+            if input.resident_protection.is_some() {
+                if input.last_bounds.is_some_and(|previous| previous.size != bounds.size)
+                    || bounds.size.width != input.config.layout.wrap_width
+                    || bounds.size.height != input.desired.viewport_extent
+                {
+                    let _ = input.reject_protected_environment_change();
+                }
+                return;
+            }
             input.begin_realization_frame();
             if input.pending_boundary_move.is_some() {
                 input.defer_realization_continuation(window, cx);
@@ -427,6 +436,9 @@ impl Element for RangeTextInputElement {
             });
         });
         self.input.update(cx, |input, cx| {
+            if input.resident_protection.is_some() {
+                return;
+            }
             let width_changed = bounds.size.width > Pixels::ZERO
                 && bounds.size.width != input.config.layout.wrap_width;
             input.last_bounds = Some(bounds);

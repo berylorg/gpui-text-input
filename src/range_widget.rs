@@ -13,6 +13,7 @@ mod page_delivery;
 mod platform;
 mod pointer;
 mod prepublication;
+mod protection;
 mod realization;
 mod render;
 mod replacement;
@@ -25,6 +26,7 @@ mod transition;
 mod types;
 
 pub use prepublication::*;
+pub use protection::RangeResidentProtection;
 pub use surface::{
     CoherentRangeSurface, RangeSurfaceCharge, RangeSurfaceFiller, RangeSurfaceHit,
     RealizedInlineObjectGeometry, RealizedInlineObjectPresentation, RealizedObjectGapGeometry,
@@ -56,6 +58,8 @@ enum DispatchedClipboard {
 pub struct RangeTextInput {
     focus_handle: FocusHandle,
     enabled: bool,
+    resident_protection: Option<protection::ProtectedResident>,
+    protection_generation: u64,
     read_only: bool,
     config: RangeTextInputConfig,
     residency: RangeResidency,
@@ -437,6 +441,8 @@ impl RangeTextInput {
         let mut this = Self {
             focus_handle: cx.focus_handle(),
             enabled: true,
+            resident_protection: None,
+            protection_generation: 0,
             read_only: false,
             residency: RangeResidency::new(binding, config.residency_limits),
             object_residency: ObjectResidency::new(
@@ -554,8 +560,10 @@ impl RangeTextInput {
         this.observe_realization_ownership();
         let focus = this.focus_handle.clone();
         this.focus_subscription = Some(cx.on_focus_out(&focus, window, |input, _, _, cx| {
-            let intent = input.focus_loss_intent();
-            let _ = input.request_target_intent(intent, cx);
+            if input.resident_protection.is_none() {
+                let intent = input.focus_loss_intent();
+                let _ = input.request_target_intent(intent, cx);
+            }
             cx.emit(RangeTextInputEvent::FocusLost);
             cx.notify();
         }));
@@ -606,7 +614,8 @@ impl RangeTextInput {
     pub(super) fn interactive_surface(&self) -> Option<&CoherentRangeSurface> {
         self.surface.as_ref().filter(|surface| {
             let surface_geometry = surface.geometry_key();
-            surface.binding() == self.config.binding
+            self.resident_protection.is_none()
+                && surface.binding() == self.config.binding
                 && surface_geometry.binding() == self.config.binding.binding()
                 && surface_geometry.revision() == self.config.binding.revision()
                 && surface_geometry.presentation_generation() == self.config.presentation_generation
@@ -710,6 +719,7 @@ impl RangeTextInput {
             && self.restoration.is_none()
             && self.restoration_seed.is_none()
             && self.surface_candidate.is_none()
+            && !self.pending_select_all
             && self.is_semantically_quiescent()
             && self.requests.is_empty()
             && self.attached_inline_object_surface.is_none()
@@ -757,6 +767,9 @@ impl RangeTextInput {
     }
 
     pub fn set_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if self.resident_protection.is_some() {
+            return;
+        }
         if self.enabled != enabled {
             let active = if !enabled && self.active_object.is_some() {
                 transition::ActiveObjectTransition::Clear(
@@ -787,6 +800,7 @@ impl RangeTextInput {
         scrollbar_style: gpui_scrollbar::ScrollbarStyle,
         cx: &mut Context<Self>,
     ) -> Result<(), RangeTextInputError> {
+        self.reject_protected_environment_change()?;
         if !self.mounted {
             return Err(RangeTextInputError::NotMounted);
         }
@@ -805,6 +819,7 @@ impl RangeTextInput {
         style: crate::StreamingGeometryStyle,
         cx: &mut Context<Self>,
     ) -> Result<(), RangeTextInputError> {
+        self.reject_protected_environment_change()?;
         if !self.mounted {
             return Err(RangeTextInputError::NotMounted);
         }
@@ -820,6 +835,7 @@ impl RangeTextInput {
         presentation_generation: crate::PresentationGeneration,
         cx: &mut Context<Self>,
     ) -> Result<(), RangeTextInputError> {
+        self.reject_protected_environment_change()?;
         if !self.mounted {
             return Err(RangeTextInputError::NotMounted);
         }

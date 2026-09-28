@@ -519,6 +519,9 @@ fn make_environment(
 #[path = "prepublication/candidate_cases.rs"]
 mod candidate_cases;
 
+#[path = "prepublication/resident_protection.rs"]
+mod resident_protection;
+
 #[path = "prepublication/cleanup_capacity_cases.rs"]
 mod cleanup_capacity_cases;
 

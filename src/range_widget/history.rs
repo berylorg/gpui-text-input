@@ -36,6 +36,7 @@ impl RangeTextInput {
         expected: RangeHistoryFrontier,
         replacement: RangeHistoryFrontier,
     ) -> Result<(), RangeTextInputError> {
+        self.require_unprotected_resident()?;
         if !self.mounted {
             return Err(RangeTextInputError::NotMounted);
         }

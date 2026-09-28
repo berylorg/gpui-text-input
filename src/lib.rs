@@ -95,12 +95,12 @@ pub use range_widget::{
     RangePrepublicationValidationKey, RangePrepublicationValidationRequest,
     RangePrepublicationValidationResponse, RangeRealizationCapacityState,
     RangeRealizationDiagnostics, RangeRealizationOwnership, RangeRealizationPriority,
-    RangeRealizationStep, RangeResponseRejectionClass, RangeRestorationScrollAnchor,
-    RangeRestorationSeed, RangeSelection, RangeSettlementCoordinator, RangeSourceSelection,
-    RangeSurfaceCharge, RangeSurfaceFiller, RangeSurfaceHit, RangeTextInput, RangeTextInputConfig,
-    RangeTextInputError, RangeTextInputEvent, RangeTextInputLimits, RangeTextInputRequest,
-    RealizedInlineObjectAnchor, RealizedInlineObjectGeometry, RealizedInlineObjectPresentation,
-    RealizedObjectGapGeometry,
+    RangeRealizationStep, RangeResidentProtection, RangeResponseRejectionClass,
+    RangeRestorationScrollAnchor, RangeRestorationSeed, RangeSelection, RangeSettlementCoordinator,
+    RangeSourceSelection, RangeSurfaceCharge, RangeSurfaceFiller, RangeSurfaceHit, RangeTextInput,
+    RangeTextInputConfig, RangeTextInputError, RangeTextInputEvent, RangeTextInputLimits,
+    RangeTextInputRequest, RealizedInlineObjectAnchor, RealizedInlineObjectGeometry,
+    RealizedInlineObjectPresentation, RealizedObjectGapGeometry,
 };
 pub use residency::{
     ObjectAnchorProofError, ObjectAnchorProofs, PageAdmission, PageAdmissionError, PageDemand,
