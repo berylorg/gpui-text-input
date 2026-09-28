@@ -221,6 +221,11 @@ impl RangeTextInput {
             .expect("validated pending page bytes fit usize");
         let owned_bytes = [
             Self::realization_owner_charge().bytes,
+            self.config
+                .style
+                .retained_run_storage_charge()
+                .expect("validated configuration storage fits usize")
+                .bytes,
             surface_charge.bytes,
             non_surface_page_charge.bytes,
             non_surface_object_charge.bytes,
@@ -246,6 +251,11 @@ impl RangeTextInput {
         .expect("admitted realization bytes fit usize");
         let owned_items = [
             Self::realization_owner_charge().items,
+            self.config
+                .style
+                .retained_run_storage_charge()
+                .expect("validated configuration storage fits usize")
+                .items,
             surface_charge.items,
             non_surface_page_charge.items,
             non_surface_object_charge.items,

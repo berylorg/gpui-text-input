@@ -28,6 +28,10 @@ mod admitted_response;
 #[path = "prepublication/teardown.rs"]
 mod teardown;
 
+#[path = "prepublication/adoption_configuration.rs"]
+#[cfg(feature = "test-support")]
+mod adoption_configuration;
+
 #[path = "prepublication/initial_index.rs"]
 #[cfg(feature = "test-support")]
 mod initial_index;

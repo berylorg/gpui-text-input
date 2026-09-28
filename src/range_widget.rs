@@ -272,6 +272,7 @@ impl RangeTextInput {
                 .map_err(RangeTextInputError::Geometry)?;
         let initial_owner_charge = [
             Some(realization_owner),
+            config.style.retained_run_storage_charge(),
             Some(request_storage),
             Some(response_custody_storage),
             dispatch_charge,

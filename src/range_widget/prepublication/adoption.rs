@@ -42,6 +42,35 @@ impl RangeTextInput {
         {
             return Err(RangePrepublicationAdoptionError::CapacityMismatch);
         }
+        let requested = environment
+            .config()
+            .style
+            .cloned_run_storage_charge()
+            .ok_or(RangePrepublicationAdoptionError::CapacityMismatch)?;
+        let config = environment.config().clone();
+        let actual = config
+            .style
+            .retained_run_storage_charge()
+            .ok_or(RangePrepublicationAdoptionError::CapacityMismatch)?;
+        let actual_peak = crate::RangeSurfaceCharge {
+            bytes: candidate
+                .adoption_peak
+                .bytes
+                .checked_sub(requested.bytes)
+                .and_then(|bytes| bytes.checked_add(actual.bytes))
+                .ok_or(RangePrepublicationAdoptionError::CapacityMismatch)?,
+            items: candidate
+                .adoption_peak
+                .items
+                .checked_sub(requested.items)
+                .and_then(|items| items.checked_add(actual.items))
+                .ok_or(RangePrepublicationAdoptionError::CapacityMismatch)?,
+        };
+        if !charge_fits(actual_peak, configured)
+            || !charge_fits(actual_peak, current.available_capacity)
+        {
+            return Err(RangePrepublicationAdoptionError::CapacityMismatch);
+        }
         let seed = candidate.seed;
         let surface_charge = candidate.surface_charge;
         let next_id = candidate.next_id;
@@ -54,7 +83,7 @@ impl RangeTextInput {
             .take()
             .ok_or(RangePrepublicationAdoptionError::CandidateConsumed)?;
         let mut input = Self::from_prepublication_owners(
-            environment.config().clone(),
+            config,
             AdoptedPrepublicationOwners {
                 geometry,
                 surface,

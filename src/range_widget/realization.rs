@@ -179,6 +179,11 @@ impl RangeTextInput {
         let response_custody = self.response_custody_storage_charge();
         let clipboard = self.clipboard.ownership_charge();
         let local_mutation = self.local_mutation_payload_charge()?;
+        let config_storage = self
+            .config
+            .style
+            .retained_run_storage_charge()
+            .ok_or(RangeTextInputError::SurfaceCapacity)?;
         let residency_owners = [
             self.residency.owner_storage_charge(),
             self.object_residency.owner_storage_charge(),
@@ -215,6 +220,7 @@ impl RangeTextInput {
                 .and_then(|total| total.checked_add(self.active_response_processing.bytes))
                 .and_then(|total| total.checked_add(clipboard.bytes()))
                 .and_then(|total| total.checked_add(local_mutation.bytes))
+                .and_then(|total| total.checked_add(config_storage.bytes))
                 .and_then(|total| total.checked_add(dispatched.bytes))
                 .and_then(|total| total.checked_add(residency_owners.bytes))
                 .ok_or(RangeTextInputError::SurfaceCapacity)?,
@@ -229,6 +235,7 @@ impl RangeTextInput {
                 .and_then(|total| total.checked_add(self.active_response_processing.items))
                 .and_then(|total| total.checked_add(clipboard.items()))
                 .and_then(|total| total.checked_add(local_mutation.items))
+                .and_then(|total| total.checked_add(config_storage.items))
                 .and_then(|total| total.checked_add(dispatched.items))
                 .and_then(|total| total.checked_add(residency_owners.items))
                 .ok_or(RangeTextInputError::SurfaceCapacity)?,

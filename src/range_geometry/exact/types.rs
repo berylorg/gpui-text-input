@@ -101,6 +101,21 @@ pub struct StreamingGeometryStyle {
 }
 
 impl StreamingGeometryStyle {
+    pub(crate) fn cloned_run_storage_charge(&self) -> Option<crate::RangeSurfaceCharge> {
+        Self::run_storage_charge(self.oversize.runs.len())
+    }
+
+    pub(crate) fn retained_run_storage_charge(&self) -> Option<crate::RangeSurfaceCharge> {
+        Self::run_storage_charge(self.oversize.runs.capacity())
+    }
+
+    fn run_storage_charge(items: usize) -> Option<crate::RangeSurfaceCharge> {
+        Some(crate::RangeSurfaceCharge {
+            bytes: items.checked_mul(std::mem::size_of::<TextRun>())?,
+            items,
+        })
+    }
+
     pub fn new(text_run: TextRun, oversize: StreamingOversizePresentation) -> Self {
         Self { text_run, oversize }
     }

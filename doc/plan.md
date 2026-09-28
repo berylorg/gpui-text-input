@@ -4,22 +4,13 @@ Implement the capacity prerequisite for preserved resident adoption from
 [the package contract](design.md#range-backed-preserved-resident-adoption), coordinated by
 the Beryl root plan. Resident protection, accounting and publication remain separate work.
 
-# Phase 94: Remove Allocating Prepublication Teardown (finished)
+# Phase 95: Admit Adoption Configuration Storage (finished)
 
-Geometry destruction and ledger-owned session cancellation/failure avoid release-report allocation.
-Independent review accepted the boundary; 293 integration and 115 unit tests plus default-feature
-checks pass. Exact cleanup and reporting semantics remain covered; nonallocation is source-proved.
-Overall phase 2 acceptance remains pending.
+Adoption admits requested configuration backing before cloning and actual capacity before transfer,
+then retains its charge separately from geometry. Independent review accepted the correction;
+294 integration and 115 unit tests plus default-feature checks pass. Beryl root 840 records evidence.
 
-# Phase 95: Admit Adoption Configuration Storage (pending)
-
-Account for the independently cloned configuration style-run backing in adoption support and
-retained widget ownership, separately from transferred geometry storage. Admit requested capacity
-before cloning and validate actual capacity before owner transfer. Verify independent run-length
-and spare-capacity cases, byte/item refusal, exact fit and candidate cleanup. Independent review
-precedes overall phase 2 acceptance; Beryl root 840 coordinates this prerequisite.
-
-# Phase 2: Enforce Capacity Throughout Preparation (pending)
+# Phase 2: Enforce Capacity Throughout Preparation (wip)
 
 Complete overall review of startup, restoration and geometry request/response preparation,
 candidate collections, Ready/adoption projections and synchronous custody transfer under the
@@ -30,7 +21,8 @@ allocator/RSS accounting are outside this reservation.
 
 Initial index admission, allocation-free retirement and delivered text/object preparation close
 the latest overall review findings.
-Current implementation passes 293 integration and 115 unit tests plus the default-feature check.
+Adoption configuration storage is also accepted.
+Current implementation passes 294 integration and 115 unit tests plus the default-feature check.
 Independent overall resource review remains required before preserved resident reservation.
 Detailed accepted components and evidence limitations are retained in Beryl's
 `doc/failures/prepublication-capacity.md`.

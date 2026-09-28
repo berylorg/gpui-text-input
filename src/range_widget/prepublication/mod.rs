@@ -132,6 +132,10 @@ pub(super) fn initial_widget_owner_charge(
             .map_err(|_| RangePrepublicationFailure::InvalidEnvironment)?;
     [
         RangeTextInput::realization_owner_charge(),
+        config
+            .style
+            .cloned_run_storage_charge()
+            .ok_or(RangePrepublicationFailure::Arithmetic)?,
         request_storage,
         response_custody_storage,
         dispatch,
