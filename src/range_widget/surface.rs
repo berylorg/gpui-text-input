@@ -389,6 +389,32 @@ impl CoherentRangeSurface {
             .map(|(_, selection)| selection)
             .or(desired.source_selection)
             .unwrap_or_else(|| RangeSourceSelection::caret(target.target_source()));
+        let caret_geometry = position_for_composite_fragments(target.fragments(), selection.head)
+            .map(|origin| Bounds::new(origin, gpui::size(px(2.), line_height)));
+        let placeholder =
+            (binding.extent().byte_len() == 0 && !placeholder.is_empty()).then_some(placeholder);
+        let placeholder_bytes = placeholder
+            .as_ref()
+            .map_or(Some(0), |placeholder| {
+                std::mem::size_of::<SharedString>().checked_add(placeholder.len())
+            })
+            .ok_or(crate::RangeTextInputError::SurfaceCapacity)?;
+        let placeholder_items = usize::from(placeholder.is_some());
+        let highlight_baseline = boxed_collection::add(
+            RangeSurfaceCharge {
+                bytes: realized_candidate_bytes,
+                items: realized_candidate_items,
+            },
+            RangeSurfaceCharge {
+                bytes: placeholder_bytes
+                    .checked_add(
+                        usize::from(caret_geometry.is_some())
+                            * std::mem::size_of::<Bounds<Pixels>>(),
+                    )
+                    .ok_or(crate::RangeTextInputError::SurfaceCapacity)?,
+                items: placeholder_items + usize::from(caret_geometry.is_some()),
+            },
+        )?;
         let (selection_geometry, composition_geometry) = highlight_geometry::prepare(
             &owned_maps,
             &realized_objects,
@@ -397,18 +423,10 @@ impl CoherentRangeSurface {
             line_height,
             wrap_width,
             |highlights| {
-                boxed_collection::add(
-                    RangeSurfaceCharge {
-                        bytes: realized_candidate_bytes,
-                        items: realized_candidate_items,
-                    },
-                    highlights,
-                )
-                .is_ok_and(&mut admit_collections)
+                boxed_collection::add(highlight_baseline, highlights)
+                    .is_ok_and(&mut admit_collections)
             },
         )?;
-        let caret_geometry = position_for_composite_fragments(target.fragments(), selection.head)
-            .map(|origin| Bounds::new(origin, gpui::size(px(2.), line_height)));
         let geometry_candidate_items = selection_geometry
             .capacity()
             .checked_add(composition_geometry.capacity())
@@ -428,15 +446,6 @@ impl CoherentRangeSurface {
         let geometry_bytes = geometry_items
             .checked_mul(std::mem::size_of::<Bounds<Pixels>>())
             .ok_or(crate::RangeTextInputError::SurfaceCapacity)?;
-        let placeholder =
-            (binding.extent().byte_len() == 0 && !placeholder.is_empty()).then_some(placeholder);
-        let placeholder_bytes = placeholder
-            .as_ref()
-            .map_or(Some(0), |placeholder| {
-                std::mem::size_of::<SharedString>().checked_add(placeholder.len())
-            })
-            .ok_or(crate::RangeTextInputError::SurfaceCapacity)?;
-        let placeholder_items = usize::from(placeholder.is_some());
         let charge = RangeSurfaceCharge {
             bytes: std::mem::size_of::<Self>()
                 .checked_add(page_bytes)
