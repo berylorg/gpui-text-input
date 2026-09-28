@@ -756,6 +756,12 @@ applies through successor-record and destination admission while those owners re
 does not discount existing owner payload again or relax configured geometry limits. Terminal
 publication and source finalization require separate ownership mapping.
 
+Deferred inline custody exists only while an incomplete object page awaits its object successor.
+A complete object page consumes that custody before requesting forward text or grapheme context.
+Text-response continuation copies therefore contain no deferred display; their publication uses
+zero deferred credit. Existing original output remains in the baseline and must not be discounted
+again merely because a text response follows an object response.
+
 The optional `test-support` feature exposes `preparation_test_support` for integration qualification
 of immutable response preparation. Its probe reports raw required capacity, optional independently
 observed enclosing peaks for prepared results and failures, and terminal/successor facts,

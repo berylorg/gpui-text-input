@@ -444,6 +444,13 @@ impl PreparedResponseProbe {
         }
     }
 
+    pub fn page_request(&self) -> Option<PageRequest> {
+        match self.0.successor() {
+            Some(PreparedTargetSuccessor::Page(request)) => Some(request),
+            _ => None,
+        }
+    }
+
     pub fn commit(self, owner: &mut ExactGeometryOwner) {
         owner.commit_prepared_target_response(self.0);
     }

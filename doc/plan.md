@@ -4,11 +4,11 @@ Implement the capacity prerequisite for preserved resident adoption from
 [the package contract](design.md#range-backed-preserved-resident-adoption), coordinated by
 the Beryl root plan. Resident protection, accounting and publication remain separate work.
 
-# Phase 61: Credit Shared Display During Active Object Response Publication (finished)
+# Phase 62: Qualify Text Response Deferred Custody Reachability (finished)
 
-Active object-response successor and destination admission now credit candidate display shared
-with borrowed inputs/original custody. Configured charges stay raw. All 226 integration tests
-passed and independent resource review found no blocking issues.
+Text responses cannot retain deferred custody; no additional deferred-display credit is needed.
+Prepared transitions and exact-fit/refusal/retry checks passed with all 227 integration tests.
+Independent semantic/resource review found no blocking issues; production behavior is unchanged.
 
 # Phase 2: Enforce Capacity Throughout Preparation (pending)
 
@@ -38,8 +38,8 @@ Continuation pre-copy and immediate copy coexistence credit the deferred display
 original. Deferred-tail pre-allocation and immediate retention also credit display shared with the
 borrowed page. Detached custody carries existing credit through scanner admission and reservation;
 GPUI inline output now carries credit through object-page scanning and active object-response
-publication. Source finalization, terminal/nested publication and text-response deferred custody
-still require their own credits.
+publication. Source finalization and terminal/nested publication still require their own credits.
+Text responses cannot retain deferred custody and need no deferred-display credit.
 Deferred presentation backing now shares correctly and participates in retained overlap queries.
 Explicit preparation admission now carries typed configured/enclosing refusal attribution.
 Do not infer host attribution from ambiguous GPUI errors. Five older baseline unit failures remain

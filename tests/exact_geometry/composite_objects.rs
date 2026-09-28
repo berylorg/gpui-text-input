@@ -7,6 +7,9 @@ mod returned_capacity;
 #[cfg(feature = "test-support")]
 #[path = "composite_objects/shared_deferred.rs"]
 mod shared_deferred;
+#[cfg(feature = "test-support")]
+#[path = "composite_objects/text_successor.rs"]
+mod text_successor;
 
 fn object(id: u128, anchor: u64, order: u128, width: f32) -> InlineObjectFact {
     let presentation = InlineObjectPresentation::new(
