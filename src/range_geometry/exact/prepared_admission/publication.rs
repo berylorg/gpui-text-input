@@ -357,6 +357,25 @@ impl ExactGeometryOwner {
                 );
             }
         }
+        let delta_counts = accounting::active_counts(&delta);
+        let capacity = super::super::transition::PreparationCapacity {
+            bytes: budget
+                .fixed_bytes
+                .checked_add(budget.page_payload_bytes)
+                .and_then(|bytes| bytes.checked_add(checked_total_bytes(delta_counts).ok()?))
+                .and_then(|bytes| bytes.checked_add(publication_bytes))
+                .and_then(|bytes| bytes.checked_add(release_storage_bytes(&release).ok()?))
+                .ok_or_else(|| prepared_capacity_failure(&budget))?,
+            items: budget
+                .fixed_items
+                .checked_add(budget.page_items)
+                .and_then(|items| items.checked_add(checked_total_items(delta_counts).ok()?))
+                .and_then(|items| items.checked_add(publication_items))
+                .and_then(|items| items.checked_add(release_storage_items(&release).ok()?))
+                .ok_or_else(|| prepared_capacity_failure(&budget))?,
+            max_bytes: budget.max_bytes.min(self.limits.max_retained_bytes),
+            max_items: budget.max_items.min(self.limits.max_retained_items),
+        };
         let prepared_target = self
             .prepare_target_replacement_from_index(
                 &index,
@@ -364,17 +383,17 @@ impl ExactGeometryOwner {
                 successor.page_id,
                 target,
                 anchor,
+                capacity,
             )
             .map_err(|error| {
                 prepared_failure(error, ExactGeometryFailureStage::Publication, &budget)
             })?;
-        let index_counts = accounting::counts(None, None, None, Some(&index), None);
-        let additional_bytes = index_counts
-            .total_bytes()
+        budget.peak_bytes = budget.peak_bytes.max(prepared_target.admission_required_bytes());
+        budget.peak_items = budget.peak_items.max(prepared_target.admission_required_items());
+        let additional_bytes = publication_bytes
             .checked_add(prepared_target.retained_bytes())
             .ok_or_else(|| prepared_capacity_failure(&budget))?;
-        let additional_items = index_counts
-            .total_items()
+        let additional_items = publication_items
             .checked_add(prepared_target.retained_items())
             .ok_or_else(|| prepared_capacity_failure(&budget))?;
         observe_prepared(&mut budget, &delta, additional_bytes, additional_items)?;
@@ -717,7 +736,9 @@ impl ExactGeometryOwner {
                 )
             }
             PreparedTargetResponseState::CompleteIndex { index, target } => {
-                let counts = accounting::counts(None, None, None, Some(index), None);
+                let mut counts = accounting::counts(None, None, None, Some(index), None);
+                counts.owner_bytes = 0;
+                counts.owner_items = 0;
                 (
                     checked_total_bytes(counts)
                         .and_then(|bytes| bytes.checked_add(target.retained_bytes()).ok_or(())),

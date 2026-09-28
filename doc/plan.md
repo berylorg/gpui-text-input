@@ -4,12 +4,12 @@ Implement the capacity prerequisite for preserved resident adoption from
 [the package contract](design.md#range-backed-preserved-resident-adoption), coordinated by
 the Beryl root plan. Resident protection, accounting and publication remain separate work.
 
-# Phase 24: Admit Replacement Input And Job Coexistence (finished)
+# Phase 25: Admit Nested Index Successor Preparation (finished)
 
-Index and target job preparation now admits current-owner and replacement-input coexistence before
-checkpoint or job allocation. Index startup peak evidence includes those inputs once. Independent
-resource review accepted the checked arithmetic and refusal behavior; all 188 geometry, widget and
-prepublication regression cases passed.
+Completed-index successor preparation now admits the enclosing response, index and cleanup custody
+before allocating a target job, terminal publication or cleanup storage. Nested success peaks
+propagate outward, and retained index accounting excludes the unchanged owner. Independent resource
+review accepted the change; all 188 geometry, widget and prepublication regression cases passed.
 
 # Phase 2: Enforce Capacity Throughout Preparation (pending)
 
