@@ -62,6 +62,8 @@ impl ExactGeometryOwner {
 
         let fixed = accounting::fixed_counts_without_active(self);
         let mut budget = AdmissionBudget {
+            configured_capacity: None,
+            refused_capacity: None,
             fixed_bytes: fixed.total_bytes(),
             fixed_items: fixed.total_items(),
             page_payload_bytes: page.retained_charge().bytes(),
@@ -206,6 +208,8 @@ impl ExactGeometryOwner {
         }
         let fixed = accounting::fixed_counts_without_active(self);
         let mut budget = AdmissionBudget {
+            configured_capacity: None,
+            refused_capacity: None,
             fixed_bytes: fixed.total_bytes(),
             fixed_items: fixed.total_items(),
             page_payload_bytes: text_page
@@ -538,6 +542,7 @@ impl ExactGeometryOwner {
 
     fn nonterminal_failure(&self, error: ExactGeometryError) -> ExactGeometryFailure {
         ExactGeometryFailure {
+            capacity_refusal: None,
             error,
             stage: ExactGeometryFailureStage::Validation,
             release: ExactGeometryRelease::default(),
@@ -570,6 +575,7 @@ impl ExactGeometryOwner {
             None => {}
         }
         ExactGeometryFailure {
+            capacity_refusal: None,
             error,
             stage,
             release: ExactGeometryRelease {
@@ -674,6 +680,7 @@ fn candidate_failure(
     budget: &AdmissionBudget,
 ) -> ExactGeometryFailure {
     ExactGeometryFailure {
+        capacity_refusal: None,
         error,
         stage: ExactGeometryFailureStage::Publication,
         release: {

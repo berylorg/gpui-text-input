@@ -504,11 +504,18 @@ pub enum ExactGeometryError {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ExactGeometryFailure {
+    pub(super) capacity_refusal: Option<CapacityRefusal>,
     pub(super) error: ExactGeometryError,
     pub(super) stage: ExactGeometryFailureStage,
     pub(super) release: ExactGeometryRelease,
     pub(super) admission_required_bytes: usize,
     pub(super) admission_required_items: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CapacityRefusal {
+    Configured,
+    Enclosing,
 }
 
 impl ExactGeometryFailure {

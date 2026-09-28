@@ -142,6 +142,8 @@ impl ExactGeometryOwner {
             scanner,
         };
         let mut budget = AdmissionBudget {
+            configured_capacity: None,
+            refused_capacity: None,
             fixed_bytes: fixed,
             fixed_items: accounting::fixed_counts_without_active(self).total_items(),
             page_payload_bytes: 0,

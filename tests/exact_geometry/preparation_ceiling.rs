@@ -1,5 +1,7 @@
 use super::*;
-use gpui_text_input::preparation_test_support::prepare_response;
+use gpui_text_input::preparation_test_support::{
+    is_configured_capacity_refusal, is_enclosing_capacity_refusal, prepare_response,
+};
 
 #[gpui::test]
 fn immutable_response_preparation_obeys_enclosing_ceilings(cx: &mut TestAppContext) {
@@ -62,8 +64,31 @@ fn immutable_response_preparation_obeys_enclosing_ceilings(cx: &mut TestAppConte
                         let failure =
                             prepare(&limited, None, (usize::MAX, usize::MAX)).unwrap_err();
                         assert_eq!(failure.error(), &ExactGeometryError::CapacityExceeded);
+                        assert!(is_configured_capacity_refusal(&failure), "{failure:?}");
+                        assert!(!is_enclosing_capacity_refusal(&failure));
                         assert_eq!(failure.release(), &ExactGeometryRelease::default());
                         assert_eq!(limited.counts(), counts);
+                    }
+                }
+                if index && !resident {
+                    let first = prepare(&owner, None, (0, 0)).unwrap_err();
+                    let first_bytes = first.admission_required_bytes();
+                    let first_items = first.admission_required_items();
+                    for (configured, enclosing) in [
+                        ((first_bytes - 1, 8192), (usize::MAX, first_items - 1)),
+                        ((512 * 1024, first_items - 1), (first_bytes - 1, usize::MAX)),
+                    ] {
+                        let mut limited = make_owner(configured.0, configured.1);
+                        limited.start_index(GeometryJobId::new(90_000)).unwrap();
+                        limited
+                            .request_page(start.key(), PageRequestId::new(90_000))
+                            .unwrap();
+                        let before = limited.counts();
+                        let failure = prepare(&limited, None, enclosing).unwrap_err();
+                        assert!(is_configured_capacity_refusal(&failure), "{failure:?}");
+                        assert!(!is_enclosing_capacity_refusal(&failure));
+                        assert_eq!(failure.release(), &ExactGeometryRelease::default());
+                        assert_eq!(limited.counts(), before);
                     }
                 }
                 check_refusals(&owner, bytes, items, |capacity| {
@@ -118,6 +143,12 @@ fn check_refusals(
         assert_eq!(result.is_ok(), succeeds, "{result:?}");
         if let Err(failure) = result {
             assert_eq!(failure.release(), &ExactGeometryRelease::default());
+            if matches!(failure.error(), ExactGeometryError::Layout(_)) {
+                assert!(!is_enclosing_capacity_refusal(&failure));
+            } else {
+                assert!(is_enclosing_capacity_refusal(&failure), "{failure:?}");
+            }
+            assert!(!is_configured_capacity_refusal(&failure));
         }
         assert_eq!(owner.counts(), counts);
     }

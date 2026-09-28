@@ -175,7 +175,9 @@ impl Scanner {
             cursor_origin: checkpoint.grapheme_origin,
             grapheme_start_cursor: checkpoint.grapheme.clone(),
             continuation: checkpoint.continuation,
-            continuation_items: accounting::continuation_items(checkpoint.continuation.next_position),
+            continuation_items: accounting::continuation_items(
+                checkpoint.continuation.next_position,
+            ),
             logical_line: checkpoint.logical_line,
             segment_text: String::new(),
             segment_start: checkpoint.source.byte_offset.get(),
@@ -233,6 +235,8 @@ struct ActiveJob {
 }
 
 struct AdmissionBudget {
+    configured_capacity: Option<(usize, usize)>,
+    refused_capacity: Option<(usize, usize)>,
     fixed_bytes: usize,
     fixed_items: usize,
     page_payload_bytes: usize,
@@ -251,6 +255,7 @@ impl AdmissionBudget {
         transient_bytes: usize,
         transient_items: usize,
     ) -> Result<(), ExactGeometryError> {
+        self.refused_capacity = None;
         let counts = accounting::active_counts(active);
         let bytes = self
             .fixed_bytes
@@ -267,9 +272,15 @@ impl AdmissionBudget {
             self.peak_items = usize::MAX;
             return Err(ExactGeometryError::CapacityExceeded);
         };
+        self.admit_counts(bytes, items)
+    }
+
+    fn admit_counts(&mut self, bytes: usize, items: usize) -> Result<(), ExactGeometryError> {
+        self.refused_capacity = None;
         self.peak_bytes = self.peak_bytes.max(bytes);
         self.peak_items = self.peak_items.max(items);
         if bytes > self.max_bytes || items > self.max_items {
+            self.refused_capacity = Some((bytes, items));
             Err(ExactGeometryError::CapacityExceeded)
         } else {
             Ok(())

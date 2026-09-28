@@ -8,6 +8,7 @@ mod release;
 
 fn budget(bytes: usize, items: usize) -> PreparationCapacity {
     PreparationCapacity {
+        refused_capacity: None,
         bytes: 100,
         items: 10,
         max_bytes: bytes,
@@ -27,11 +28,13 @@ fn refusal_retains_both_attempted_peaks_and_does_not_change_the_base() {
     ] {
         let mut capacity = budget(bytes, items);
         assert_eq!(capacity.admit(50, 5).is_ok(), allowed);
+        assert_eq!(capacity.refused_capacity, (!allowed).then_some((150, 15)));
         assert_eq!((capacity.peak_bytes, capacity.peak_items), (150, 15));
         assert_eq!((capacity.bytes, capacity.items), (100, 10));
         capacity.max_bytes = 150;
         capacity.max_items = 15;
         assert_eq!(capacity.admit(50, 5).unwrap(), (150, 15));
+        assert_eq!(capacity.refused_capacity, None);
         assert_eq!(capacity.admit(0, 0).unwrap(), (100, 10));
         assert_eq!((capacity.peak_bytes, capacity.peak_items), (150, 15));
     }
@@ -50,6 +53,7 @@ fn overflow_records_saturated_evidence_but_never_admits() {
             Err(ExactGeometryError::CapacityExceeded)
         );
         assert_eq!((capacity.peak_bytes, capacity.peak_items), expected);
+        assert_eq!(capacity.refused_capacity, None);
     }
 }
 
@@ -86,10 +90,6 @@ fn cleanup_preparation_extends_the_same_peak_before_reservation() {
             assert_eq!(released.pages, [text.key()]);
         }
     }
-    assert!(
-        owner
-            .request_page(job, PageRequestId::new(2))
-            .is_err()
-    );
+    assert!(owner.request_page(job, PageRequestId::new(2)).is_err());
     assert_eq!(owner.counts(), before);
 }

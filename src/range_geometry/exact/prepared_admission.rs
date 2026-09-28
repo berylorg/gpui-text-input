@@ -763,17 +763,9 @@ fn observe_prepared_counts(
         .and_then(|value| value.checked_add(checked_total_items(counts).ok()?))
         .and_then(|value| value.checked_add(transient_items))
         .ok_or_else(|| prepared_capacity_failure(budget))?;
-    budget.peak_bytes = budget.peak_bytes.max(bytes);
-    budget.peak_items = budget.peak_items.max(items);
-    if bytes > budget.max_bytes || items > budget.max_items {
-        Err(prepared_failure(
-            ExactGeometryError::CapacityExceeded,
-            ExactGeometryFailureStage::PageCoexistence,
-            budget,
-        ))
-    } else {
-        Ok(())
-    }
+    budget.admit_counts(bytes, items).map_err(|error| {
+        prepared_failure(error, ExactGeometryFailureStage::PageCoexistence, budget)
+    })
 }
 
 fn prepared_failure(
@@ -781,7 +773,21 @@ fn prepared_failure(
     stage: ExactGeometryFailureStage,
     budget: &AdmissionBudget,
 ) -> ExactGeometryFailure {
+    let capacity_refusal = if error == ExactGeometryError::CapacityExceeded {
+        budget.refused_capacity.zip(budget.configured_capacity).map(
+            |((bytes, items), (max_bytes, max_items))| {
+                if bytes > max_bytes || items > max_items {
+                    super::types::CapacityRefusal::Configured
+                } else {
+                    super::types::CapacityRefusal::Enclosing
+                }
+            },
+        )
+    } else {
+        None
+    };
     ExactGeometryFailure {
+        capacity_refusal,
         error,
         stage,
         release: ExactGeometryRelease::default(),

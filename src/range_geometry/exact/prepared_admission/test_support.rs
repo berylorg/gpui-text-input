@@ -1,5 +1,13 @@
 use super::*;
 
+pub fn is_enclosing_capacity_refusal(failure: &ExactGeometryFailure) -> bool {
+    failure.capacity_refusal == Some(super::super::types::CapacityRefusal::Enclosing)
+}
+
+pub fn is_configured_capacity_refusal(failure: &ExactGeometryFailure) -> bool {
+    failure.capacity_refusal == Some(super::super::types::CapacityRefusal::Configured)
+}
+
 pub fn owner_presentation_overlap(
     owner: &ExactGeometryOwner,
     pages: &[&ObjectPage],

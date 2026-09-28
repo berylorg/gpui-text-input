@@ -359,6 +359,7 @@ impl ExactGeometryOwner {
         }
         let delta_counts = accounting::active_counts(&delta);
         let mut capacity = super::super::transition::PreparationCapacity {
+            refused_capacity: None,
             bytes: budget
                 .fixed_bytes
                 .checked_add(budget.page_payload_bytes)
@@ -388,6 +389,7 @@ impl ExactGeometryOwner {
         );
         budget.peak_bytes = budget.peak_bytes.max(capacity.peak_bytes);
         budget.peak_items = budget.peak_items.max(capacity.peak_items);
+        budget.refused_capacity = capacity.refused_capacity;
         let prepared_target = prepared_target.map_err(|error| {
             prepared_failure(error, ExactGeometryFailureStage::Publication, &budget)
         })?;
@@ -674,6 +676,11 @@ impl ExactGeometryOwner {
     ) -> Result<AdmissionBudget, ExactGeometryFailure> {
         let counts = self.counts();
         Ok(AdmissionBudget {
+            configured_capacity: Some((
+                self.limits.max_retained_bytes,
+                self.limits.max_retained_items,
+            )),
+            refused_capacity: None,
             fixed_bytes: checked_total_bytes(counts).map_err(|_| {
                 self.prepared_validation_failure(ExactGeometryError::CapacityExceeded)
             })?,
@@ -783,6 +790,7 @@ impl ExactGeometryOwner {
         error: ExactGeometryError,
     ) -> ExactGeometryFailure {
         ExactGeometryFailure {
+            capacity_refusal: None,
             error,
             stage: ExactGeometryFailureStage::Validation,
             release: ExactGeometryRelease::default(),

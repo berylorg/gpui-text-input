@@ -749,6 +749,7 @@ impl ExactGeometryOwner {
     ) -> Result<PreparationCapacity, ExactGeometryError> {
         let (bytes, items) = self.preparation_base(replacement_inputs)?;
         Ok(PreparationCapacity {
+            refused_capacity: None,
             bytes,
             items,
             max_bytes: self.limits.max_retained_bytes,
@@ -815,6 +816,8 @@ impl ExactGeometryOwner {
             scanner,
         };
         let mut budget = AdmissionBudget {
+            configured_capacity: None,
+            refused_capacity: None,
             fixed_bytes: coexisting
                 .0
                 .checked_add(size_of::<PageRequestKey>())
