@@ -734,7 +734,7 @@ impl ExactGeometryOwner {
             self.limits.max_page_bytes,
         )
         .map_err(|_| ExactGeometryError::InvalidLimits)?;
-        let mut active = Box::new(ActiveJob {
+        let mut active = ActiveJob {
             key,
             kind: ActiveKind::Target {
                 target,
@@ -745,14 +745,39 @@ impl ExactGeometryOwner {
             page_use: ActivePageUse::Traverse {
                 anchor: predecessor.byte_offset,
             },
-            pending: Some(Box::new(PendingInput::Text(page_key))),
+            pending: None,
             text_page: None,
             window_identity: None,
             retained_capacity,
             scanner,
-        });
+        };
+        let proposed = accounting::active_counts(&active);
+        let proposed_bytes = proposed
+            .total_bytes()
+            .checked_add(size_of::<PageRequestKey>())
+            .ok_or(ExactGeometryError::CapacityExceeded)?;
+        let proposed_items = proposed
+            .total_items()
+            .checked_add(1)
+            .ok_or(ExactGeometryError::CapacityExceeded)?;
+        let current = self.counts();
+        let required_bytes = current
+            .total_bytes()
+            .checked_add(proposed_bytes)
+            .ok_or(ExactGeometryError::CapacityExceeded)?;
+        let required_items = current
+            .total_items()
+            .checked_add(proposed_items)
+            .ok_or(ExactGeometryError::CapacityExceeded)?;
+        if proposed_bytes > retained_capacity
+            || required_bytes > self.limits.max_retained_bytes
+            || required_items > self.limits.max_retained_items
+        {
+            return Err(ExactGeometryError::CapacityExceeded);
+        }
+        active.pending = Some(Box::new(PendingInput::Text(page_key)));
         accounting::ensure_active(&mut active)?;
-        Ok(active)
+        Ok(Box::new(active))
     }
 
     fn finish_prepared(

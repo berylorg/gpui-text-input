@@ -4,11 +4,11 @@ Implement the capacity prerequisite for preserved resident adoption from
 [the package contract](design.md#range-backed-preserved-resident-adoption), coordinated by
 the Beryl root plan. Resident protection, accounting and publication remain separate work.
 
-# Phase 14: Admit Terminal Prepared Targets Before Allocation (finished)
+# Phase 15: Admit Prepared Target Jobs Before Allocation (finished)
 
-Terminal target preparation checks current geometry plus publication storage before allocating
-the publication. Independent review accepted charge equivalence, allocation ordering and unchanged
-refusal custody; all 188 geometry, prepublication and range-widget tests passed.
+Prepared target jobs check current ownership plus the proposed job and pending request before
+allocating either box. Independent review accepted charge equivalence, allocation ordering and
+unchanged refusal custody; all 188 geometry, prepublication and range-widget tests passed.
 
 # Phase 2: Enforce Capacity Throughout Preparation (pending)
 
