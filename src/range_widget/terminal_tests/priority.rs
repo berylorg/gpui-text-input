@@ -217,6 +217,14 @@ fn active_interaction_and_scroll_anchor_are_runtime_realization_targets(
         )
         .unwrap(),
     );
+    let mut next_page = 100_000;
+    drive_bounded_priority_objects(
+        &input,
+        cx,
+        SOURCE,
+        std::slice::from_ref(&fact),
+        &mut next_page,
+    );
     input.update(cx, |input, _| {
         let mut desired = input.desired;
         desired.source_selection = Some(RangeSourceSelection {
@@ -234,7 +242,6 @@ fn active_interaction_and_scroll_anchor_are_runtime_realization_targets(
         let candidate = input.prepare_target_transition(desired, None).unwrap();
         input.commit_widget_transition(candidate, None);
     });
-    let mut next_page = 100_000;
     drive_bounded_priority_objects(&input, cx, SOURCE, &[fact], &mut next_page);
     input.read_with(cx, |input, _| {
         let surface = input.surface().unwrap();
