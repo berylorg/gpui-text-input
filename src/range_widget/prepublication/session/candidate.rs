@@ -1,5 +1,6 @@
 use std::sync::Weak;
 
+mod page_order;
 mod transfer;
 
 use gpui::WindowTextSystem;
@@ -148,6 +149,34 @@ impl RangePrepublicationSession {
             self.ledger_blocked = true;
             return Ok(());
         };
+        let surface_baseline = add_charge(
+            current_charge,
+            add_charge(
+                transfer::charge(pages.capacity(), object_pages.capacity())?,
+                RangeSurfaceCharge {
+                    bytes: std::mem::size_of::<
+                        crate::range_widget::surface::PreparedCoherentRangeSurface,
+                    >(),
+                    items: 1,
+                },
+            )?,
+        )?;
+        let mut surface_peak = surface_baseline;
+        let page_order = page_order::prepare(
+            self.residency
+                .resident_page_iter()
+                .map(|page| page.range().start()),
+            surface_baseline,
+            configured_capacity(&config),
+            self.available,
+            &mut surface_peak,
+        );
+        self.observe_charge(surface_peak);
+        let Some(page_order) = page_order? else {
+            let _ = self.environment.cleanup().complete(cleanup);
+            self.ledger_blocked = true;
+            return Ok(());
+        };
         let geometry = self
             .geometry
             .as_ref()
@@ -188,6 +217,7 @@ impl RangePrepublicationSession {
             config.layout.line_height,
             config.layout.wrap_width,
             config.placeholder.clone(),
+            page_order,
         )
         .map_err(classify_widget_error)?;
         let preparation_allocation = [

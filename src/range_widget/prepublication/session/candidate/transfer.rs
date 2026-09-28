@@ -1,6 +1,9 @@
 use super::*;
 
-fn charge(text: usize, objects: usize) -> Result<RangeSurfaceCharge, RangePrepublicationFailure> {
+pub(super) fn charge(
+    text: usize,
+    objects: usize,
+) -> Result<RangeSurfaceCharge, RangePrepublicationFailure> {
     add_charge(
         multiply_charge(
             RangeSurfaceCharge {

@@ -4,12 +4,13 @@ Implement the capacity prerequisite for preserved resident adoption from
 [the package contract](design.md#range-backed-preserved-resident-adoption), coordinated by
 the Beryl root plan. Resident protection, accounting and publication remain separate work.
 
-# Phase 68: Admit Candidate Resident Transfer Buffers (finished)
+# Phase 69: Admit Candidate Surface Page Ordering (finished)
 
-Candidate transfer buffers now admit checked combined byte/item growth before allocation and
-recheck actual capacities before continuing. Refusal preserves resident/geometry custody and
-completes the temporary cleanup reservation. All 233 integration tests passed; the default-feature
-check and independent semantic/resource review passed. Next admit surface preparation collections.
+Candidate surface page ordering now admits requested and actual capacity before use, with checked
+box-conversion coexistence. In-place sorting preserves equal-position input order. Retryable refusal
+retains resident/geometry custody and releases the temporary cleanup reservation. All 235 integration
+tests, the default-feature check and independent semantic/resource review passed. Remaining surface
+collections and transitions stay pending; see the Beryl capacity evidence note.
 
 # Phase 2: Enforce Capacity Throughout Preparation (pending)
 

@@ -504,6 +504,11 @@ impl RangeTextInput {
             self.config.layout.line_height,
             self.config.layout.wrap_width,
             self.config.placeholder.clone(),
+            super::super::surface::page_order::prepare(
+                pages.clone().map(|page| page.range().start()),
+                |_| true,
+            )
+            .map_err(|_| RangeTextInputError::SurfaceCapacity)?,
         )?;
         if let Some(seed) = state.restoration
             && (surface.binding() != seed.binding

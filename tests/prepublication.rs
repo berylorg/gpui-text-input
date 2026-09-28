@@ -29,6 +29,10 @@ mod admitted_response;
 #[cfg(feature = "test-support")]
 mod candidate_transfer;
 
+#[path = "prepublication/candidate_page_order.rs"]
+#[cfg(feature = "test-support")]
+mod candidate_page_order;
+
 fn binding(source: &str, revision: u64) -> RangeBinding {
     RangeBinding::new(
         BindingId::new(41),

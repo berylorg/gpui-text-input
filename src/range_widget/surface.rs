@@ -1,3 +1,5 @@
+pub(in crate::range_widget) mod page_order;
+
 use gpui::{
     Bounds, Pixels, Point, SharedString, StreamingBoundaryKind, StreamingLayoutFragment,
     StreamingLayoutHit, StreamingLayoutMap, StreamingLayoutPosition, StreamingObjectGap, px,
@@ -19,8 +21,8 @@ pub struct RangeSurfaceCharge {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct SurfacePageIndex {
-    index: u32,
+pub(in crate::range_widget) struct SurfacePageIndex {
+    pub(in crate::range_widget) index: u32,
     start: ByteOffset,
 }
 
@@ -256,6 +258,7 @@ impl CoherentRangeSurface {
         line_height: Pixels,
         wrap_width: Pixels,
         placeholder: SharedString,
+        page_order: Box<[SurfacePageIndex]>,
     ) -> Result<PreparedCoherentRangeSurface, crate::RangeTextInputError> {
         let viewport = ByteRange::new(
             target.target_source().byte_offset,
@@ -265,20 +268,11 @@ impl CoherentRangeSurface {
             target.predecessor().byte_offset,
             target.source_end().byte_offset,
         )?;
-        let mut page_order = Vec::with_capacity(pages.len());
-        for (index, page) in pages.clone().enumerate() {
-            page_order.push(SurfacePageIndex {
-                index: u32::try_from(index)
-                    .map_err(|_| crate::RangeTextInputError::SurfaceCapacity)?,
-                start: page.range().start(),
-            });
-        }
-        page_order.sort_by_key(|entry| entry.start);
         let page_order_candidate_bytes = page_order
-            .capacity()
+            .len()
             .checked_mul(std::mem::size_of::<SurfacePageIndex>())
             .ok_or(crate::RangeTextInputError::SurfaceCapacity)?;
-        let page_order_candidate_items = page_order.capacity();
+        let page_order_candidate_items = page_order.len();
         let page_order_bytes = page_order
             .len()
             .checked_mul(std::mem::size_of::<SurfacePageIndex>())
@@ -557,7 +551,7 @@ impl CoherentRangeSurface {
             binding,
             geometry: target.key().geometry(),
             selection,
-            page_order: page_order.into_boxed_slice(),
+            page_order,
             composition: desired.composition,
             scroll_position,
             scroll_source,
