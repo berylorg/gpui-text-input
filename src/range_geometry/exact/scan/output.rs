@@ -10,12 +10,23 @@ pub(super) fn admit_layout(
     retain_checkpoint: bool,
     budget: &mut AdmissionBudget,
     next_position: gpui::StreamingLayoutPosition,
+    transient_runs: usize,
     admit: impl FnOnce(
         &mut gpui::StreamingLayoutSession<'_>,
     ) -> Result<gpui::StreamingLayoutAdmission, gpui::StreamingLayoutError>,
 ) -> Result<bool, ExactGeometryError> {
     let prior = job.scanner.continuation;
-    let reserved_binding = reservation::binding(job, binding, next_position, budget)?;
+    let transient_run_bytes = transient_runs
+        .checked_mul(std::mem::size_of::<gpui::TextRun>())
+        .ok_or(ExactGeometryError::CapacityExceeded)?;
+    let reserved_binding = reservation::binding(
+        job,
+        binding,
+        next_position,
+        transient_run_bytes,
+        transient_runs,
+        budget,
+    )?;
     let (admission, session_item_charge) = {
         let mut session = text_system.resume_streaming_layout_session(reserved_binding, prior)?;
         let admission = admit(&mut session)?;
@@ -36,7 +47,15 @@ pub(super) fn admit_layout(
         .total()?
         .checked_add(admission.fragments.len())
         .ok_or(ExactGeometryError::CapacityExceeded)?;
-    budget.observe(job, full_transient_bytes, full_transient_items)?;
+    budget.observe(
+        job,
+        full_transient_bytes
+            .checked_add(transient_run_bytes)
+            .ok_or(ExactGeometryError::CapacityExceeded)?,
+        full_transient_items
+            .checked_add(transient_runs)
+            .ok_or(ExactGeometryError::CapacityExceeded)?,
+    )?;
     job.scanner.continuation = admission.continuation;
     job.scanner.continuation_items = session_item_charge.total()?;
     let (retained, transient_bytes, transient_items) =

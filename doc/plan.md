@@ -4,11 +4,11 @@ Implement the capacity prerequisite for preserved resident adoption from
 [the package contract](design.md#range-backed-preserved-resident-adoption), coordinated by
 the Beryl root plan. Resident protection, accounting and publication remain separate work.
 
-# Phase 45: Attribute Pre-Shaping Reservation Refusals (finished)
+# Phase 46: Reserve Transient Inline Style Runs Through Layout (finished)
 
-The positive remaining-capacity check before GPUI now records explicit required counts and refusal
-attribution without changing allowed ceilings or classifying arithmetic/GPUI errors. Independent
-resource review accepted the boundary; all 213 integration tests passed.
+Inline-object and oversize style-run buffers remain charged through GPUI reservation and output
+coexistence, without double counting ordinary text's transferred runs. Independent resource review
+accepted the boundary; all 213 integration tests passed.
 
 # Phase 2: Enforce Capacity Throughout Preparation (pending)
 
@@ -26,6 +26,7 @@ Explicit preparation admission now carries typed configured/enclosing refusal at
 Do not infer host attribution from ambiguous GPUI errors. Five older baseline unit failures remain
 recorded in the Beryl capacity failure note and require authority reconciliation.
 Returned GPUI custody now uses the geometry budget before invocation.
+Transient inline style runs remain charged through the layout call and output coexistence.
 Direct response admission accepts enclosing ceilings; host derivation and peak propagation remain
 required before combined resident reservation can use them.
 Direct request creation also accepts enclosing ceilings before pending-record allocation.

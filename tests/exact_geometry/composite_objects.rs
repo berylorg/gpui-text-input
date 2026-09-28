@@ -94,11 +94,15 @@ fn inline_style_storage_is_admitted_before_layout(cx: &mut TestAppContext) {
         for deferred in [false, true] {
             for display in ["x", ""] {
                 let mut required = (512 * 1024, 32 * 1024);
-                for attempt in 0..4 {
+                let mut reservation = (0, 0);
+                for attempt in 0..7 {
                     let (bytes, items) = match attempt {
                         0 | 1 => required,
                         2 => (required.0 - 1, required.1),
-                        _ => (required.0, required.1 - 1),
+                        3 => (required.0, required.1 - 1),
+                        4 => reservation,
+                        5 => (reservation.0 - 1, reservation.1),
+                        _ => (reservation.0, reservation.1 - 1),
                     };
                     let first = InlineObjectFact::new(
                         InlineObjectId::new(1),
@@ -200,12 +204,10 @@ fn inline_style_storage_is_admitted_before_layout(cx: &mut TestAppContext) {
                     let failure = owner
                         .admit_object_page(job, &text, &objects, text_system)
                         .unwrap_err();
-                    let peak = if attempt <= 1 {
+                    let peak = if attempt <= 1 || attempt >= 4 {
                         (
-                            expected.0 - run_count * std::mem::size_of::<TextRun>()
-                                + std::mem::size_of::<StreamingLayoutFragment>()
-                                + 1,
-                            expected.1 - run_count + 2 + 2 * usize::from(deferred),
+                            expected.0 + std::mem::size_of::<StreamingLayoutFragment>() + 1,
+                            expected.1 + 2 + 2 * usize::from(deferred),
                         )
                     } else {
                         expected
@@ -222,12 +224,19 @@ fn inline_style_storage_is_admitted_before_layout(cx: &mut TestAppContext) {
                             )
                         ));
                         required = expected;
+                        reservation = peak;
+                    } else if attempt == 4 {
+                        assert!(
+                            matches!(failure.error(), ExactGeometryError::Layout(_)),
+                            "{:?}",
+                            failure.error()
+                        );
                     } else {
                         assert_eq!(failure.error(), &ExactGeometryError::CapacityExceeded);
                     }
                     assert_eq!(
                         failure.stage(),
-                        if display.is_empty() && attempt >= 2 {
+                        if display.is_empty() && (2..4).contains(&attempt) {
                             gpui_text_input::ExactGeometryFailureStage::PageCoexistence
                         } else {
                             gpui_text_input::ExactGeometryFailureStage::Scan

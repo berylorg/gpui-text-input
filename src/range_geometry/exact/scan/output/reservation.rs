@@ -4,6 +4,8 @@ pub(super) fn binding(
     job: &ActiveJob,
     binding: &StreamingLayoutBinding,
     next_position: gpui::StreamingLayoutPosition,
+    transient_bytes: usize,
+    transient_items: usize,
     budget: &mut AdmissionBudget,
 ) -> Result<StreamingLayoutBinding, ExactGeometryError> {
     budget.observe(job, 0, 0)?;
@@ -12,12 +14,14 @@ pub(super) fn binding(
     let occupied_bytes = budget
         .fixed_bytes
         .checked_add(budget.page_payload_bytes)
+        .and_then(|bytes| bytes.checked_add(transient_bytes))
         .and_then(|bytes| bytes.checked_add(counts.total_bytes()))
         .and_then(|bytes| bytes.checked_add(std::mem::size_of::<gpui::StreamingLayoutFragment>()))
         .ok_or(ExactGeometryError::CapacityExceeded)?;
     let occupied_items = budget
         .fixed_items
         .checked_add(budget.page_items)
+        .and_then(|items| items.checked_add(transient_items))
         .and_then(|items| items.checked_add(counts.total_items()))
         .and_then(|items| items.checked_sub(job.scanner.continuation_items))
         .and_then(|items| items.checked_add(continuation_items.max(job.scanner.continuation_items)))

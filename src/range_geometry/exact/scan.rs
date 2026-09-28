@@ -434,6 +434,7 @@ fn admit_inline_object(
         true,
         budget,
         trailing.into(),
+        input.runs.len(),
         |session| session.admit_inline_object(input),
     )?;
     if retained {
@@ -537,6 +538,7 @@ fn complete_grapheme(
             true,
             budget,
             end_position.into(),
+            0,
             |session| session.finalize_logical_line(finalization),
         )?;
     } else if let Some(grapheme) = job.scanner.grapheme_text.as_ref() {
@@ -664,6 +666,7 @@ fn admit_text_segment(
         retain_checkpoint,
         budget,
         end_position.into(),
+        0,
         |session| session.admit_text(segment),
     )?;
     Ok(())
@@ -726,6 +729,7 @@ fn admit_compact_atom(
         true,
         budget,
         end_position.into(),
+        atom.runs.len(),
         |session| session.admit_oversize_atom(atom),
     )?;
     Ok(())
@@ -786,6 +790,7 @@ pub(super) fn finalize_source(
         false,
         budget,
         end.position,
+        0,
         |session| session.end_source(end),
     )?;
     super::target_output::finish_target_source(job);
