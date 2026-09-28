@@ -4,13 +4,13 @@ Implement the capacity prerequisite for preserved resident adoption from
 [the package contract](design.md#range-backed-preserved-resident-adoption), coordinated by
 the Beryl root plan. Resident protection, accounting and publication remain separate work.
 
-# Phase 78: Qualify Candidate Effect-Buffer Isolation (finished)
+# Phase 79: Qualify Candidate Placeholder Ownership (finished)
 
-Candidate preparation cannot coexist with buffered service effects: every request producer installs
-waiting state and ends the service step, and each step starts with an empty buffer. The common live
-driver now asserts Ready results have no effects. All 43 prepublication integration tests and
-independent resource review passed; blocked/failed attempts are covered by source-level scheduling
-proof. Placeholder and transfer coexistence audits remain pending under phase 747.
+Candidate preparation borrows configuration through its shared environment, removing an unadmitted
+oversize style-run vector clone. Placeholder backing is shared and its surface charge precedes
+highlight allocation. All 43 prepublication tests, default-feature check and independent resource
+review passed. Startup/environment accounting and transfer coexistence remain pending.
+
 # Phase 2: Enforce Capacity Throughout Preparation (pending)
 
 Apply the admitted budget before geometry scan growth and candidate preparation allocations,
@@ -57,6 +57,7 @@ Carry prepared transition peak evidence through enclosing host admission before 
 Dependency-private shaping scratch is outside this reservation; retain finite layout input limits.
 
 Candidate, Ready and adoption charges are now admitted before custody transfer. Overall closure
-requires a bounded audit including placeholder ownership before preparation and transfer coexistence.
+requires a bounded audit including startup/environment ownership and transfer coexistence.
+Phase 79 removes the candidate configuration copy and qualifies shared placeholder ownership.
 Phase 78 proves buffered effects cannot coexist with candidate preparation under current scheduling;
 accepted component checks alone do not close the preparation boundary.

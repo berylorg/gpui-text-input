@@ -157,8 +157,9 @@ impl RangePrepublicationSession {
         let Some(cleanup) = self.reserve_cleanup()? else {
             return Ok(());
         };
-        let config = self.environment.config().clone();
-        super::super::validate_seed(self.seed, &config)?;
+        let environment = self.environment.clone();
+        let config = environment.config();
+        super::super::validate_seed(self.seed, config)?;
         let current_charge = self
             .current_charge()
             .ok_or(RangePrepublicationFailure::Arithmetic)?;
@@ -167,7 +168,7 @@ impl RangePrepublicationSession {
             self.residency.counts().resident_pages,
             self.object_residency.counts().resident_pages,
             current_charge,
-            configured_capacity(&config),
+            configured_capacity(config),
             self.available,
             &mut transfer_peak,
         );
@@ -195,7 +196,7 @@ impl RangePrepublicationSession {
                 .resident_page_iter()
                 .map(|page| page.range().start()),
             surface_baseline,
-            configured_capacity(&config),
+            configured_capacity(config),
             self.available,
             &mut surface_peak,
         );
@@ -226,7 +227,7 @@ impl RangePrepublicationSession {
         let owned_maps = fragment_maps::prepare(
             crate::range_widget::surface::fragment_maps::owned_maps(fragments),
             map_baseline,
-            configured_capacity(&config),
+            configured_capacity(config),
             self.available,
             &mut surface_peak,
         );
@@ -258,7 +259,7 @@ impl RangePrepublicationSession {
             objects,
             gaps,
             realized_baseline,
-            configured_capacity(&config),
+            configured_capacity(config),
             self.available,
             &mut surface_peak,
         );
@@ -296,7 +297,7 @@ impl RangePrepublicationSession {
         desired.reveal_caret = false;
         let prepared = highlight_geometry::prepare(
             realized_baseline,
-            configured_capacity(&config),
+            configured_capacity(config),
             self.available,
             &mut surface_peak,
             |admit| {
@@ -355,7 +356,7 @@ impl RangePrepublicationSession {
         .ok_or(RangePrepublicationFailure::Arithmetic)?;
         let preparation_peak = add_charge(current_charge, preparation_allocation)?;
         self.observe_charge(preparation_peak);
-        let configured = configured_capacity(&config);
+        let configured = configured_capacity(config);
         if !charge_fits(preparation_peak, configured) {
             return Err(RangePrepublicationFailure::TerminalCapacity);
         }
@@ -443,7 +444,7 @@ impl RangePrepublicationSession {
         )?;
         let adoption_peak = add_charge(
             add_charge(candidate_charge, origin_session_charge)?,
-            super::super::adoption_widget_support_charge(&config)?,
+            super::super::adoption_widget_support_charge(config)?,
         )?;
         self.observe_charge(ready_charge);
         self.observe_charge(adoption_peak);
