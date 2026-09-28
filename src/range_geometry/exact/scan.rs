@@ -379,6 +379,7 @@ fn admit_inline_object(
     let runs = if presentation.display().is_empty() {
         Vec::new()
     } else {
+        budget.observe(job, std::mem::size_of::<gpui::TextRun>(), 1)?;
         let mut run = style.text_run.clone();
         run.len = presentation.display().len();
         vec![run]

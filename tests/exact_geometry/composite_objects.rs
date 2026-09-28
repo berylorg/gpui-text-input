@@ -81,6 +81,107 @@ fn object_response_with_limit(
 }
 
 #[gpui::test]
+fn inline_style_storage_is_admitted_before_layout(cx: &mut TestAppContext) {
+    with_text_system(cx, |text_system| {
+        for display in ["x", ""] {
+            let mut required = (512 * 1024, 32 * 1024);
+            for attempt in 0..4 {
+                let (bytes, items) = match attempt {
+                    0 | 1 => required,
+                    2 => (required.0 - 1, required.1),
+                    _ => (required.0, required.1 - 1),
+                };
+                let first = InlineObjectFact::new(
+                    InlineObjectId::new(1),
+                    ByteOffset::new(0),
+                    InlineObjectOrder::new(1),
+                    "object".repeat(1024),
+                    InlineObjectPresentation::new(
+                        1,
+                        display,
+                        px(16.),
+                        px(20.),
+                        px(14.),
+                        None,
+                        1,
+                        true,
+                    )
+                    .unwrap(),
+                );
+                let mut input = layout(8, 10000.);
+                input.start_position = SourcePosition::new(
+                    ByteOffset::new(0),
+                    InlineObjectGap::before(first.cursor().neighbor()),
+                )
+                .into();
+                // A layout error distinguishes entry into GPUI from the earlier allocation guard.
+                input.limits.maps = 1;
+                let mut owner = ExactGeometryOwner::new(
+                    binding("", 1),
+                    PresentationGeneration::new(1),
+                    input,
+                    style(),
+                    ExactGeometryLimits::new(256, 2, bytes, items).unwrap(),
+                )
+                .unwrap();
+                let job = start_index(&mut owner, 1);
+                let text = page(&mut owner, job, "", 0, 0, 1);
+                assert_eq!(
+                    owner
+                        .admit_page(job, &text, text_system)
+                        .unwrap()
+                        .progress(),
+                    ExactGeometryProgress::NeedObjects
+                );
+                let objects = object_response(&mut owner, job, 1, vec![first], true);
+                let before = owner.counts();
+                let run_count = usize::from(!display.is_empty());
+                let expected = (
+                    before.total_bytes()
+                        + text.retained_charge().bytes()
+                        + objects.retained_charge().bytes()
+                        + run_count * std::mem::size_of::<TextRun>(),
+                    before.total_items()
+                        + text.retained_charge().items()
+                        + objects.retained_charge().objects()
+                        + 1
+                        + run_count,
+                );
+                let failure = owner
+                    .admit_object_page(job, &text, &objects, text_system)
+                    .unwrap_err();
+                assert_eq!(failure.admission_required_bytes(), expected.0);
+                assert_eq!(failure.admission_required_items(), expected.1);
+                if attempt < 2 {
+                    assert!(matches!(
+                        failure.error(),
+                        ExactGeometryError::Layout(gpui::StreamingLayoutError::CapacityExceeded(
+                            gpui::StreamingLayoutComponent::Maps
+                        ))
+                    ));
+                    required = expected;
+                } else {
+                    assert_eq!(failure.error(), &ExactGeometryError::CapacityExceeded);
+                }
+                assert_eq!(
+                    failure.stage(),
+                    if display.is_empty() && attempt >= 2 {
+                        gpui_text_input::ExactGeometryFailureStage::PageCoexistence
+                    } else {
+                        gpui_text_input::ExactGeometryFailureStage::Scan
+                    }
+                );
+                assert_eq!(failure.release().jobs, vec![job]);
+                assert_eq!(failure.release().object_pages, vec![objects.key()]);
+                assert_eq!(failure.release().counts.output_record_bytes, 0);
+                assert_eq!(owner.counts().active_job_items, 0);
+                assert!(owner.index().is_none());
+            }
+        }
+    });
+}
+
+#[gpui::test]
 fn same_anchor_objects_continue_across_pages_and_checkpoint_each_composite_gap(
     cx: &mut TestAppContext,
 ) {
