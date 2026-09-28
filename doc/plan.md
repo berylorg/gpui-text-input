@@ -4,11 +4,11 @@ Implement the capacity prerequisite for preserved resident adoption from
 [the package contract](design.md#range-backed-preserved-resident-adoption), coordinated by
 the Beryl root plan. Resident protection, accounting and publication remain separate work.
 
-# Phase 42: Retain Successor Identity With Admitted Geometry Responses (finished)
+# Phase 43: Share Deferred Object Presentation Backing (finished)
 
-Admitted responses reserve successor identities once, with atomic counter admission and unchanged
-identity across preparation attempts. Inline ownership is charged; commit and teardown clear the
-reservation. Independent review accepted the boundary; all 211 integration tests passed.
+Deferred facts and continuation copies share admitted presentation backing. Current and prepared
+overlap queries include deferred aliases while preserving fallback and record charges. Source
+clones remain independent. Independent review accepted the boundary; all 212 integration tests passed.
 
 # Phase 2: Enforce Capacity Throughout Preparation (pending)
 
@@ -21,6 +21,7 @@ The admitted response state now retains delivered or resident inputs without re-
 current capacity is unavailable. Internal immutable preparation accepts enclosing ceilings; derive
 the session budget with shared presentation charged once and route typed retryable refusals through
 that state. Admitted responses retain successor identities without per-attempt counter mutation.
+Deferred presentation backing now shares correctly and participates in retained overlap queries.
 Do not infer host attribution from ambiguous GPUI errors. Five older baseline unit failures remain
 recorded in the Beryl capacity failure note and require authority reconciliation.
 Returned GPUI custody now uses the geometry budget before invocation.

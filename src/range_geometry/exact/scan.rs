@@ -243,7 +243,7 @@ pub(super) fn process_object_page(
             job.scanner.deferred_object = Some(Box::new(DeferredObject {
                 binding: inputs.binding,
                 presentation_generation: inputs.presentation_generation,
-                fact: object.clone(),
+                fact: object.clone_for_geometry(),
             }));
             job.scanner.object_cursor = Some(object.cursor());
             budget.observe(job, 0, 0)?;

@@ -1,5 +1,12 @@
 use super::*;
 
+pub fn owner_presentation_overlap(
+    owner: &ExactGeometryOwner,
+    pages: &[&ObjectPage],
+) -> Option<usize> {
+    owner.presentation_overlap_bytes(pages.iter().copied())
+}
+
 pub fn session_response_successor_ids(
     session: &crate::RangePrepublicationSession,
 ) -> Option<[u64; 3]> {
@@ -10,6 +17,10 @@ pub fn session_response_successor_ids(
 pub struct PreparedResponseProbe(PreparedTargetResponse);
 
 impl PreparedResponseProbe {
+    pub fn presentation_overlap(&self, pages: &[&ObjectPage]) -> Option<usize> {
+        self.0.presentation_overlap_bytes(pages.iter().copied())
+    }
+
     pub fn required_capacity(&self) -> (usize, usize) {
         (
             self.0.admission_required_bytes,

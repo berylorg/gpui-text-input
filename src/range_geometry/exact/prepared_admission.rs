@@ -88,8 +88,8 @@ impl PreparedTargetResponse {
                     &active.object_presentations,
                     pages.clone(),
                 )?
-                .checked_add(super::types::presentation_overlap_bytes(
-                    &active.delta.scanner.object_presentations,
+                .checked_add(accounting::active_presentation_overlap_bytes(
+                    &active.delta,
                     pages,
                 )?)
             }
@@ -191,7 +191,7 @@ fn copy_response_continuation(
             Box::new(DeferredObject {
                 binding: object.binding,
                 presentation_generation: object.presentation_generation,
-                fact: object.fact.clone(),
+                fact: object.fact.clone_for_geometry(),
             })
         }),
     };

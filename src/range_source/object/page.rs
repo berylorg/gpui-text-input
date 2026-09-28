@@ -91,6 +91,16 @@ impl InlineObjectFact {
     pub(crate) fn presentation_allocation(&self) -> (*const u8, usize) {
         self.presentation.display_allocation()
     }
+
+    pub(crate) fn clone_for_geometry(&self) -> Self {
+        Self {
+            id: self.id,
+            anchor: self.anchor,
+            order: self.order,
+            fallback_copy: self.fallback_copy.clone(),
+            presentation: self.presentation.shared_clone(),
+        }
+    }
 }
 
 /// Exact fact about one edge of a returned object page.

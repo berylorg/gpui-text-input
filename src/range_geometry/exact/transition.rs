@@ -82,10 +82,7 @@ impl PreparedGeometryTransition {
     ) -> Option<usize> {
         match &self.state {
             PreparedGeometryState::Index(active) | PreparedGeometryState::Target(active) => {
-                super::types::presentation_overlap_bytes(
-                    &active.scanner.object_presentations,
-                    pages,
-                )
+                accounting::active_presentation_overlap_bytes(active, pages)
             }
             PreparedGeometryState::Desired(_) => Some(0),
             PreparedGeometryState::Complete(target) => target.presentation_overlap_bytes(pages),

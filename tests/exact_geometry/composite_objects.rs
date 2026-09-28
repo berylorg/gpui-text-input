@@ -1,9 +1,12 @@
 use super::*;
 
-#[path = "composite_objects/returned_capacity.rs"]
-mod returned_capacity;
 #[path = "composite_objects/continuation_capacity.rs"]
 mod continuation_capacity;
+#[path = "composite_objects/returned_capacity.rs"]
+mod returned_capacity;
+#[cfg(feature = "test-support")]
+#[path = "composite_objects/shared_deferred.rs"]
+mod shared_deferred;
 
 fn object(id: u128, anchor: u64, order: u128, width: f32) -> InlineObjectFact {
     let presentation = InlineObjectPresentation::new(

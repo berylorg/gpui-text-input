@@ -93,16 +93,39 @@ pub(super) fn presentation_overlap_bytes<'a>(
     pages: impl Iterator<Item = &'a crate::ObjectPage> + Clone,
 ) -> Option<usize> {
     let active = owner.active.as_deref().map_or(Some(0), |active| {
-        super::types::presentation_overlap_bytes(
-            &active.scanner.object_presentations,
-            pages.clone(),
-        )
+        active_presentation_overlap_bytes(active, pages.clone())
     })?;
     let target = owner
         .target
         .as_deref()
         .map_or(Some(0), |target| target.presentation_overlap_bytes(pages))?;
     active.checked_add(target)
+}
+
+pub(super) fn active_presentation_overlap_bytes<'a>(
+    active: &ActiveJob,
+    pages: impl Iterator<Item = &'a crate::ObjectPage> + Clone,
+) -> Option<usize> {
+    let output = super::types::presentation_overlap_bytes(
+        &active.scanner.object_presentations,
+        pages.clone(),
+    )?;
+    let deferred = active
+        .scanner
+        .deferred_object
+        .as_deref()
+        .map_or(0, |object| {
+            let allocation = object.fact.presentation_allocation();
+            if pages
+                .flat_map(crate::ObjectPage::presentation_allocations)
+                .any(|candidate| candidate == allocation)
+            {
+                allocation.1
+            } else {
+                0
+            }
+        });
+    output.checked_add(deferred)
 }
 
 pub(super) fn fixed_bytes_without_active(owner: &ExactGeometryOwner) -> usize {

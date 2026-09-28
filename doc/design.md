@@ -719,7 +719,8 @@ retains unbounded work, revives detached widget state, or changes authoritative 
 The optional `test-support` feature exposes `preparation_test_support` for integration qualification
 of immutable response preparation. Its probe reports required capacity and terminal/successor facts,
 can explicitly commit the prepared result, and can read an admitted session response's reserved
-successor identities. It delegates to ordinary preparation and commit;
+successor identities. It can query current and prepared presentation overlap with supplied object
+pages without exposing allocation addresses. It delegates to ordinary preparation and commit;
 it is absent without the feature and does not define a production host admission interface.
 
 ## Range-Backed Preserved Resident Adoption
