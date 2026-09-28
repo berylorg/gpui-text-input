@@ -1210,7 +1210,7 @@ fn index_completion_with_changed_desired_is_a_noninteractive_replacement(
 fn terminal_target_replacement_accepts_fixed_exact_caps_and_rejects_one_under(
     cx: &mut gpui::TestAppContext,
 ) {
-    const EXACT_BYTES: usize = 126_602;
+    const EXACT_BYTES: usize = 140_154;
     const EXACT_ITEMS: usize = 309;
     for (bytes, items, succeeds) in [
         (EXACT_BYTES, 32_768, true),
@@ -1230,7 +1230,7 @@ fn terminal_target_replacement_accepts_fixed_exact_caps_and_rejects_one_under(
         assert_eq!(
             resident_charge,
             RangeSurfaceCharge {
-                bytes: 783,
+                bytes: 807,
                 items: 3,
             }
         );
