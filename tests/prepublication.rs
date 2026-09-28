@@ -464,3 +464,6 @@ mod cleanup_capacity_cases;
 
 #[path = "prepublication/pre_dispatch_cases.rs"]
 mod pre_dispatch_cases;
+
+#[path = "prepublication/reserved_capacity_cases.rs"]
+mod reserved_capacity_cases;

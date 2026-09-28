@@ -729,6 +729,15 @@ are charged once; moving them neither duplicates charges nor creates an uncharge
 Capacity refusal must leave the predecessor paintable. It cannot evict that surface to make room
 or raise the configured limits implicitly.
 
+`RangePrepublicationSession::new_with_admission_capacity` accepts an initial byte/item admission
+ceiling, bounded by the environment's configured limits. It rejects insufficient initial ownership
+before issuing source effects or realizing a candidate. Later availability updates may shrink and
+restore usable capacity within that ceiling, but cannot enlarge it. Ordinary `new` uses the
+configured ceiling. This API constrains the session's existing admission checks; it does not by
+itself bound every geometry or candidate preparation allocation. Full preparation accounting is
+required before it can support the combined reservation above. It neither measures nor protects a
+predecessor itself; preserved-resident admission owns that measurement and reservation.
+
 Success consumes the candidate once and publishes its coherent binding, geometry, caret,
 selection, scroll and exact history frontier together through the ordinary staged-publication
 boundary. Resident identity, focus handle, subscriptions and the host's interaction fence survive.

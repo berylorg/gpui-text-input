@@ -126,6 +126,7 @@ pub struct RangePrepublicationSession {
     text_custody: Vec<TextCustody>,
     object_custody: Vec<ObjectCustody>,
     next_id: u64,
+    capacity_ceiling: RangeSurfaceCharge,
     available: RangeSurfaceCharge,
     high_water: RangeSurfaceCharge,
     ledger_blocked: bool,
@@ -135,6 +136,15 @@ impl RangePrepublicationSession {
     pub fn new(
         seed: crate::RangeRestorationSeed,
         environment: RangePrepublicationEnvironment,
+    ) -> Result<Self, RangePrepublicationFailure> {
+        let capacity = configured_capacity(environment.config());
+        Self::new_with_admission_capacity(seed, environment, capacity)
+    }
+
+    pub fn new_with_admission_capacity(
+        seed: crate::RangeRestorationSeed,
+        environment: RangePrepublicationEnvironment,
+        capacity: RangeSurfaceCharge,
     ) -> Result<Self, RangePrepublicationFailure> {
         validation_matches_seed(seed, environment.config().binding, seed.history)?;
         super::validate_seed(seed, environment.config())?;
@@ -153,7 +163,11 @@ impl RangePrepublicationSession {
             config.geometry_limits,
         )
         .map_err(classify_geometry_error)?;
-        let limit = configured_capacity(&config);
+        let configured = configured_capacity(&config);
+        let limit = RangeSurfaceCharge {
+            bytes: capacity.bytes.min(configured.bytes),
+            items: capacity.items.min(configured.items),
+        };
         let mut text_custody = Vec::new();
         text_custody
             .try_reserve_exact(config.residency_limits.max_resident_pages())
@@ -183,6 +197,7 @@ impl RangePrepublicationSession {
             text_custody,
             object_custody,
             next_id: 1,
+            capacity_ceiling: limit,
             available: limit,
             high_water: RangeSurfaceCharge::default(),
             ledger_blocked: false,
@@ -244,10 +259,9 @@ impl RangePrepublicationSession {
     }
 
     pub fn set_available_capacity(&mut self, available: RangeSurfaceCharge) {
-        let configured = configured_capacity(self.environment.config());
         self.available = RangeSurfaceCharge {
-            bytes: available.bytes.min(configured.bytes),
-            items: available.items.min(configured.items),
+            bytes: available.bytes.min(self.capacity_ceiling.bytes),
+            items: available.items.min(self.capacity_ceiling.items),
         };
     }
 
