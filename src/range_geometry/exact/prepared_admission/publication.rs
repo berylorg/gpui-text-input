@@ -10,6 +10,7 @@ impl ExactGeometryOwner {
         release: ExactGeometryRelease,
         text_system: &WindowTextSystem,
         shared: SharedOutput,
+        output_display_bytes: usize,
         mut budget: AdmissionBudget,
         successor: TargetResponseSuccessor,
     ) -> Result<PreparedTargetResponse, ExactGeometryFailure> {
@@ -65,13 +66,19 @@ impl ExactGeometryOwner {
         }
         candidate.page_use = ActivePageUse::Traverse { anchor: page_end };
         if !reached_source_end && !target_ready {
-            observe_prepared(&mut budget, &candidate, 0, 0)?;
+            observe_prepared_counts_with_credit(
+                &mut budget,
+                accounting::active_counts(&candidate),
+                0,
+                0,
+                output_display_bytes,
+            )?;
             return self.finish_active_target_response(
                 candidate,
                 ExactGeometryProgress::Scanning,
                 release,
                 shared,
-                0,
+                output_display_bytes,
                 budget,
                 successor,
             );

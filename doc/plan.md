@@ -4,11 +4,11 @@ Implement the capacity prerequisite for preserved resident adoption from
 [the package contract](design.md#range-backed-preserved-resident-adoption), coordinated by
 the Beryl root plan. Resident protection, accounting and publication remain separate work.
 
-# Phase 62: Qualify Text Response Deferred Custody Reachability (finished)
+# Phase 63: Credit Complete Object Pages At Forward Text Publication (finished)
 
-Text responses cannot retain deferred custody; no additional deferred-display credit is needed.
-Prepared transitions and exact-fit/refusal/retry checks passed with all 227 integration tests.
-Independent semantic/resource review found no blocking issues; production behavior is unchanged.
+Complete object pages carry proven retained output credit through nonterminal forward-text
+publication. The regression failed before the fix; all 227 integration tests passed afterward.
+Independent semantic/resource review found no blocking issues.
 
 # Phase 2: Enforce Capacity Throughout Preparation (pending)
 
@@ -39,6 +39,7 @@ original. Deferred-tail pre-allocation and immediate retention also credit displ
 borrowed page. Detached custody carries existing credit through scanner admission and reservation;
 GPUI inline output now carries credit through object-page scanning and active object-response
 publication. Source finalization and terminal/nested publication still require their own credits.
+Complete object pages also carry retained output credit through nonterminal forward-text publication.
 Text responses cannot retain deferred custody and need no deferred-display credit.
 Deferred presentation backing now shares correctly and participates in retained overlap queries.
 Explicit preparation admission now carries typed configured/enclosing refusal attribution.

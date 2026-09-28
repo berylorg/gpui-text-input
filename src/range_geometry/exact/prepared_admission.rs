@@ -762,6 +762,7 @@ impl ExactGeometryOwner {
             release,
             text_system,
             shared,
+            output_display_bytes,
             budget,
             successor,
         )
