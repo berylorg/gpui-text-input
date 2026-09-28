@@ -2,6 +2,10 @@ use std::{mem::size_of, sync::Arc};
 
 use gpui::StreamingLayoutBinding;
 
+mod release;
+
+use release::PreparedRelease;
+
 use crate::{
     GeometryJobId, GeometryJobKey, GeometryKey, LayoutEpoch, PageDirection, PagePurpose,
     PageRequest, PageRequestId, PageRequestKey, PresentationGeneration, RangeBinding,
@@ -168,7 +172,7 @@ impl ExactGeometryOwner {
             self.key,
             None,
             PreparedGeometryState::Index(active),
-            ExactGeometryRelease::default(),
+            PreparedRelease::default(),
             job_id,
             Some(request_id),
             false,
@@ -574,7 +578,7 @@ impl ExactGeometryOwner {
         request_id: PageRequestId,
         target: BlockTarget,
         anchor: Option<SourcePosition>,
-        release: ExactGeometryRelease,
+        release: PreparedRelease,
     ) -> Result<PreparedGeometryTransition, ExactGeometryError> {
         let inputs = self.inputs()?;
         let source_len = inputs.binding.extent().byte_len();
@@ -600,7 +604,7 @@ impl ExactGeometryOwner {
         target: BlockTarget,
         anchor: Option<SourcePosition>,
         predecessor: ExactGeometryCheckpoint,
-        release: ExactGeometryRelease,
+        release: PreparedRelease,
     ) -> Result<PreparedGeometryTransition, ExactGeometryError> {
         let inputs = self.inputs()?;
         if predecessor.input_id != inputs.layout.input_id
@@ -858,7 +862,7 @@ impl ExactGeometryOwner {
         key: GeometryKey,
         inputs: Option<Box<OwnerInputs>>,
         state: PreparedGeometryState,
-        release: ExactGeometryRelease,
+        release: PreparedRelease,
         highest_job: GeometryJobId,
         highest_request: Option<PageRequestId>,
         reset_object_request: bool,
@@ -873,23 +877,28 @@ impl ExactGeometryOwner {
         let mut admission_required_bytes = self
             .counts()
             .total_bytes()
-            .saturating_add(component_counts.total_bytes());
+            .checked_add(component_counts.total_bytes())
+            .ok_or(ExactGeometryError::CapacityExceeded)?;
         let mut admission_required_items = self
             .counts()
             .total_items()
-            .saturating_add(component_counts.total_items());
+            .checked_add(component_counts.total_items())
+            .ok_or(ExactGeometryError::CapacityExceeded)?;
         if let Some(inputs) = inputs.as_deref() {
             let input_counts = accounting::input_counts(inputs);
-            admission_required_bytes =
-                admission_required_bytes.saturating_add(input_counts.total_bytes());
-            admission_required_items =
-                admission_required_items.saturating_add(input_counts.total_items());
+            admission_required_bytes = admission_required_bytes
+                .checked_add(input_counts.total_bytes())
+                .ok_or(ExactGeometryError::CapacityExceeded)?;
+            admission_required_items = admission_required_items
+                .checked_add(input_counts.total_items())
+                .ok_or(ExactGeometryError::CapacityExceeded)?;
         }
-        if admission_required_bytes > self.limits.max_retained_bytes
-            || admission_required_items > self.limits.max_retained_items
-        {
-            return Err(ExactGeometryError::CapacityExceeded);
-        }
+        let (release, admission_required_bytes, admission_required_items) = release.prepare(
+            admission_required_bytes,
+            admission_required_items,
+            self.limits.max_retained_bytes,
+            self.limits.max_retained_items,
+        )?;
         Ok(PreparedGeometryTransition {
             key,
             inputs,
@@ -934,57 +943,55 @@ impl ExactGeometryOwner {
         Ok(LayoutEpoch::new(next))
     }
 
-    fn preview_release_all(&self) -> ExactGeometryRelease {
+    fn preview_release_all(&self) -> PreparedRelease {
         let mut counts = self.counts();
         counts.owner_bytes = 0;
         counts.owner_items = 0;
-        let mut jobs = Vec::new();
-        let mut pages = Vec::new();
-        let mut object_pages = Vec::new();
+        let mut jobs = [None; 4];
+        let mut page = None;
+        let mut object_page = None;
         if let Some(active) = self.active.as_deref() {
-            jobs.push(active.key);
+            jobs[0] = Some(active.key);
             match active.pending.as_deref().copied() {
-                Some(PendingInput::Text(page)) => pages.push(page),
-                Some(PendingInput::Object(page)) => object_pages.push(page),
+                Some(PendingInput::Text(key)) => page = Some(key),
+                Some(PendingInput::Object(key)) => object_page = Some(key),
                 None => {}
             }
         }
         if let Some(desired) = self.desired_target.as_deref() {
-            jobs.push(desired.key);
+            jobs[1] = Some(desired.key);
         }
         if let Some(index) = self.index.as_deref() {
-            jobs.push(index.key);
+            jobs[2] = Some(index.key);
         }
         if let Some(target) = self.target.as_deref() {
-            jobs.push(target.key);
+            jobs[3] = Some(target.key);
         }
-        jobs.sort();
-        jobs.dedup();
-        ExactGeometryRelease {
+        PreparedRelease {
             jobs,
-            pages,
-            object_pages,
+            page,
+            object_page,
             counts,
         }
     }
 
-    fn preview_target_replacement_release(&self) -> ExactGeometryRelease {
-        let mut release = ExactGeometryRelease::default();
+    fn preview_target_replacement_release(&self) -> PreparedRelease {
+        let mut release = PreparedRelease::default();
         if let Some(active) = self
             .active
             .as_deref()
             .filter(|active| matches!(active.kind, ActiveKind::Target { .. }))
         {
-            release.jobs.push(active.key);
+            release.jobs[0] = Some(active.key);
             match active.pending.as_deref().copied() {
-                Some(PendingInput::Text(page)) => release.pages.push(page),
-                Some(PendingInput::Object(page)) => release.object_pages.push(page),
+                Some(PendingInput::Text(page)) => release.page = Some(page),
+                Some(PendingInput::Object(page)) => release.object_page = Some(page),
                 None => {}
             }
             release.counts = accounting::active_counts(active);
         }
         if let Some(desired) = self.desired_target.as_deref() {
-            release.jobs.push(desired.key);
+            release.jobs[1] = Some(desired.key);
             release.counts.desired_target_items =
                 release.counts.desired_target_items.saturating_add(1);
             release.counts.desired_target_bytes = release
@@ -993,12 +1000,10 @@ impl ExactGeometryOwner {
                 .saturating_add(size_of::<DesiredTarget>());
         }
         if let Some(target) = self.target.as_deref() {
-            release.jobs.push(target.key);
+            release.jobs[3] = Some(target.key);
             release.counts =
                 accounting::add_counts(release.counts, accounting::target_counts(target));
         }
-        release.jobs.sort();
-        release.jobs.dedup();
         release
     }
 
