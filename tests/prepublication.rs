@@ -467,3 +467,6 @@ mod pre_dispatch_cases;
 
 #[path = "prepublication/reserved_capacity_cases.rs"]
 mod reserved_capacity_cases;
+
+#[path = "prepublication/resident_request_capacity.rs"]
+mod resident_request_capacity;

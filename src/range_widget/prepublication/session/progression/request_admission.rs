@@ -1,6 +1,54 @@
 use super::super::*;
 
 impl RangePrepublicationSession {
+    pub(super) fn admit_resident_geometry_request(
+        &mut self,
+        request_bytes: usize,
+        prepared: RangeSurfaceCharge,
+        effects: &EffectBuffer,
+    ) -> Result<Option<RangeSurfaceCharge>, RangePrepublicationFailure> {
+        let pending = RangeSurfaceCharge {
+            bytes: request_bytes,
+            items: 1,
+        };
+        let current = self
+            .current_charge()
+            .ok_or(RangePrepublicationFailure::Arithmetic)?;
+        let effect_storage = multiply_charge(
+            RangeSurfaceCharge {
+                bytes: std::mem::size_of::<RangePrepublicationEffect>(),
+                items: 1,
+            },
+            effects.len(),
+        )
+        .ok_or(RangePrepublicationFailure::Arithmetic)?;
+        let peak = add_charge(
+            add_charge(add_charge(current, prepared)?, pending)?,
+            effect_storage,
+        )?;
+        self.observe_charge(peak);
+        if !charge_fits(peak, configured_capacity(self.environment.config())) {
+            return Err(RangePrepublicationFailure::TerminalCapacity);
+        }
+        if !charge_fits(peak, self.available) {
+            self.ledger_blocked = true;
+            return Ok(None);
+        }
+        let counts = self
+            .geometry
+            .as_ref()
+            .ok_or(RangePrepublicationFailure::Stale)?
+            .counts();
+        add_charge(
+            RangeSurfaceCharge {
+                bytes: counts.total_bytes(),
+                items: counts.total_items(),
+            },
+            pending,
+        )
+        .map(Some)
+    }
+
     pub(super) fn admit_restoration_page_request(
         &mut self,
         prepared: crate::residency::PreparedPageDemand,

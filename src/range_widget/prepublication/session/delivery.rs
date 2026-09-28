@@ -202,7 +202,7 @@ impl RangePrepublicationSession {
                     Err(error) => return Err(classify_page_admission(error)),
                 };
                 self.retain_text_custody(page_id, cleanup)?;
-                self.process_geometry_page(job, page_id, text_system)?;
+                self.process_geometry_page(job, page_id, text_system, false)?;
             }
             (
                 Waiting::GeometryObject {
@@ -223,7 +223,7 @@ impl RangePrepublicationSession {
                         .map_err(classify_object_admission)?,
                 );
                 self.retain_object_custody(page_id, cleanup)?;
-                self.process_geometry_object(job, text_page, page_id, text_system)?;
+                self.process_geometry_object(job, text_page, page_id, text_system, false)?;
             }
             _ => return Err(RangePrepublicationFailure::Stale),
         }

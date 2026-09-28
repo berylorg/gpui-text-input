@@ -51,11 +51,22 @@ impl RangePrepublicationSession {
                 .map_err(|_| RangePrepublicationFailure::TerminalCapacity)?;
             match prepared.outcome() {
                 ObjectDemand::Resident(page) => {
+                    let Some(capacity) = self.admit_resident_geometry_request(
+                        std::mem::size_of::<crate::ObjectRequestKey>(),
+                        RangeSurfaceCharge {
+                            bytes: prepared.retained_bytes(),
+                            items: prepared.retained_items(),
+                        },
+                        effects,
+                    )?
+                    else {
+                        return Ok(false);
+                    };
                     let committed = self
                         .geometry
                         .as_mut()
                         .ok_or(RangePrepublicationFailure::Stale)?
-                        .request_object_page(
+                        .request_object_page_with_capacity(
                             job,
                             request_id,
                             self.environment
@@ -66,6 +77,8 @@ impl RangePrepublicationSession {
                                 .config()
                                 .object_residency_limits
                                 .max_resident_bytes(),
+                            capacity.bytes,
+                            capacity.items,
                         )
                         .map_err(classify_geometry_error)?;
                     if committed != request
@@ -74,7 +87,7 @@ impl RangePrepublicationSession {
                     {
                         return Err(RangePrepublicationFailure::Stale);
                     }
-                    self.process_geometry_object(job, text_page, page, text_system)?;
+                    self.process_geometry_object(job, text_page, page, text_system, true)?;
                     Ok(true)
                 }
                 ObjectDemand::Requested(resident_request) => {
@@ -112,11 +125,22 @@ impl RangePrepublicationSession {
                 .map_err(|_| RangePrepublicationFailure::TerminalCapacity)?;
             match prepared.outcome() {
                 PageDemand::ResidentAdjacent(page) => {
+                    let Some(capacity) = self.admit_resident_geometry_request(
+                        std::mem::size_of::<crate::PageRequestKey>(),
+                        RangeSurfaceCharge {
+                            bytes: prepared.retained_bytes(),
+                            items: prepared.retained_items(),
+                        },
+                        effects,
+                    )?
+                    else {
+                        return Ok(false);
+                    };
                     let committed = self
                         .geometry
                         .as_mut()
                         .ok_or(RangePrepublicationFailure::Stale)?
-                        .request_page(job, request_id)
+                        .request_page_with_capacity(job, request_id, capacity.bytes, capacity.items)
                         .map_err(classify_geometry_error)?;
                     if committed != request
                         || self.residency.commit_prepared_demand(prepared)
@@ -124,7 +148,7 @@ impl RangePrepublicationSession {
                     {
                         return Err(RangePrepublicationFailure::Stale);
                     }
-                    self.process_geometry_page(job, page, text_system)?;
+                    self.process_geometry_page(job, page, text_system, true)?;
                     Ok(true)
                 }
                 PageDemand::Requested(resident_request) => {
@@ -152,17 +176,28 @@ impl RangePrepublicationSession {
         job: GeometryJobKey,
         page_id: PageId,
         text_system: &WindowTextSystem,
+        resident: bool,
     ) -> Result<(), RangePrepublicationFailure> {
         let page = self
             .residency
             .peek_page_by_id(page_id)
             .ok_or(RangePrepublicationFailure::Stale)?;
-        let admission = self
+        let geometry = self
             .geometry
             .as_mut()
-            .ok_or(RangePrepublicationFailure::Stale)?
-            .admit_page(job, page, text_system)
-            .map_err(|failure| classify_geometry_error(failure.error().clone()))?;
+            .ok_or(RangePrepublicationFailure::Stale)?;
+        let admission = if resident {
+            geometry.admit_resident_page_with_capacity(
+                job,
+                page,
+                text_system,
+                usize::MAX,
+                usize::MAX,
+            )
+        } else {
+            geometry.admit_page(job, page, text_system)
+        }
+        .map_err(|failure| classify_geometry_error(failure.error().clone()))?;
         self.apply_geometry_progress(admission.progress())
     }
 
@@ -172,6 +207,7 @@ impl RangePrepublicationSession {
         text_page: PageId,
         object_page: ObjectPageId,
         text_system: &WindowTextSystem,
+        resident: bool,
     ) -> Result<(), RangePrepublicationFailure> {
         let text_page = self
             .residency
@@ -181,12 +217,23 @@ impl RangePrepublicationSession {
             .object_residency
             .peek_page_by_id(object_page)
             .ok_or(RangePrepublicationFailure::Stale)?;
-        let admission = self
+        let geometry = self
             .geometry
             .as_mut()
-            .ok_or(RangePrepublicationFailure::Stale)?
-            .admit_object_page(job, text_page, object_page, text_system)
-            .map_err(|failure| classify_geometry_error(failure.error().clone()))?;
+            .ok_or(RangePrepublicationFailure::Stale)?;
+        let admission = if resident {
+            geometry.admit_resident_object_page_with_capacity(
+                job,
+                text_page,
+                object_page,
+                text_system,
+                usize::MAX,
+                usize::MAX,
+            )
+        } else {
+            geometry.admit_object_page(job, text_page, object_page, text_system)
+        }
+        .map_err(|failure| classify_geometry_error(failure.error().clone()))?;
         self.apply_geometry_progress(admission.progress())
     }
 
