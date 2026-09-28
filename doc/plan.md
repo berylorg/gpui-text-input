@@ -4,11 +4,11 @@ Implement the capacity prerequisite for preserved resident adoption from
 [the package contract](design.md#range-backed-preserved-resident-adoption), coordinated by
 the Beryl root plan. Resident protection, accounting and publication remain separate work.
 
-# Phase 34: Bound Direct Geometry Response Admission (finished)
+# Phase 35: Admit Direct Geometry Request Storage Before Allocation (finished)
 
-Text and object responses now accept per-call byte/item ceilings through context, scan and
-publication, independently clamped to configured limits with existing identity and cleanup behavior.
-Independent resource review accepted the change; all 200 regression tests passed.
+Text/object requests now check independently clamped caller ceilings before allocation and mutation.
+Refusal preserves the job and request ID for retry. Independent resource review accepted the change;
+all 202 regression tests passed, including tight, zero and oversized caller ceilings.
 
 # Phase 2: Enforce Capacity Throughout Preparation (pending)
 
@@ -20,6 +20,7 @@ Cover prepared target transitions and prepared-publication collections under the
 Returned GPUI custody now uses the geometry budget before invocation.
 Direct response admission accepts enclosing ceilings; host derivation and peak propagation remain
 required before combined resident reservation can use them.
+Direct request creation also accepts enclosing ceilings before pending-record allocation.
 Deferred-object custody remains charged through inline admission when deriving remaining capacity.
 Carry prepared transition peak evidence through enclosing host admission before host use.
 Dependency-private shaping scratch is outside this reservation; retain finite layout input limits.

@@ -176,7 +176,23 @@ impl ExactGeometryOwner {
         key: GeometryJobKey,
         id: PageRequestId,
     ) -> Result<PageRequest, ExactGeometryError> {
+        self.request_page_with_capacity(
+            key,
+            id,
+            self.limits.max_retained_bytes,
+            self.limits.max_retained_items,
+        )
+    }
+
+    pub fn request_page_with_capacity(
+        &mut self,
+        key: GeometryJobKey,
+        id: PageRequestId,
+        max_bytes: usize,
+        max_items: usize,
+    ) -> Result<PageRequest, ExactGeometryError> {
         let expected = self.preview_page_request(key, id)?;
+        self.admit_pending_request(std::mem::size_of::<PageRequestKey>(), max_bytes, max_items)?;
         let active = self
             .active
             .as_deref_mut()
@@ -251,8 +267,33 @@ impl ExactGeometryOwner {
         max_objects: usize,
         max_retained_bytes: usize,
     ) -> Result<ObjectRequest, ExactGeometryError> {
+        self.request_object_page_with_capacity(
+            key,
+            id,
+            max_objects,
+            max_retained_bytes,
+            self.limits.max_retained_bytes,
+            self.limits.max_retained_items,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn request_object_page_with_capacity(
+        &mut self,
+        key: GeometryJobKey,
+        id: ObjectRequestId,
+        max_objects: usize,
+        max_retained_bytes: usize,
+        max_bytes: usize,
+        max_items: usize,
+    ) -> Result<ObjectRequest, ExactGeometryError> {
         let expected =
             self.preview_object_page_request(key, id, max_objects, max_retained_bytes)?;
+        self.admit_pending_request(
+            std::mem::size_of::<crate::ObjectRequestKey>(),
+            max_bytes,
+            max_items,
+        )?;
         let active = self
             .active
             .as_deref_mut()
@@ -261,6 +302,29 @@ impl ExactGeometryOwner {
         self.highest_object_request = Some(id);
         self.observe_current();
         Ok(expected)
+    }
+
+    fn admit_pending_request(
+        &self,
+        request_bytes: usize,
+        max_bytes: usize,
+        max_items: usize,
+    ) -> Result<(), ExactGeometryError> {
+        let counts = self.counts();
+        let bytes = counts
+            .total_bytes()
+            .checked_add(request_bytes)
+            .ok_or(ExactGeometryError::CapacityExceeded)?;
+        let items = counts
+            .total_items()
+            .checked_add(1)
+            .ok_or(ExactGeometryError::CapacityExceeded)?;
+        if bytes > max_bytes.min(self.limits.max_retained_bytes)
+            || items > max_items.min(self.limits.max_retained_items)
+        {
+            return Err(ExactGeometryError::CapacityExceeded);
+        }
+        Ok(())
     }
 
     pub(crate) fn preview_object_page_request(

@@ -330,6 +330,13 @@ response cleanup contract; stale or mismatched responses leave the current job u
 The ordinary admission methods use the configured ceilings. Deriving a ceiling from enclosing
 owners and propagating the resulting peak remains the enclosing caller's responsibility.
 
+Direct request creation accepts the same independently clamped owner ceilings through
+`request_page_with_capacity` and `request_object_page_with_capacity`. Its charge includes the
+current geometry owner and the pending request record. Identity and request validation precede
+capacity admission; refusal allocates no request and leaves the job, pending state and request-ID
+availability unchanged. A caller may retry the same ID after capacity becomes available. Ordinary
+request methods use the configured ceilings.
+
 Realization is credit- and capacity-gated. It prioritizes caret, IME, and directed-selection
 geometry first, the active interaction or scroll anchor second, and nearby content last. Nominally
 visible regions that cannot be admitted are coalesced into bounded filler coverage rather than one

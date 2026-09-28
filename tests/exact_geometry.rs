@@ -353,5 +353,7 @@ mod precontext_atoms;
 mod release_peak;
 #[path = "exact_geometry/response_capacity.rs"]
 mod response_capacity;
+#[path = "exact_geometry/request_capacity.rs"]
+mod request_capacity;
 #[path = "exact_geometry/text_growth.rs"]
 mod text_growth;
