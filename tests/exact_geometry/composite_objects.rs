@@ -8,6 +8,9 @@ mod returned_capacity;
 #[path = "composite_objects/shared_deferred.rs"]
 mod shared_deferred;
 #[cfg(feature = "test-support")]
+#[path = "composite_objects/source_finalization.rs"]
+mod source_finalization;
+#[cfg(feature = "test-support")]
 #[path = "composite_objects/text_successor.rs"]
 mod text_successor;
 

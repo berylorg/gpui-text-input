@@ -2,6 +2,63 @@ use super::release::{ReleaseKey, push_release_key};
 use super::*;
 
 impl ExactGeometryOwner {
+    pub(super) fn finalize_object_response(
+        &self,
+        candidate: &mut ActiveJob,
+        text_system: &WindowTextSystem,
+        output_display_bytes: usize,
+        budget: &mut AdmissionBudget,
+    ) -> Result<(), ExactGeometryFailure> {
+        let inputs = self.inputs.as_deref().expect("active owner retains inputs");
+        let source_end = inputs.binding.extent().byte_len();
+        let prior_credit = budget.output_display_bytes;
+        budget.output_display_bytes = output_display_bytes;
+        let result = (|| {
+            super::super::scan::finalize_source(
+                candidate,
+                text_system,
+                &inputs.layout,
+                &inputs.style,
+                self.limits,
+                source_end,
+                budget,
+            )
+            .map_err(|error| {
+                prepared_failure(
+                    error,
+                    budget
+                        .failure_stage
+                        .unwrap_or(ExactGeometryFailureStage::Finalize),
+                    budget,
+                )
+            })?;
+            if matches!(candidate.kind, ActiveKind::Index) {
+                let terminal = super::super::checkpoint::make_checkpoint(
+                    &candidate.scanner,
+                    &inputs.layout,
+                    true,
+                )
+                .map_err(|error| {
+                    prepared_failure(error, ExactGeometryFailureStage::Checkpoint, budget)
+                })?;
+                super::super::checkpoint::retain_scanner_checkpoint(
+                    candidate,
+                    terminal,
+                    self.limits.max_checkpoints,
+                    budget,
+                    0,
+                    0,
+                )
+                .map_err(|error| {
+                    prepared_failure(error, ExactGeometryFailureStage::Checkpoint, budget)
+                })?;
+            }
+            Ok(())
+        })();
+        budget.output_display_bytes = prior_credit;
+        result
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn finish_response_text_page(
         &self,
@@ -24,45 +81,12 @@ impl ExactGeometryOwner {
             ActiveKind::Index => false,
         };
         if reached_source_end {
-            super::super::scan::finalize_source(
+            self.finalize_object_response(
                 &mut candidate,
                 text_system,
-                &inputs.layout,
-                &inputs.style,
-                self.limits,
-                source_end,
+                output_display_bytes,
                 &mut budget,
-            )
-            .map_err(|error| {
-                prepared_failure(
-                    error,
-                    budget
-                        .failure_stage
-                        .unwrap_or(ExactGeometryFailureStage::Finalize),
-                    &budget,
-                )
-            })?;
-            if matches!(candidate.kind, ActiveKind::Index) {
-                let terminal = super::super::checkpoint::make_checkpoint(
-                    &candidate.scanner,
-                    &inputs.layout,
-                    true,
-                )
-                .map_err(|error| {
-                    prepared_failure(error, ExactGeometryFailureStage::Checkpoint, &budget)
-                })?;
-                super::super::checkpoint::retain_scanner_checkpoint(
-                    &mut candidate,
-                    terminal,
-                    self.limits.max_checkpoints,
-                    &mut budget,
-                    0,
-                    0,
-                )
-                .map_err(|error| {
-                    prepared_failure(error, ExactGeometryFailureStage::Checkpoint, &budget)
-                })?;
-            }
+            )?;
         }
         candidate.page_use = ActivePageUse::Traverse { anchor: page_end };
         if !reached_source_end && !target_ready {

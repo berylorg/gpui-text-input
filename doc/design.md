@@ -754,7 +754,11 @@ Active object-response publication derives candidate-only display credit from re
 output and deferred backing shared with the borrowed page or original continuation. That credit
 applies through successor-record and destination admission while those owners remain live. It
 does not discount existing owner payload again or relax configured geometry limits. Terminal
-publication and source finalization require separate ownership mapping.
+publication requires separate ownership mapping. Complete object-response source finalization
+and terminal checkpoint admission carry the proven retained output credit while the original
+and borrowed inputs remain live. These operations do not remove existing inline output; newly
+produced text receives no display credit. The stack budget restores its prior credit on success
+and error before terminal publication, preserving raw configured accounting.
 
 Deferred inline custody exists only while an incomplete object page awaits its object successor.
 A complete object page consumes that custody before requesting forward text or grapheme context.
@@ -787,6 +791,9 @@ of temporary raw charges and credit on every returned result, and drops the copy
 The object-scan probe isolates actual page scanning after a configured continuation copy, reports
 both peaks and the baseline, and checks credited retained output against its live fragments. These
 scan probes do not establish fully credited whole-response or session admission.
+The source-finalization probe scans under configured limits, then isolates production finalization
+and terminal checkpoint admission with a fresh observer. It reports raw/enclosing peaks and the
+owner/input baseline and checks restoration of output credit on success and error.
 The remaining-capacity probe also qualifies mapped headroom with distinct baselines and no
 prospective output credit before GPUI startup. The startup probe admits the prior continuation's
 actual byte/item charge independently of output allowance and qualifies it against GPUI accounting.

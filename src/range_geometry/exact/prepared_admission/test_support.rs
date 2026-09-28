@@ -35,6 +35,65 @@ pub fn prepare_continuation_copy(
 pub struct PreparationCapacityProbe(super::super::capacity_observation::CapacityObservations);
 
 #[allow(clippy::too_many_arguments)]
+pub fn prepare_object_finalization(
+    owner: &ExactGeometryOwner,
+    key: crate::GeometryJobKey,
+    index: bool,
+    text: &RangePage,
+    objects: &ObjectPage,
+    text_system: &WindowTextSystem,
+    current: Option<(usize, usize)>,
+    limit: (usize, usize),
+) -> Result<((usize, usize), (usize, usize), (usize, usize)), ExactGeometryFailure> {
+    let (mut candidate, mut scan_budget, baseline) = object_scan_budget(
+        owner,
+        key,
+        index,
+        text,
+        objects,
+        None,
+        (usize::MAX, usize::MAX),
+    )?;
+    let inputs = owner.inputs.as_deref().unwrap();
+    super::super::scan::process_object_page(
+        &mut candidate,
+        text,
+        objects,
+        text_system,
+        inputs,
+        owner.limits,
+        inputs.binding.extent().byte_len(),
+        &mut scan_budget,
+        current.is_some(),
+    )
+    .map_err(|error| prepared_failure(error, ExactGeometryFailureStage::Scan, &scan_budget))?;
+    assert!(objects.complete());
+    assert!(candidate.scanner.deferred_object.is_none());
+    let capacity = current.map_or(ResponseCapacity::Geometry(limit), |current| {
+        ResponseCapacity::Enclosing { current, limit }
+    });
+    let counts = owner.counts();
+    let mut budget = owner.prepared_budget(
+        baseline.0 - counts.total_bytes(),
+        baseline.1 - counts.total_items(),
+        capacity,
+    )?;
+    let result = owner.finalize_object_response(
+        &mut candidate,
+        text_system,
+        scan_budget.output_display_bytes,
+        &mut budget,
+    );
+    assert_eq!(budget.output_display_bytes, 0);
+    result?;
+    Ok((
+        (budget.peak_bytes, budget.peak_items),
+        budget.observations.as_ref().unwrap().enclosing_peak,
+        baseline,
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn prepare_object_scan(
     owner: &ExactGeometryOwner,
     key: crate::GeometryJobKey,
