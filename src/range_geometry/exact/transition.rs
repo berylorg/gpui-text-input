@@ -166,8 +166,13 @@ impl ExactGeometryOwner {
         }
         let inputs = self.inputs()?;
         let key = GeometryJobKey::new(self.key, job_id);
-        let (active, budget) =
-            self.prepare_index_active(inputs, key, request_id, self.fixed_bytes())?;
+        let (active, budget) = self.prepare_index_active(
+            inputs,
+            key,
+            request_id,
+            self.fixed_bytes(),
+            self.preparation_base(None)?,
+        )?;
         let prepared = self.finish_prepared(
             self.key,
             None,
@@ -382,7 +387,8 @@ impl ExactGeometryOwner {
         );
         let fixed = accounting::counts(None, None, None, None, None)
             .total_bytes()
-            .saturating_add(accounting::input_counts(&inputs).total_bytes());
+            .checked_add(accounting::input_counts(&inputs).total_bytes())
+            .ok_or(ExactGeometryError::CapacityExceeded)?;
         let active = self.prepare_target_active_for_inputs(
             &inputs,
             GeometryJobKey::new(key, job_id),
@@ -393,6 +399,7 @@ impl ExactGeometryOwner {
             Scanner::from_checkpoint(&predecessor),
             request_id,
             fixed,
+            self.preparation_base(Some(&inputs))?,
         )?;
         self.finish_prepared(
             key,
@@ -417,9 +424,16 @@ impl ExactGeometryOwner {
         self.admit_transition_request_id(request_id)?;
         let fixed = accounting::counts(None, None, None, None, None)
             .total_bytes()
-            .saturating_add(accounting::input_counts(&inputs).total_bytes());
+            .checked_add(accounting::input_counts(&inputs).total_bytes())
+            .ok_or(ExactGeometryError::CapacityExceeded)?;
         let job_key = GeometryJobKey::new(key, job_id);
-        let (active, budget) = self.prepare_index_active(&inputs, job_key, request_id, fixed)?;
+        let (active, budget) = self.prepare_index_active(
+            &inputs,
+            job_key,
+            request_id,
+            fixed,
+            self.preparation_base(Some(&inputs))?,
+        )?;
         let prepared = self.finish_prepared(
             key,
             Some(inputs),
@@ -710,6 +724,7 @@ impl ExactGeometryOwner {
             Scanner::from_checkpoint(&predecessor),
             request_id,
             fixed,
+            self.preparation_base(None)?,
         )?;
         self.finish_prepared(
             self.key,
@@ -722,12 +737,30 @@ impl ExactGeometryOwner {
         )
     }
 
+    fn preparation_base(
+        &self,
+        replacement_inputs: Option<&OwnerInputs>,
+    ) -> Result<(usize, usize), ExactGeometryError> {
+        let current = self.counts();
+        let inputs = replacement_inputs.map_or(Default::default(), accounting::input_counts);
+        let bytes = current
+            .total_bytes()
+            .checked_add(inputs.total_bytes())
+            .ok_or(ExactGeometryError::CapacityExceeded)?;
+        let items = current
+            .total_items()
+            .checked_add(inputs.total_items())
+            .ok_or(ExactGeometryError::CapacityExceeded)?;
+        Ok((bytes, items))
+    }
+
     fn prepare_index_active(
         &self,
         inputs: &OwnerInputs,
         key: GeometryJobKey,
         request_id: PageRequestId,
         fixed: usize,
+        coexisting: (usize, usize),
     ) -> Result<(Box<ActiveJob>, AdmissionBudget), ExactGeometryError> {
         self.admit_transition_request_id(request_id)?;
         let source_len = usize::try_from(inputs.binding.extent().byte_len())
@@ -760,20 +793,19 @@ impl ExactGeometryOwner {
             retained_capacity,
             scanner,
         };
-        let current = self.counts();
         let mut budget = AdmissionBudget {
-            fixed_bytes: current
-                .total_bytes()
+            fixed_bytes: coexisting
+                .0
                 .checked_add(size_of::<PageRequestKey>())
                 .ok_or(ExactGeometryError::CapacityExceeded)?,
-            fixed_items: current
-                .total_items()
+            fixed_items: coexisting
+                .1
                 .checked_add(1)
                 .ok_or(ExactGeometryError::CapacityExceeded)?,
             page_payload_bytes: 0,
             page_items: 0,
-            max_bytes: current
-                .total_bytes()
+            max_bytes: coexisting
+                .0
                 .checked_add(retained_capacity)
                 .ok_or(ExactGeometryError::CapacityExceeded)?
                 .min(self.limits.max_retained_bytes),
@@ -800,20 +832,8 @@ impl ExactGeometryOwner {
         mut prepared: PreparedGeometryTransition,
         budget: AdmissionBudget,
     ) -> Result<PreparedGeometryTransition, ExactGeometryError> {
-        let inputs = prepared
-            .inputs
-            .as_deref()
-            .map_or(Default::default(), accounting::input_counts);
-        let peak_bytes = budget
-            .peak_bytes
-            .checked_add(inputs.total_bytes())
-            .ok_or(ExactGeometryError::CapacityExceeded)?;
-        let peak_items = budget
-            .peak_items
-            .checked_add(inputs.total_items())
-            .ok_or(ExactGeometryError::CapacityExceeded)?;
-        prepared.admission_required_bytes = prepared.admission_required_bytes.max(peak_bytes);
-        prepared.admission_required_items = prepared.admission_required_items.max(peak_items);
+        prepared.admission_required_bytes = prepared.admission_required_bytes.max(budget.peak_bytes);
+        prepared.admission_required_items = prepared.admission_required_items.max(budget.peak_items);
         if prepared.admission_required_bytes > self.limits.max_retained_bytes
             || prepared.admission_required_items > self.limits.max_retained_items
         {
@@ -833,6 +853,7 @@ impl ExactGeometryOwner {
         scanner: Scanner,
         request_id: PageRequestId,
         fixed: usize,
+        coexisting: (usize, usize),
     ) -> Result<Box<ActiveJob>, ExactGeometryError> {
         let retained_capacity = self
             .limits
@@ -875,13 +896,12 @@ impl ExactGeometryOwner {
             .total_items()
             .checked_add(1)
             .ok_or(ExactGeometryError::CapacityExceeded)?;
-        let current = self.counts();
-        let required_bytes = current
-            .total_bytes()
+        let required_bytes = coexisting
+            .0
             .checked_add(proposed_bytes)
             .ok_or(ExactGeometryError::CapacityExceeded)?;
-        let required_items = current
-            .total_items()
+        let required_items = coexisting
+            .1
             .checked_add(proposed_items)
             .ok_or(ExactGeometryError::CapacityExceeded)?;
         if proposed_bytes > retained_capacity

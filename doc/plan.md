@@ -4,12 +4,12 @@ Implement the capacity prerequisite for preserved resident adoption from
 [the package contract](design.md#range-backed-preserved-resident-adoption), coordinated by
 the Beryl root plan. Resident protection, accounting and publication remain separate work.
 
-# Phase 23: Admit Prepared Replacement Inputs (finished)
+# Phase 24: Admit Replacement Input And Job Coexistence (finished)
 
-All six prepared replacement-input paths admit combined owner/input capacity before allocation.
-Cloned styles charge length-sized run backing while moved styles retain actual capacity charges.
-Independent resource review accepted the corrected exact-fit accounting; all 188 geometry,
-widget and prepublication regression cases passed on the final revision.
+Index and target job preparation now admits current-owner and replacement-input coexistence before
+checkpoint or job allocation. Index startup peak evidence includes those inputs once. Independent
+resource review accepted the checked arithmetic and refusal behavior; all 188 geometry, widget and
+prepublication regression cases passed.
 
 # Phase 2: Enforce Capacity Throughout Preparation (pending)
 
