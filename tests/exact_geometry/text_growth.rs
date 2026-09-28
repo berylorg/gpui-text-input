@@ -119,6 +119,43 @@ fn cross_page_growth_charges_old_and_replacement_text_storage(cx: &mut TestAppCo
     });
 }
 
+#[gpui::test]
+fn text_conversion_refusal_preserves_scanner_storage_until_release(cx: &mut TestAppContext) {
+    with_text_system(cx, |text_system| {
+        let source = "a\nz";
+        let (probe, _, page, objects) =
+            pending_text(source, 0, source.len(), 256 * 1024, usize::MAX, text_system);
+        let segment_capacity = 8;
+        let newline_capacity = 8;
+        let conversion_peak = probe.counts().total_bytes()
+            + page.retained_charge().bytes()
+            + objects.retained_charge().bytes()
+            + segment_capacity
+            + 1
+            + newline_capacity
+            + std::mem::size_of::<TextRun>();
+        let conversion_items = probe.counts().total_items()
+            + page.retained_charge().items()
+            + 3;
+        for (bytes, items, released_text) in [
+            (conversion_peak - 1, usize::MAX, segment_capacity),
+            (conversion_peak, usize::MAX, 0),
+            (256 * 1024, conversion_items - 1, segment_capacity),
+            (256 * 1024, conversion_items, 0),
+        ] {
+            let (mut owner, job, page, objects) =
+                pending_text(source, 0, source.len(), bytes, items, text_system);
+            let failure = owner
+                .admit_object_page(job, &page, &objects, text_system)
+                .unwrap_err();
+            assert_eq!(failure.error(), &ExactGeometryError::CapacityExceeded);
+            assert_eq!(failure.release().counts.scan_buffer_bytes, released_text);
+            assert_eq!(owner.counts().active_job_items, 0);
+            assert!(owner.index().is_none());
+        }
+    });
+}
+
 fn rollover_owner(
     source: &str,
     bytes: usize,

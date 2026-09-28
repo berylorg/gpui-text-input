@@ -340,6 +340,7 @@ fn admit_inline_object(
             style,
             limits,
             true,
+            None,
             budget,
         )?;
     }
@@ -479,6 +480,7 @@ fn complete_grapheme(
             style,
             limits,
             false,
+            grapheme.as_ref(),
             budget,
         )?;
         job.scanner.cursor = end_cursor.clone();
@@ -518,6 +520,7 @@ fn complete_grapheme(
                 style,
                 limits,
                 true,
+                Some(&grapheme),
                 budget,
             )?;
             job.scanner.cursor = end_cursor.clone();
@@ -545,6 +548,7 @@ fn complete_grapheme(
             style,
             limits,
             true,
+            None,
             budget,
         )?;
         job.scanner.cursor = end_cursor.clone();
@@ -587,24 +591,33 @@ fn admit_text_segment(
     style: &StreamingGeometryStyle,
     limits: ExactGeometryLimits,
     retain_checkpoint: bool,
+    detached_grapheme: Option<&String>,
     budget: &mut AdmissionBudget,
 ) -> Result<(), ExactGeometryError> {
     if job.scanner.segment_text.is_empty() {
         return Ok(());
     }
-    let text = std::mem::take(&mut job.scanner.segment_text);
     let end = job
         .scanner
         .segment_start
-        .checked_add(text.len() as u64)
+        .checked_add(job.scanner.segment_text.len() as u64)
         .ok_or(ExactGeometryError::SourceContract)?;
-    let runs = if text.is_empty() {
-        Vec::new()
-    } else {
-        let mut run = style.text_run.clone();
-        run.len = text.len();
-        vec![run]
-    };
+    let conversion_bytes = job
+        .scanner
+        .segment_text
+        .len()
+        .checked_add(std::mem::size_of::<gpui::TextRun>())
+        .and_then(|bytes| bytes.checked_add(detached_grapheme.map_or(0, String::capacity)))
+        .ok_or(ExactGeometryError::CapacityExceeded)?;
+    budget.observe(
+        job,
+        conversion_bytes,
+        2 + usize::from(detached_grapheme.is_some()),
+    )?;
+    let text = std::mem::take(&mut job.scanner.segment_text);
+    let mut run = style.text_run.clone();
+    run.len = text.len();
+    let runs = vec![run];
     let segment = StreamingTextSegment {
         input_id: binding.input_id,
         segment_policy_id: binding.segment_policy_id,
@@ -647,6 +660,7 @@ fn admit_compact_atom(
         style,
         limits,
         true,
+        None,
         budget,
     )?;
     job.scanner.cursor = end_cursor.clone();
@@ -713,6 +727,7 @@ pub(super) fn finalize_source(
         style,
         limits,
         false,
+        None,
         budget,
     )?;
     let end = StreamingEndOfSource {
