@@ -2713,27 +2713,27 @@ fn committed_settlement_accepts_exact_fit_and_one_under_is_retryable(
         WidgetAdmissionComponents {
             realization_owner: RangeTextInput::realization_owner_charge(),
             prior_surface: RangeSurfaceCharge {
-                bytes: 7_198,
+                bytes: 7_238,
                 items: 90,
             },
             current_realization_state,
             current_request_storage: RangeSurfaceCharge {
-                bytes: 38_080,
+                bytes: 43_520,
                 items: 68,
             },
             mutation_request_payload: RangeSurfaceCharge::default(),
             candidate_record: RangeSurfaceCharge {
-                bytes: 8_800,
+                bytes: 10_384,
                 items: 1,
             },
             geometry: RangeSurfaceCharge {
-                bytes: 4_874,
-                items: 33,
+                bytes: 5_354,
+                items: 34,
             },
             resident_payload: RangeSurfaceCharge { bytes: 0, items: 0 },
             publication_allocation: RangeSurfaceCharge { bytes: 0, items: 0 },
             effect_storage: RangeSurfaceCharge {
-                bytes: 2_240,
+                bytes: 2_560,
                 items: 4,
             },
             event_storage: RangeSurfaceCharge {
@@ -2745,7 +2745,7 @@ fn committed_settlement_accepts_exact_fit_and_one_under_is_retryable(
             residency_rebind: RangeSurfaceCharge { bytes: 0, items: 2 },
             detached_edit_storage: RangeSurfaceCharge { bytes: 0, items: 0 },
             destination_request_storage: RangeSurfaceCharge {
-                bytes: 38_080,
+                bytes: 43_520,
                 items: 68,
             },
             proof_storage: RangeSurfaceCharge {
@@ -2755,13 +2755,13 @@ fn committed_settlement_accepts_exact_fit_and_one_under_is_retryable(
         }
     );
     let transition_exact = RangeSurfaceCharge {
-        bytes: 129_696,
-        items: 327,
+        bytes: 143_824,
+        items: 328,
     };
     assert_eq!(components.checked_total(), Some(transition_exact));
     let exact = RangeSurfaceCharge {
-        bytes: 130_176,
-        items: 330,
+        bytes: 144_304,
+        items: 331,
     };
     let events = captured_events(&input, cx);
     input.update(cx, |input, _| {
