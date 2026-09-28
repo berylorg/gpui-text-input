@@ -323,12 +323,21 @@ impl AdmissionBudget {
     }
 
     fn admit_counts(&mut self, bytes: usize, items: usize) -> Result<(), ExactGeometryError> {
+        self.admit_counts_with_credit(bytes, items, 0)
+    }
+
+    fn admit_counts_with_credit(
+        &mut self,
+        bytes: usize,
+        items: usize,
+        shared_bytes: usize,
+    ) -> Result<(), ExactGeometryError> {
         self.clear_refusal();
         self.peak_bytes = self.peak_bytes.max(bytes);
         self.peak_items = self.peak_items.max(items);
         if let Some(observations) = &mut self.observations {
             return observations
-                .observe_preparation((bytes, items), (0, 0))
+                .observe_preparation((bytes, items), (shared_bytes, 0))
                 .inspect_err(|_| {
                     self.refused_capacity = Some((bytes, items));
                 });

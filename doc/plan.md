@@ -4,11 +4,12 @@ Implement the capacity prerequisite for preserved resident adoption from
 [the package contract](design.md#range-backed-preserved-resident-adoption), coordinated by
 the Beryl root plan. Resident protection, accounting and publication remain separate work.
 
-# Phase 56: Map Actual Response Preparation Into Enclosing Custody (finished)
+# Phase 57: Credit Shared Deferred Display During Response Continuation Copy (finished)
 
-Actual text and object preparation now accept enclosing current charge and limit with checked
-owner/input baselines and independent configured ceilings. All 226 integration tests passed;
-independent resource review accepted this boundary. Shared credits and session routing remain pending.
+Both response paths now credit the deferred display shared with the original at pre-copy and
+immediate coexistence observations. Configured raw charges remain unchanged. All 226 integration
+tests passed and independent resource review accepted the boundary; later scanner/publication
+credits and session routing remain pending.
 
 # Phase 2: Enforce Capacity Throughout Preparation (pending)
 
@@ -34,6 +35,7 @@ per-observation ownership evidence before prospective display credits can be ena
 Active and returned inline overlap now derives from live fragments before metadata exists; avoid
 crediting duplicate returned/retained handles when their shared payload is charged only once.
 Carry it through pre-copy, detached custody, output before metadata and publication observations.
+Continuation pre-copy and immediate copy coexistence now credit only the deferred display backing shared with the original; subsequent observations still use zero credit.
 Deferred presentation backing now shares correctly and participates in retained overlap queries.
 Explicit preparation admission now carries typed configured/enclosing refusal attribution.
 Do not infer host attribution from ambiguous GPUI errors. Five older baseline unit failures remain

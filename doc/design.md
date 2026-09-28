@@ -723,6 +723,12 @@ above that baseline. Configured geometry limits remain independent. The enclosin
 the existing owner and borrowed inputs in its current charge; this input does not itself establish
 shared-display credits or complete prepublication-session capacity routing.
 
+At continuation copy admission and immediate copy coexistence, enclosing observations credit the
+deferred display backing shared with the original continuation. The original remains borrowed for
+both observations. Copied fallback text and all ownership records retain their full charge; configured
+geometry and geometry-relative ceilings retain the complete raw copy charge. Later scanner and
+publication observations still require their own ownership evidence before receiving shared credit.
+
 The optional `test-support` feature exposes `preparation_test_support` for integration qualification
 of immutable response preparation. Its probe reports raw required capacity, optional independently
 observed enclosing peaks for prepared results and failures, and terminal/successor facts,
@@ -739,6 +745,8 @@ unattributed arithmetic failure. Its baseline-mapping probe qualifies checked co
 raw preparation growth to enclosing custody with observation-specific incremental shared credit.
 Actual text and object response probes also accept an enclosing current charge and limit, qualifying
 the derived baseline through scanner and nested publication observations.
+The continuation-copy probe executes the same pre-copy and post-copy admission as both response
+paths, returns both peaks, and drops the prepared copy without changing the original owner.
 The remaining-capacity probe also qualifies mapped headroom with distinct baselines and no
 prospective output credit before GPUI startup. The startup probe admits the prior continuation's
 actual byte/item charge independently of output allowance and qualifies it against GPUI accounting.

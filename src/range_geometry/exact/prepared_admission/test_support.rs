@@ -13,6 +13,25 @@ pub fn shared_object_display(object: &crate::InlineObjectFact) -> gpui::SharedSt
     object.presentation().shared_display()
 }
 
+pub fn prepare_continuation_copy(
+    owner: &ExactGeometryOwner,
+    key: crate::GeometryJobKey,
+    index: bool,
+    current: Option<(usize, usize)>,
+    limit: (usize, usize),
+) -> Result<((usize, usize), (usize, usize)), ExactGeometryFailure> {
+    let active = owner.response_active(key, index)?;
+    let capacity = current.map_or(ResponseCapacity::Geometry(limit), |current| {
+        ResponseCapacity::Enclosing { current, limit }
+    });
+    let mut budget = owner.prepared_budget(0, 0, capacity)?;
+    let _copy = prepare_response_continuation(&mut budget, active, capacity)?;
+    Ok((
+        (budget.peak_bytes, budget.peak_items),
+        budget.observations.as_ref().unwrap().enclosing_peak,
+    ))
+}
+
 pub struct PreparationCapacityProbe(super::super::capacity_observation::CapacityObservations);
 
 impl PreparationCapacityProbe {

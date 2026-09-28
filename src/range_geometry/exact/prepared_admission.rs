@@ -401,10 +401,7 @@ impl ExactGeometryOwner {
             page.retained_charge().items(),
             capacity,
         )?;
-        admit_response_continuation(&mut budget, active)?;
-        let (mut candidate, shared) = copy_response_continuation(active)
-            .map_err(|error| self.prepared_validation_failure(error))?;
-        observe_prepared(&mut budget, &candidate, 0, 0)?;
+        let (mut candidate, shared) = prepare_response_continuation(&mut budget, active, capacity)?;
         if page.range().len() > self.limits.max_page_bytes {
             return Err(prepared_failure(
                 ExactGeometryError::CapacityExceeded,
@@ -637,10 +634,7 @@ impl ExactGeometryOwner {
                 self.prepared_validation_failure(ExactGeometryError::CapacityExceeded)
             })?;
         let mut budget = self.prepared_budget(page_bytes, page_items, capacity)?;
-        admit_response_continuation(&mut budget, active)?;
-        let (mut candidate, shared) = copy_response_continuation(active)
-            .map_err(|error| self.prepared_validation_failure(error))?;
-        observe_prepared(&mut budget, &candidate, 0, 0)?;
+        let (mut candidate, shared) = prepare_response_continuation(&mut budget, active, capacity)?;
         let inputs = self.inputs.as_deref().expect("active owner retains inputs");
         let source_end = inputs.binding.extent().byte_len();
         let scan = super::scan::process_object_page(
@@ -739,9 +733,37 @@ impl ExactGeometryOwner {
     }
 }
 
+fn prepare_response_continuation(
+    budget: &mut AdmissionBudget,
+    active: &ActiveJob,
+    capacity: ResponseCapacity,
+) -> Result<(Box<ActiveJob>, SharedOutput), ExactGeometryFailure> {
+    let shared_bytes = match capacity {
+        ResponseCapacity::Geometry(_) => 0,
+        ResponseCapacity::Enclosing { .. } => active
+            .scanner
+            .deferred_object
+            .as_deref()
+            .map_or(0, |object| object.fact.presentation_allocation().1),
+    };
+    admit_response_continuation(budget, active, shared_bytes)?;
+    let (candidate, shared) = copy_response_continuation(active).map_err(|error| {
+        prepared_failure(error, ExactGeometryFailureStage::PageCoexistence, budget)
+    })?;
+    observe_prepared_counts_with_credit(
+        budget,
+        accounting::active_counts(&candidate),
+        0,
+        0,
+        shared_bytes,
+    )?;
+    Ok((candidate, shared))
+}
+
 fn admit_response_continuation(
     budget: &mut AdmissionBudget,
     active: &ActiveJob,
+    shared_bytes: usize,
 ) -> Result<(), ExactGeometryFailure> {
     let mut counts = accounting::active_counts(active);
     counts.checkpoints = 0;
@@ -755,7 +777,7 @@ fn admit_response_continuation(
         .len()
         .checked_add(active.scanner.grapheme_text.as_ref().map_or(0, String::len))
         .ok_or_else(|| prepared_capacity_failure(budget))?;
-    observe_prepared_counts(budget, counts, 0, 0)
+    observe_prepared_counts_with_credit(budget, counts, 0, 0, shared_bytes)
 }
 
 fn observe_prepared(
@@ -778,6 +800,17 @@ fn observe_prepared_counts(
     transient_bytes: usize,
     transient_items: usize,
 ) -> Result<(), ExactGeometryFailure> {
+    observe_prepared_counts_with_credit(budget, counts, transient_bytes, transient_items, 0)
+}
+
+fn observe_prepared_counts_with_credit(
+    budget: &mut AdmissionBudget,
+    counts: ExactGeometryCounts,
+    transient_bytes: usize,
+    transient_items: usize,
+    shared_bytes: usize,
+) -> Result<(), ExactGeometryFailure> {
+    budget.clear_refusal();
     let bytes = budget
         .fixed_bytes
         .checked_add(budget.page_payload_bytes)
@@ -790,9 +823,11 @@ fn observe_prepared_counts(
         .and_then(|value| value.checked_add(checked_total_items(counts).ok()?))
         .and_then(|value| value.checked_add(transient_items))
         .ok_or_else(|| prepared_capacity_failure(budget))?;
-    budget.admit_counts(bytes, items).map_err(|error| {
-        prepared_failure(error, ExactGeometryFailureStage::PageCoexistence, budget)
-    })
+    budget
+        .admit_counts_with_credit(bytes, items, shared_bytes)
+        .map_err(|error| {
+            prepared_failure(error, ExactGeometryFailureStage::PageCoexistence, budget)
+        })
 }
 
 fn prepared_failure(

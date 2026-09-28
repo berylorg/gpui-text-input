@@ -1,5 +1,52 @@
 use super::*;
-use gpui_text_input::preparation_test_support::{owner_presentation_overlap, prepare_response};
+use gpui_text_input::preparation_test_support::{
+    enclosing_failure_peak, is_enclosing_capacity_refusal, owner_presentation_overlap,
+    prepare_continuation_copy, prepare_response,
+};
+
+fn check_continuation_copy(
+    owner: &ExactGeometryOwner,
+    job: GeometryJobKey,
+    index: bool,
+    display_bytes: usize,
+) {
+    let before = owner.counts();
+    let baseline = (before.total_bytes(), before.total_items());
+    let (raw, identity) =
+        prepare_continuation_copy(owner, job, index, None, (usize::MAX, usize::MAX)).unwrap();
+    assert_eq!(raw, identity);
+    for current in [(0, 0), (baseline.0 + 8192, baseline.1 + 32)] {
+        let mapped = (
+            current.0 + raw.0 - baseline.0 - display_bytes,
+            current.1 + raw.1 - baseline.1,
+        );
+        for _ in 0..2 {
+            assert_eq!(
+                prepare_continuation_copy(owner, job, index, Some(current), mapped).unwrap(),
+                (raw, mapped)
+            );
+            assert_eq!(owner.counts(), before);
+        }
+        for limit in [(mapped.0 - 1, mapped.1), (mapped.0, mapped.1 - 1)] {
+            let failure =
+                prepare_continuation_copy(owner, job, index, Some(current), limit).unwrap_err();
+            assert!(is_enclosing_capacity_refusal(&failure));
+            assert_eq!(enclosing_failure_peak(&failure), Some(mapped));
+            assert_eq!(failure.release(), &ExactGeometryRelease::default());
+            assert_eq!(owner.counts(), before);
+            assert!(prepare_continuation_copy(owner, job, index, Some(current), mapped).is_ok());
+        }
+    }
+    for current in [(usize::MAX, 0), (0, usize::MAX)] {
+        let failure =
+            prepare_continuation_copy(owner, job, index, Some(current), (usize::MAX, usize::MAX))
+                .unwrap_err();
+        assert!(!is_enclosing_capacity_refusal(&failure));
+        assert_eq!(enclosing_failure_peak(&failure), Some((0, 0)));
+        assert_eq!(failure.release(), &ExactGeometryRelease::default());
+        assert_eq!(owner.counts(), before);
+    }
+}
 
 #[gpui::test]
 fn returned_inline_overlap_uses_live_backing_before_target_metadata(cx: &mut TestAppContext) {
@@ -127,8 +174,13 @@ fn returned_inline_overlap_uses_live_backing_before_target_metadata(cx: &mut Tes
 #[gpui::test]
 fn deferred_presentations_share_admitted_backing_through_preparation(cx: &mut TestAppContext) {
     with_text_system(cx, |text_system| {
-        for index in [false, true] {
-            let display = "shared".to_owned();
+        for (index, display) in [
+            (false, ""),
+            (true, ""),
+            (false, "shared é"),
+            (true, "shared é"),
+        ] {
+            let display = display.to_owned();
             let fact = |id| {
                 InlineObjectFact::new(
                     InlineObjectId::new(id),
@@ -149,7 +201,7 @@ fn deferred_presentations_share_admitted_backing_through_preparation(cx: &mut Te
                 )
             };
             let first = fact(1);
-            let mut input = layout(8, 10000.);
+            let mut input = layout(16, 10000.);
             input.start_position = SourcePosition::new(
                 ByteOffset::new(0),
                 InlineObjectGap::before(first.cursor().neighbor()),
@@ -212,6 +264,7 @@ fn deferred_presentations_share_admitted_backing_through_preparation(cx: &mut Te
                 .unwrap()
             };
             let before = owner.counts();
+            check_continuation_copy(&owner, job, index, 0);
             for _ in 0..2 {
                 let prepared = prepare(&owner, &objects, 20);
                 assert_eq!(
@@ -229,6 +282,7 @@ fn deferred_presentations_share_admitted_backing_through_preparation(cx: &mut Te
             let next = prepared.object_request().unwrap();
             prepared.commit(&mut owner);
             assert_eq!(owner.counts().deferred_object_items, 4);
+            check_continuation_copy(&owner, job, index, display.len());
             assert_eq!(
                 owner_presentation_overlap(&owner, &[&objects]),
                 Some(display.len())
