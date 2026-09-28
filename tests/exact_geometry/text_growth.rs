@@ -156,6 +156,69 @@ fn text_conversion_refusal_preserves_scanner_storage_until_release(cx: &mut Test
     });
 }
 
+#[gpui::test]
+fn oversize_presentation_respects_exact_byte_and_item_capacity(cx: &mut TestAppContext) {
+    with_text_system(cx, |text_system| {
+        let source = format!("a{}z", "\u{301}".repeat(20));
+        let mut required_bytes = 0;
+        let mut required_items = 0;
+        for case in 0..4 {
+            let (bytes, items) = match case {
+                0 => (256 * 1024, usize::MAX),
+                1 => (required_bytes, required_items),
+                2 => (required_bytes - 1, usize::MAX),
+                _ => (256 * 1024, required_items - 1),
+            };
+            let run = TextRun {
+                len: 3,
+                font: font(".SystemUIFont"),
+                color: black(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            let geometry_style = StreamingGeometryStyle::new(
+                run.clone(),
+                StreamingOversizePresentation::new(
+                    SharedString::new(Arc::<str>::from("...")),
+                    vec![run],
+                    px(32.),
+                    px(20.),
+                    px(14.),
+                    None,
+                ),
+            );
+            let mut owner = owner_with_retained_items(
+                &source,
+                8,
+                64.,
+                4,
+                bytes,
+                items,
+                geometry_style,
+            )
+            .unwrap();
+            let job = start_index(&mut owner, 1);
+            let page = page(&mut owner, job, &source, 0, source.len(), 1);
+            let result = admit_page_with_empty_objects(&mut owner, job, &page, text_system);
+            if case < 2 {
+                let admission = result.unwrap();
+                assert_eq!(admission.progress(), ExactGeometryProgress::IndexComplete);
+                required_bytes = admission.admission_required_bytes();
+                required_items = admission.admission_required_items();
+                assert!(owner.index().is_some());
+            } else {
+                let failure = result.unwrap_err();
+                assert_eq!(failure.error(), &ExactGeometryError::CapacityExceeded);
+                assert!(owner.index().is_none());
+            }
+            assert_eq!(owner.counts().active_job_items, 0);
+            assert_eq!(owner.counts().active_atom_bytes, 0);
+            assert_eq!(owner.counts().scan_buffer_bytes, 0);
+        }
+    });
+}
+
 fn rollover_owner(
     source: &str,
     bytes: usize,

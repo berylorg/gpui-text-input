@@ -668,6 +668,12 @@ fn admit_compact_atom(
         job.scanner.cursor_origin = range.end();
     }
     let presentation = &style.oversize;
+    let run_bytes = presentation
+        .runs
+        .len()
+        .checked_mul(std::mem::size_of::<gpui::TextRun>())
+        .ok_or(ExactGeometryError::CapacityExceeded)?;
+    budget.observe(job, run_bytes, presentation.runs.len())?;
     let atom = StreamingOversizeAtom {
         input_id: binding.input_id,
         segment_policy_id: binding.segment_policy_id,
