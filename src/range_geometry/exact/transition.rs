@@ -333,12 +333,11 @@ impl ExactGeometryOwner {
         super::target::validate_target(target)?;
         self.admit_transition_job_id(job_id)?;
         self.admit_transition_request_id(request_id)?;
-        let scanner = Scanner::origin(
+        let (_, predecessor) = Scanner::origin_unallocated(
             &inputs.layout,
             usize::try_from(inputs.binding.extent().byte_len())
                 .map_err(|_| ExactGeometryError::SourceContract)?,
         );
-        let predecessor = super::checkpoint::make_checkpoint(&scanner, &inputs.layout, false)?;
         let fixed = accounting::counts(None, None, None, None, None)
             .total_bytes()
             .saturating_add(accounting::input_counts(&inputs).total_bytes());
@@ -481,14 +480,11 @@ impl ExactGeometryOwner {
             }
         }
         let origin = || {
-            super::checkpoint::make_checkpoint(
-                &Scanner::origin(
-                    &inputs.layout,
-                    usize::try_from(source_len).map_err(|_| ExactGeometryError::SourceContract)?,
-                ),
+            let (_, checkpoint) = Scanner::origin_unallocated(
                 &inputs.layout,
-                false,
-            )
+                usize::try_from(source_len).map_err(|_| ExactGeometryError::SourceContract)?,
+            );
+            Ok::<_, ExactGeometryError>(checkpoint)
         };
         let predecessor = if let Some(checkpoint) = checkpoint
             && super::target::target_predecessor_is_eligible(

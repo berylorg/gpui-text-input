@@ -108,12 +108,6 @@ struct ActiveAtom {
 }
 
 impl Scanner {
-    fn origin(binding: &StreamingLayoutBinding, source_len: usize) -> Self {
-        let (mut scanner, origin) = Self::origin_unallocated(binding, source_len);
-        scanner.checkpoints = VecDeque::from([origin]);
-        scanner
-    }
-
     fn origin_unallocated(
         binding: &StreamingLayoutBinding,
         source_len: usize,
