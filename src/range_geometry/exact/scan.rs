@@ -14,7 +14,10 @@ use super::{
     ExactGeometryError, ExactGeometryLimits, OwnerInputs, StreamingGeometryStyle,
 };
 
+mod output;
 mod text;
+
+use output::admit_layout;
 
 #[derive(Clone, Copy, Debug)]
 pub(super) enum PageScan {
@@ -417,6 +420,7 @@ fn admit_inline_object(
         if matching_fragments != 1 {
             return Err(ExactGeometryError::SourceContract);
         }
+        output::reserve_presentation(job, budget)?;
         job.scanner
             .object_presentations
             .push(super::TargetInlineObjectPresentation::new(
@@ -669,115 +673,6 @@ fn admit_compact_atom(
         session.admit_oversize_atom(atom)
     })?;
     Ok(())
-}
-
-fn admit_layout(
-    job: &mut ActiveJob,
-    text_system: &WindowTextSystem,
-    binding: &StreamingLayoutBinding,
-    limits: ExactGeometryLimits,
-    retain_checkpoint: bool,
-    budget: &mut AdmissionBudget,
-    admit: impl FnOnce(
-        &mut gpui::StreamingLayoutSession<'_>,
-    ) -> Result<gpui::StreamingLayoutAdmission, gpui::StreamingLayoutError>,
-) -> Result<bool, ExactGeometryError> {
-    let prior = job.scanner.continuation;
-    let (admission, session_item_charge) = {
-        let mut session = text_system.resume_streaming_layout_session(binding.clone(), prior)?;
-        let admission = admit(&mut session)?;
-        let retained_items = session.retained_item_charge();
-        (admission, retained_items)
-    };
-    // The returned admission remains live while its continuation and any retained fragment handles
-    // enter scanner state. The prior continuation is replaced, but the admission copy coexists at
-    // this peak and is therefore charged.
-    job.scanner.continuation = admission.continuation;
-    job.scanner.continuation_items = session_item_charge.total()?;
-    let full_transient_bytes = admission.charge.total()?;
-    let full_transient_items = admission.item_charge.total()?;
-    let (retained, transient_bytes, transient_items) =
-        if matches!(job.kind, ActiveKind::Target { .. }) {
-            let ActiveKind::Target { target, anchor, .. } = job.kind else {
-                unreachable!();
-            };
-            let retained_fragments = admission
-                .fragments
-                .iter()
-                .filter(|fragment| {
-                    super::target_output::fragment_intersects_target(
-                        fragment,
-                        prior,
-                        target,
-                        anchor,
-                        binding.line_height,
-                    )
-                })
-                .cloned()
-                .collect::<Vec<_>>();
-            super::target_output::resolve_source_anchor(job, &admission.fragments);
-            super::target_output::update_target_source(
-                job,
-                &admission.fragments,
-                admission.continuation,
-            );
-            if !retained_fragments.is_empty() {
-                job.scanner.output_charge = super::accounting::add_fragment_charge(
-                    job.scanner.output_charge,
-                    admission.charge,
-                )?;
-                job.scanner.output_item_charge = super::accounting::add_fragment_item_charge(
-                    job.scanner.output_item_charge,
-                    admission.item_charge,
-                )?;
-                job.scanner
-                    .fragments
-                    .extend(retained_fragments.iter().cloned());
-                // Fragment clones share GPUI's immutable payload Arcs. Only the second initialized
-                // enum records coexist; the payload charge remains single-counted in scanner output.
-                (
-                    true,
-                    super::accounting::fragment_record_bytes(retained_fragments.len())
-                        .saturating_add(std::mem::size_of::<StreamingLayoutContinuation>()),
-                    retained_fragments.len().saturating_add(1),
-                )
-            } else {
-                (false, full_transient_bytes, full_transient_items)
-            }
-        } else {
-            (false, full_transient_bytes, full_transient_items)
-        };
-    budget.observe(job, transient_bytes, transient_items)?;
-    if retain_checkpoint && matches!(job.kind, ActiveKind::Index) {
-        let checkpoint =
-            super::checkpoint::make_checkpoint(&job.scanner, binding, false).map_err(|error| {
-                budget.failure_stage = Some(super::ExactGeometryFailureStage::Checkpoint);
-                error
-            })?;
-        budget
-            .observe(
-                job,
-                transient_bytes.saturating_add(std::mem::size_of::<ExactGeometryCheckpoint>()),
-                transient_items,
-            )
-            .map_err(|error| {
-                budget.failure_stage = Some(super::ExactGeometryFailureStage::Checkpoint);
-                error
-            })?;
-        super::checkpoint::retain_checkpoint(
-            &mut job.scanner.checkpoints,
-            checkpoint,
-            limits.max_checkpoints,
-        );
-        budget
-            .observe(job, transient_bytes, transient_items)
-            .map_err(|error| {
-                budget.failure_stage = Some(super::ExactGeometryFailureStage::Checkpoint);
-                error
-            })?;
-    }
-    budget.observe(job, 0, 0)?;
-    Ok(retained)
 }
 
 pub(super) fn finalize_source(
