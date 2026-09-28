@@ -26,6 +26,7 @@ mod candidate;
 mod custody;
 mod delivery;
 mod progression;
+mod startup;
 
 pub use candidate::RangePrepublicationCandidate;
 pub(in crate::range_widget) use custody::{ObjectCustody, TextCustody};
@@ -184,19 +185,12 @@ impl RangePrepublicationSession {
             .map_err(|_| RangePrepublicationFailure::Arithmetic)?;
         let generation = RangePrepublicationSessionGeneration::new(generation_value);
         let config = environment.config();
-        let geometry = ExactGeometryOwner::new(
-            config.binding,
-            config.presentation_generation,
-            config.layout.clone(),
-            config.style.clone(),
-            config.geometry_limits,
-        )
-        .map_err(classify_geometry_error)?;
         let configured = configured_capacity(config);
         let limit = RangeSurfaceCharge {
             bytes: capacity.bytes.min(configured.bytes),
             items: capacity.items.min(configured.items),
         };
+        let (geometry, residency, object_residency) = startup::prepare(config, limit)?;
         let mut session = Self {
             generation,
             environment: environment.clone(),
@@ -204,12 +198,8 @@ impl RangePrepublicationSession {
             stage: SessionStage::Initializing,
             validation: RestorationValidation::new(seed),
             accepted_validation: None,
-            residency: RangeResidency::new(config.binding, config.residency_limits),
-            object_residency: crate::ObjectResidency::new(
-                config.binding,
-                config.presentation_generation,
-                config.object_residency_limits,
-            ),
+            residency,
+            object_residency,
             geometry: Some(geometry),
             geometry_job: None,
             waiting: None,

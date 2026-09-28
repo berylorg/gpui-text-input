@@ -165,8 +165,28 @@ fn initial_reservation_rejects_byte_and_item_shortfalls_without_effects(cx: &mut
     let seed = seed(source, 1, 3);
     let window = cx.add_empty_window();
     window.update(|window, _| {
-        let (environment, cleanup) =
-            make_environment(60, config(source, 1, 32), window.text_system());
+        let mut config = config(source, 1, 32);
+        let runs = Vec::with_capacity(16);
+        assert!(runs.capacity() > runs.len());
+        config.style = StreamingGeometryStyle::new(
+            TextRun {
+                len: 0,
+                font: font(".SystemUIFont"),
+                color: black(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            },
+            StreamingOversizePresentation::new(
+                SharedString::new(Arc::<str>::from("")),
+                runs,
+                px(12.),
+                px(16.),
+                px(12.),
+                None,
+            ),
+        );
+        let (environment, cleanup) = make_environment(60, config, window.text_system());
         let probe = RangePrepublicationSession::new(seed, environment.clone()).unwrap();
         let ownership = probe.ownership();
         let exact = RangeSurfaceCharge {

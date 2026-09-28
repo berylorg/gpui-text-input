@@ -469,6 +469,17 @@ pub(super) fn initial_owner_counts(
     }
 }
 
+pub(super) fn initial_cloned_owner_counts(
+    layout: &StreamingLayoutBinding,
+    style: &StreamingGeometryStyle,
+) -> ExactGeometryCounts {
+    let mut counts = initial_owner_counts(layout, style);
+    counts.input_bytes = size_of::<OwnerInputs>().saturating_add(
+        style_payload_bytes_with_run_capacity(style, style.oversize.runs.len()),
+    );
+    counts
+}
+
 pub(super) fn layout_style_counts(
     layout: &StreamingLayoutBinding,
     style: &StreamingGeometryStyle,
@@ -514,15 +525,16 @@ fn style_payload_bytes(inputs: &OwnerInputs) -> usize {
 }
 
 fn style_payload_bytes_for_style(style: &StreamingGeometryStyle) -> usize {
+    style_payload_bytes_with_run_capacity(style, style.oversize.runs.capacity())
+}
+
+fn style_payload_bytes_with_run_capacity(
+    style: &StreamingGeometryStyle,
+    run_capacity: usize,
+) -> usize {
     let mut bytes = text_run_payload_bytes(&style.text_run);
     bytes = bytes.saturating_add(style.oversize.presentation.len());
-    bytes = bytes.saturating_add(
-        style
-            .oversize
-            .runs
-            .capacity()
-            .saturating_mul(size_of::<TextRun>()),
-    );
+    bytes = bytes.saturating_add(run_capacity.saturating_mul(size_of::<TextRun>()));
     for run in &style.oversize.runs {
         bytes = bytes.saturating_add(text_run_payload_bytes(run));
     }
