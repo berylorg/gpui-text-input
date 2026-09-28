@@ -27,21 +27,13 @@ fn resident_geometry_request_refusal_preserves_custody_and_resumes(cx: &mut Test
                 {
                     session.set_available_capacity(if mode % 2 == 0 {
                         RangeSurfaceCharge {
-                            bytes: if mode == 0 {
-                                0
-                            } else {
-                                before.bytes
-                                    + std::mem::size_of::<gpui_text_input::PageRequestKey>().min(
-                                        std::mem::size_of::<gpui_text_input::ObjectRequestKey>(),
-                                    )
-                                    - 1
-                            },
+                            bytes: if mode == 0 { 0 } else { before.bytes - 1 },
                             items: usize::MAX,
                         }
                     } else {
                         RangeSurfaceCharge {
                             bytes: usize::MAX,
-                            items: if mode == 1 { 0 } else { before.items + 1 },
+                            items: if mode == 1 { 0 } else { before.items },
                         }
                     });
                     let step = session.service(window.text_system());

@@ -4,12 +4,17 @@ impl RangePrepublicationSession {
     pub(super) fn admit_resident_geometry_request(
         &mut self,
         request_bytes: usize,
+        pending_exists: bool,
         prepared: RangeSurfaceCharge,
         effects: &EffectBuffer,
     ) -> Result<Option<RangeSurfaceCharge>, RangePrepublicationFailure> {
-        let pending = RangeSurfaceCharge {
-            bytes: request_bytes,
-            items: 1,
+        let pending = if pending_exists {
+            RangeSurfaceCharge::default()
+        } else {
+            RangeSurfaceCharge {
+                bytes: request_bytes,
+                items: 1,
+            }
         };
         let current = self
             .current_charge()
@@ -148,6 +153,7 @@ impl RangePrepublicationSession {
         text_page: PageId,
         request_id: ObjectRequestId,
         request: crate::ObjectRequest,
+        pending_exists: bool,
         prepared: crate::object_residency::PreparedObjectDemand,
         resident_request: crate::ObjectRequest,
         effects: &mut EffectBuffer,
@@ -156,9 +162,13 @@ impl RangePrepublicationSession {
             return Ok(false);
         };
         let reservation = object_reservation(request.key())?;
-        let geometry_pending = RangeSurfaceCharge {
-            bytes: std::mem::size_of::<crate::ObjectRequestKey>(),
-            items: 1,
+        let geometry_pending = if pending_exists {
+            RangeSurfaceCharge::default()
+        } else {
+            RangeSurfaceCharge {
+                bytes: std::mem::size_of::<crate::ObjectRequestKey>(),
+                items: 1,
+            }
         };
         let prepared_charge = add_charge(
             add_charge(
@@ -183,23 +193,26 @@ impl RangePrepublicationSession {
         ) {
             return Err(RangePrepublicationFailure::Stale);
         }
-        let committed = self
-            .geometry
-            .as_mut()
-            .ok_or(RangePrepublicationFailure::Stale)?
-            .request_object_page(
-                job,
-                request_id,
-                self.environment
-                    .config()
-                    .object_residency_limits
-                    .max_resident_objects(),
-                self.environment
-                    .config()
-                    .object_residency_limits
-                    .max_resident_bytes(),
-            )
-            .map_err(classify_geometry_error)?;
+        let committed = if pending_exists {
+            request
+        } else {
+            self.geometry
+                .as_mut()
+                .ok_or(RangePrepublicationFailure::Stale)?
+                .request_object_page(
+                    job,
+                    request_id,
+                    self.environment
+                        .config()
+                        .object_residency_limits
+                        .max_resident_objects(),
+                    self.environment
+                        .config()
+                        .object_residency_limits
+                        .max_resident_bytes(),
+                )
+                .map_err(classify_geometry_error)?
+        };
         if committed != request
             || self.object_residency.commit_prepared_demand(prepared)
                 != ObjectDemand::Requested(resident_request)
@@ -225,6 +238,7 @@ impl RangePrepublicationSession {
         job: GeometryJobKey,
         request_id: PageRequestId,
         request: crate::PageRequest,
+        pending_exists: bool,
         prepared: crate::residency::PreparedPageDemand,
         resident_request: crate::PageRequest,
         effects: &mut EffectBuffer,
@@ -237,9 +251,13 @@ impl RangePrepublicationSession {
                 .map_err(|_| RangePrepublicationFailure::Arithmetic)?,
             items: 1,
         };
-        let geometry_pending = RangeSurfaceCharge {
-            bytes: std::mem::size_of::<crate::PageRequestKey>(),
-            items: 1,
+        let geometry_pending = if pending_exists {
+            RangeSurfaceCharge::default()
+        } else {
+            RangeSurfaceCharge {
+                bytes: std::mem::size_of::<crate::PageRequestKey>(),
+                items: 1,
+            }
         };
         let prepared_charge = add_charge(
             RangeSurfaceCharge {
@@ -261,12 +279,15 @@ impl RangePrepublicationSession {
         ) {
             return Err(RangePrepublicationFailure::Stale);
         }
-        let committed = self
-            .geometry
-            .as_mut()
-            .ok_or(RangePrepublicationFailure::Stale)?
-            .request_page(job, request_id)
-            .map_err(classify_geometry_error)?;
+        let committed = if pending_exists {
+            request
+        } else {
+            self.geometry
+                .as_mut()
+                .ok_or(RangePrepublicationFailure::Stale)?
+                .request_page(job, request_id)
+                .map_err(classify_geometry_error)?
+        };
         if committed != request
             || self.residency.commit_prepared_demand(prepared)
                 != PageDemand::Requested(resident_request)

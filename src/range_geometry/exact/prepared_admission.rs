@@ -250,6 +250,32 @@ fn exact_document_selection(scanner: &Scanner, extent: u64) -> RangeSourceSelect
 }
 
 impl ExactGeometryOwner {
+    pub(crate) fn pending_response_successor(
+        &self,
+        key: crate::GeometryJobKey,
+    ) -> Result<Option<PreparedTargetSuccessor>, ExactGeometryError> {
+        let active = self
+            .active
+            .as_deref()
+            .ok_or(ExactGeometryError::NoActiveJob)?;
+        if active.key != key {
+            return Err(ExactGeometryError::NoActiveJob);
+        }
+        match active.pending.as_deref() {
+            Some(PendingInput::Text(key)) => {
+                Ok(Some(PreparedTargetSuccessor::Page(PageRequest::new(*key))))
+            }
+            Some(PendingInput::Object(key)) => Ok(Some(PreparedTargetSuccessor::Object {
+                request: ObjectRequest::new(*key),
+                text_page: active
+                    .text_page
+                    .ok_or(ExactGeometryError::WrongInputKind)?
+                    .id,
+            })),
+            None => Ok(None),
+        }
+    }
+
     pub(crate) fn prepare_target_page(
         &self,
         key: crate::GeometryJobKey,
@@ -782,7 +808,10 @@ fn resident_object_page_satisfies(page: &ObjectPage, expected: ObjectRequestKey)
         && actual.demand() == expected.demand()
 }
 
-pub(super) fn resident_object_payload_satisfies(page: &ObjectPage, expected: ObjectRequestKey) -> bool {
+pub(super) fn resident_object_payload_satisfies(
+    page: &ObjectPage,
+    expected: ObjectRequestKey,
+) -> bool {
     let actual = page.key();
     actual.binding() == expected.binding()
         && actual.revision() == expected.revision()

@@ -470,3 +470,6 @@ mod reserved_capacity_cases;
 
 #[path = "prepublication/resident_request_capacity.rs"]
 mod resident_request_capacity;
+
+#[path = "prepublication/prepared_successor.rs"]
+mod prepared_successor;

@@ -1,4 +1,7 @@
 use super::super::*;
+use crate::range_geometry::{
+    PreparedTargetResponse, PreparedTargetSuccessor, TargetResponseSuccessor,
+};
 
 impl RangePrepublicationSession {
     pub(super) fn advance_geometry(
@@ -16,29 +19,42 @@ impl RangePrepublicationSession {
             return Ok(!self.ledger_blocked);
         }
         let job = self.geometry_job.ok_or(RangePrepublicationFailure::Stale)?;
+        let successor = self
+            .geometry
+            .as_ref()
+            .ok_or(RangePrepublicationFailure::Stale)?
+            .pending_response_successor(job)
+            .map_err(classify_geometry_error)?;
+        let pending_exists = successor.is_some();
         if let Some(text_page) = self
             .geometry
             .as_ref()
             .and_then(|geometry| geometry.active_text_page(job))
         {
-            let request_id = ObjectRequestId::new(self.next_id()?);
-            let request = self
-                .geometry
-                .as_ref()
-                .ok_or(RangePrepublicationFailure::Stale)?
-                .preview_object_page_request(
-                    job,
-                    request_id,
-                    self.environment
-                        .config()
-                        .object_residency_limits
-                        .max_resident_objects(),
-                    self.environment
-                        .config()
-                        .object_residency_limits
-                        .max_resident_bytes(),
-                )
-                .map_err(classify_geometry_error)?;
+            let request_id = match successor {
+                Some(PreparedTargetSuccessor::Object { request, .. }) => request.key().id(),
+                _ => ObjectRequestId::new(self.next_id()?),
+            };
+            let request = if let Some(PreparedTargetSuccessor::Object { request, .. }) = successor {
+                request
+            } else {
+                self.geometry
+                    .as_ref()
+                    .ok_or(RangePrepublicationFailure::Stale)?
+                    .preview_object_page_request(
+                        job,
+                        request_id,
+                        self.environment
+                            .config()
+                            .object_residency_limits
+                            .max_resident_objects(),
+                        self.environment
+                            .config()
+                            .object_residency_limits
+                            .max_resident_bytes(),
+                    )
+                    .map_err(classify_geometry_error)?
+            };
             let prepared = self
                 .object_residency
                 .prepare_demand_after_retirement_from(
@@ -53,6 +69,7 @@ impl RangePrepublicationSession {
                 ObjectDemand::Resident(page) => {
                     let Some(capacity) = self.admit_resident_geometry_request(
                         std::mem::size_of::<crate::ObjectRequestKey>(),
+                        pending_exists,
                         RangeSurfaceCharge {
                             bytes: prepared.retained_bytes(),
                             items: prepared.retained_items(),
@@ -62,25 +79,28 @@ impl RangePrepublicationSession {
                     else {
                         return Ok(false);
                     };
-                    let committed = self
-                        .geometry
-                        .as_mut()
-                        .ok_or(RangePrepublicationFailure::Stale)?
-                        .request_object_page_with_capacity(
-                            job,
-                            request_id,
-                            self.environment
-                                .config()
-                                .object_residency_limits
-                                .max_resident_objects(),
-                            self.environment
-                                .config()
-                                .object_residency_limits
-                                .max_resident_bytes(),
-                            capacity.bytes,
-                            capacity.items,
-                        )
-                        .map_err(classify_geometry_error)?;
+                    let committed = if pending_exists {
+                        request
+                    } else {
+                        self.geometry
+                            .as_mut()
+                            .ok_or(RangePrepublicationFailure::Stale)?
+                            .request_object_page_with_capacity(
+                                job,
+                                request_id,
+                                self.environment
+                                    .config()
+                                    .object_residency_limits
+                                    .max_resident_objects(),
+                                self.environment
+                                    .config()
+                                    .object_residency_limits
+                                    .max_resident_bytes(),
+                                capacity.bytes,
+                                capacity.items,
+                            )
+                            .map_err(classify_geometry_error)?
+                    };
                     if committed != request
                         || self.object_residency.commit_prepared_demand(prepared)
                             != ObjectDemand::Resident(page)
@@ -99,6 +119,7 @@ impl RangePrepublicationSession {
                         text_page,
                         request_id,
                         request,
+                        pending_exists,
                         prepared,
                         resident_request,
                         effects,
@@ -107,13 +128,19 @@ impl RangePrepublicationSession {
                 ObjectDemand::Coalesced(_) => Err(RangePrepublicationFailure::Stale),
             }
         } else {
-            let request_id = PageRequestId::new(self.next_id()?);
-            let request = self
-                .geometry
-                .as_ref()
-                .ok_or(RangePrepublicationFailure::Stale)?
-                .preview_page_request(job, request_id)
-                .map_err(classify_geometry_error)?;
+            let request_id = match successor {
+                Some(PreparedTargetSuccessor::Page(request)) => request.key().id(),
+                _ => PageRequestId::new(self.next_id()?),
+            };
+            let request = if let Some(PreparedTargetSuccessor::Page(request)) = successor {
+                request
+            } else {
+                self.geometry
+                    .as_ref()
+                    .ok_or(RangePrepublicationFailure::Stale)?
+                    .preview_page_request(job, request_id)
+                    .map_err(classify_geometry_error)?
+            };
             let prepared = self
                 .residency
                 .prepare_demand_after_retirement(
@@ -127,6 +154,7 @@ impl RangePrepublicationSession {
                 PageDemand::ResidentAdjacent(page) => {
                     let Some(capacity) = self.admit_resident_geometry_request(
                         std::mem::size_of::<crate::PageRequestKey>(),
+                        pending_exists,
                         RangeSurfaceCharge {
                             bytes: prepared.retained_bytes(),
                             items: prepared.retained_items(),
@@ -136,12 +164,20 @@ impl RangePrepublicationSession {
                     else {
                         return Ok(false);
                     };
-                    let committed = self
-                        .geometry
-                        .as_mut()
-                        .ok_or(RangePrepublicationFailure::Stale)?
-                        .request_page_with_capacity(job, request_id, capacity.bytes, capacity.items)
-                        .map_err(classify_geometry_error)?;
+                    let committed = if pending_exists {
+                        request
+                    } else {
+                        self.geometry
+                            .as_mut()
+                            .ok_or(RangePrepublicationFailure::Stale)?
+                            .request_page_with_capacity(
+                                job,
+                                request_id,
+                                capacity.bytes,
+                                capacity.items,
+                            )
+                            .map_err(classify_geometry_error)?
+                    };
                     if committed != request
                         || self.residency.commit_prepared_demand(prepared)
                             != PageDemand::ResidentAdjacent(page)
@@ -159,6 +195,7 @@ impl RangePrepublicationSession {
                         job,
                         request_id,
                         request,
+                        pending_exists,
                         prepared,
                         resident_request,
                         effects,
@@ -178,27 +215,25 @@ impl RangePrepublicationSession {
         text_system: &WindowTextSystem,
         resident: bool,
     ) -> Result<(), RangePrepublicationFailure> {
+        let successor = self.geometry_response_successor()?;
         let page = self
             .residency
             .peek_page_by_id(page_id)
             .ok_or(RangePrepublicationFailure::Stale)?;
         let geometry = self
             .geometry
-            .as_mut()
+            .as_ref()
             .ok_or(RangePrepublicationFailure::Stale)?;
-        let admission = if resident {
-            geometry.admit_resident_page_with_capacity(
-                job,
-                page,
-                text_system,
-                usize::MAX,
-                usize::MAX,
-            )
-        } else {
-            geometry.admit_page(job, page, text_system)
+        let prepared = match (matches!(self.stage, SessionStage::Index), resident) {
+            (true, true) => geometry.prepare_index_resident_page(job, page, text_system, successor),
+            (true, false) => geometry.prepare_index_page(job, page, text_system, successor),
+            (false, true) => {
+                geometry.prepare_target_resident_page(job, page, text_system, successor)
+            }
+            (false, false) => geometry.prepare_target_page(job, page, text_system, successor),
         }
         .map_err(|failure| classify_geometry_error(failure.error().clone()))?;
-        self.apply_geometry_progress(admission.progress())
+        self.commit_geometry_response(prepared)
     }
 
     pub(in crate::range_widget::prepublication::session) fn process_geometry_object(
@@ -209,6 +244,7 @@ impl RangePrepublicationSession {
         text_system: &WindowTextSystem,
         resident: bool,
     ) -> Result<(), RangePrepublicationFailure> {
+        let successor = self.geometry_response_successor()?;
         let text_page = self
             .residency
             .peek_page_by_id(text_page)
@@ -219,61 +255,94 @@ impl RangePrepublicationSession {
             .ok_or(RangePrepublicationFailure::Stale)?;
         let geometry = self
             .geometry
-            .as_mut()
+            .as_ref()
             .ok_or(RangePrepublicationFailure::Stale)?;
-        let admission = if resident {
-            geometry.admit_resident_object_page_with_capacity(
+        let prepared = match (matches!(self.stage, SessionStage::Index), resident) {
+            (true, true) => geometry.prepare_index_resident_object_page(
                 job,
                 text_page,
                 object_page,
                 text_system,
-                usize::MAX,
-                usize::MAX,
-            )
-        } else {
-            geometry.admit_object_page(job, text_page, object_page, text_system)
+                successor,
+            ),
+            (true, false) => geometry.prepare_index_object_page(
+                job,
+                text_page,
+                object_page,
+                text_system,
+                successor,
+            ),
+            (false, true) => geometry.prepare_target_resident_object_page(
+                job,
+                text_page,
+                object_page,
+                text_system,
+                successor,
+            ),
+            (false, false) => geometry.prepare_target_object_page(
+                job,
+                text_page,
+                object_page,
+                text_system,
+                successor,
+            ),
         }
         .map_err(|failure| classify_geometry_error(failure.error().clone()))?;
-        self.apply_geometry_progress(admission.progress())
+        self.commit_geometry_response(prepared)
     }
 
-    fn apply_geometry_progress(
+    fn geometry_response_successor(
         &mut self,
-        progress: ExactGeometryProgress,
+    ) -> Result<TargetResponseSuccessor, RangePrepublicationFailure> {
+        Ok(TargetResponseSuccessor {
+            target_job_id: GeometryJobId::new(self.next_id()?),
+            page_id: PageRequestId::new(self.next_id()?),
+            object_id: ObjectRequestId::new(self.next_id()?),
+            max_objects: self
+                .environment
+                .config()
+                .object_residency_limits
+                .max_resident_objects(),
+            max_object_bytes: self
+                .environment
+                .config()
+                .object_residency_limits
+                .max_resident_bytes(),
+            target: BlockTarget::new(
+                Pixels::ZERO,
+                self.environment.config().viewport_extent,
+                self.environment.config().overscan,
+            ),
+            anchor: Some(crate::range_widget::restoration::restoration_layout_anchor(
+                self.seed,
+            )),
+            select_all: false,
+        })
+    }
+
+    fn commit_geometry_response(
+        &mut self,
+        prepared: PreparedTargetResponse,
     ) -> Result<(), RangePrepublicationFailure> {
+        let index_complete = prepared.terminal_index().is_some();
+        let key = prepared.key();
+        let progress = self
+            .geometry
+            .as_mut()
+            .ok_or(RangePrepublicationFailure::Stale)?
+            .commit_prepared_target_response(prepared)
+            .progress();
+        self.geometry_job = Some(key);
+        if index_complete {
+            self.release_all_resident_custody();
+            drop(self.residency.take_resident_pages());
+            drop(self.object_residency.take_resident_pages());
+            self.stage = SessionStage::Target;
+        }
         match progress {
             ExactGeometryProgress::Scanning | ExactGeometryProgress::NeedObjects => Ok(()),
-            ExactGeometryProgress::IndexComplete => {
-                self.release_all_resident_custody();
-                drop(self.residency.take_resident_pages());
-                drop(self.object_residency.take_resident_pages());
-                let id = GeometryJobId::new(self.next_id()?);
-                let target = BlockTarget::new(
-                    Pixels::ZERO,
-                    self.environment.config().viewport_extent,
-                    self.environment.config().overscan,
-                );
-                let start = self
-                    .geometry
-                    .as_mut()
-                    .ok_or(RangePrepublicationFailure::Stale)?
-                    .request_block_target_anchored(
-                        id,
-                        target,
-                        crate::range_widget::restoration::restoration_layout_anchor(self.seed),
-                    )
-                    .map_err(classify_geometry_error)?;
-                self.geometry_job = Some(start.key());
-                self.stage = SessionStage::Target;
-                if start.progress() == ExactGeometryProgress::TargetComplete {
-                    self.finish_candidate()?;
-                } else if start.progress() != ExactGeometryProgress::Scanning {
-                    return Err(RangePrepublicationFailure::DeterministicGeometry);
-                }
-                Ok(())
-            }
             ExactGeometryProgress::TargetComplete => self.finish_candidate(),
-            ExactGeometryProgress::PendingIndex => {
+            ExactGeometryProgress::PendingIndex | ExactGeometryProgress::IndexComplete => {
                 Err(RangePrepublicationFailure::DeterministicGeometry)
             }
         }

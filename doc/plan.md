@@ -4,11 +4,12 @@ Implement the capacity prerequisite for preserved resident adoption from
 [the package contract](design.md#range-backed-preserved-resident-adoption), coordinated by
 the Beryl root plan. Resident protection, accounting and publication remain separate work.
 
-# Phase 38: Preserve Nested Preparation Refusal Peaks (finished)
+# Phase 39: Commit Prepared Geometry Responses In Prepublication Sessions (finished)
 
-Nested successor and cleanup preparation now retain attempted peaks through refusal and success.
-Enclosing failures merge that evidence before construction. Independent review accepted the change;
-all 207 regression tests passed. Transactional session integration remains pending.
+Delivered and resident responses now prepare and commit once. Successor requests reuse committed
+pending storage through residency and cleanup admission. Independent review accepted the boundary;
+208 regression tests and the strengthened resident-preparation item-capacity test passed.
+Host scan ceilings and retryable response custody remain in phase 2.
 
 # Phase 2: Enforce Capacity Throughout Preparation (pending)
 
@@ -17,6 +18,9 @@ including resident-response paths and candidate/ready/transition ownership peaks
 byte/item budgets during progress and exact cleanup with independent resource review. Combined
 preserved-resident reservation must not rely on the admission API until this boundary is accepted.
 Cover prepared target transitions and prepared-publication collections under the host ceiling.
+Retain exact delivered or resident response custody across retryable preparation denial without
+re-admitting an already resident payload or advancing geometry. The session now uses prepared
+response admission; response-state retention and enclosing budget derivation remain required.
 Returned GPUI custody now uses the geometry budget before invocation.
 Direct response admission accepts enclosing ceilings; host derivation and peak propagation remain
 required before combined resident reservation can use them.
