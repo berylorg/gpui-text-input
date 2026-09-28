@@ -9,10 +9,10 @@ use crate::{
 };
 
 use super::{
-    ActiveJob, ActiveKind, ActivePageUse, BlockTarget, BlockTargetPublication, DesiredTarget,
-    ExactGeometryCheckpoint, ExactGeometryError, ExactGeometryIndex, ExactGeometryOwner,
-    ExactGeometryProgress, ExactGeometryRelease, ExactGeometryStart, OwnerInputs, PendingInput,
-    Scanner, StreamingGeometryStyle, accounting, validation,
+    ActiveJob, ActiveKind, ActivePageUse, AdmissionBudget, BlockTarget, BlockTargetPublication,
+    DesiredTarget, ExactGeometryCheckpoint, ExactGeometryError, ExactGeometryIndex,
+    ExactGeometryOwner, ExactGeometryProgress, ExactGeometryRelease, ExactGeometryStart, OwnerInputs,
+    PendingInput, Scanner, StreamingGeometryStyle, accounting, checkpoint, validation,
 };
 
 #[derive(Debug)]
@@ -691,20 +691,52 @@ impl ExactGeometryOwner {
             self.limits.max_page_bytes,
         )
         .map_err(|_| ExactGeometryError::InvalidLimits)?;
-        let mut active = Box::new(ActiveJob {
+        let (scanner, origin) = Scanner::origin_unallocated(&inputs.layout, source_len);
+        let mut active = ActiveJob {
             key,
             kind: ActiveKind::Index,
             page_use: ActivePageUse::Traverse {
                 anchor: crate::ByteOffset::new(0),
             },
-            pending: Some(Box::new(PendingInput::Text(page_key))),
+            pending: None,
             text_page: None,
             window_identity: None,
             retained_capacity,
-            scanner: Scanner::origin(&inputs.layout, source_len),
-        });
+            scanner,
+        };
+        let current = self.counts();
+        let mut budget = AdmissionBudget {
+            fixed_bytes: current
+                .total_bytes()
+                .checked_add(size_of::<PageRequestKey>())
+                .ok_or(ExactGeometryError::CapacityExceeded)?,
+            fixed_items: current
+                .total_items()
+                .checked_add(1)
+                .ok_or(ExactGeometryError::CapacityExceeded)?,
+            page_payload_bytes: 0,
+            page_items: 0,
+            max_bytes: current
+                .total_bytes()
+                .checked_add(retained_capacity)
+                .ok_or(ExactGeometryError::CapacityExceeded)?
+                .min(self.limits.max_retained_bytes),
+            max_items: self.limits.max_retained_items,
+            peak_bytes: 0,
+            peak_items: 0,
+            failure_stage: None,
+        };
+        checkpoint::retain_scanner_checkpoint(
+            &mut active,
+            origin,
+            self.limits.max_checkpoints,
+            &mut budget,
+            0,
+            0,
+        )?;
+        active.pending = Some(Box::new(PendingInput::Text(page_key)));
         accounting::ensure_active(&mut active)?;
-        Ok(active)
+        Ok(Box::new(active))
     }
 
     fn prepare_target_active_for_inputs(
