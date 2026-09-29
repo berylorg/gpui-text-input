@@ -134,19 +134,19 @@ fn nonresident_marked_replacement_preserves_exact_composition_and_selection(
 
 #[cfg(feature = "test-support")]
 #[gpui::test]
-fn superseded_marked_index_capacity_denial_settles_and_publishes(cx: &mut gpui::TestAppContext) {
+fn marked_index_bounded_response_preserves_published_target(cx: &mut gpui::TestAppContext) {
     assert_nonresident_marked_replacement(cx, true);
 }
 
 fn assert_nonresident_marked_replacement(
     cx: &mut gpui::TestAppContext,
-    deny_superseded_candidate: bool,
+    limit_index_response: bool,
 ) {
     let source = "abcdefghij".repeat(20);
     let inserted = "\u{00e9}\u{1f642}";
     let configuration = config(&source, 1);
     #[cfg(feature = "test-support")]
-    let configuration = if deny_superseded_candidate {
+    let configuration = if limit_index_response {
         let mut configuration = configuration;
         configuration.residency_limits =
             ResidencyLimits::new(256, 128 * 1024, 256, 8 * 1024).unwrap();
@@ -157,7 +157,7 @@ fn assert_nonresident_marked_replacement(
         configuration
     };
     #[cfg(not(feature = "test-support"))]
-    assert!(!deny_superseded_candidate);
+    assert!(!limit_index_response);
     let (input, cx) = cx.add_window_view(move |window, cx| {
         let input = RangeTextInput::new(configuration, window, cx).unwrap();
         input.focus(window);
@@ -246,7 +246,7 @@ fn assert_nonresident_marked_replacement(
     let mut object_releases = Vec::new();
     let mut page_cancellations = Vec::new();
     let mut object_cancellations = Vec::new();
-    let mut superseded_index_key = None;
+    let mut index_key = None;
     #[cfg(feature = "test-support")]
     let mut exact_processing_limit = None;
     for _ in 0..512 {
@@ -259,15 +259,15 @@ fn assert_nonresident_marked_replacement(
                 saw_revision_two_request = true;
                 page_dispatches.push(request.key());
                 if request.key().purpose() == gpui_text_input::PagePurpose::GeometryIndex
-                    && superseded_index_key.is_none()
+                    && index_key.is_none()
                 {
-                    superseded_index_key = Some(request.key());
+                    index_key = Some(request.key());
                 }
                 #[cfg(feature = "test-support")]
-                let deny_this_candidate = deny_superseded_candidate
-                    && request.key() == superseded_index_key.expect("index key was captured");
+                let limit_this_response = limit_index_response
+                    && Some(request.key()) == index_key;
                 #[cfg(feature = "test-support")]
-                let page = if deny_this_candidate {
+                let page = if limit_this_response {
                     page_for_with_reserved_atom_capacity(
                         &successor,
                         request.key().id().get(),
@@ -286,7 +286,7 @@ fn assert_nonresident_marked_replacement(
                 cx.update(|window, app| {
                     input.update(app, |input, cx| {
                         #[cfg(feature = "test-support")]
-                        if deny_this_candidate {
+                        if limit_this_response {
                             let diagnostics = input.realization_diagnostics();
                             let exact_processing_items = diagnostics
                                 .current
@@ -313,9 +313,9 @@ fn assert_nonresident_marked_replacement(
                             assert!(denied.current.owned_items <= exact_processing_items);
                             assert!(denied.high_water.owned_items <= exact_processing_items);
                             assert_eq!(denied.current.active_geometry_jobs, 1);
-                            assert_eq!(denied.current.candidates, 1);
-                            assert_eq!(input.surface().unwrap().binding(), binding(&source, 1));
-                            assert!(!input.is_surface_current_and_interactive());
+                            assert_eq!(denied.current.candidates, 0);
+                            assert_eq!(input.surface().unwrap().binding(), binding(&successor, 2));
+                            assert!(input.is_surface_current_and_interactive());
                             return;
                         }
                         input.deliver_page(page, window, cx).unwrap()
@@ -367,9 +367,9 @@ fn assert_nonresident_marked_replacement(
         }
     }
     assert!(saw_revision_two_request);
-    let superseded_index_key = superseded_index_key.expect("revision-two index request dispatched");
+    let index_key = index_key.expect("revision-two index request dispatched");
     #[cfg(feature = "test-support")]
-    assert_eq!(exact_processing_limit.is_some(), deny_superseded_candidate);
+    assert_eq!(exact_processing_limit.is_some(), limit_index_response);
     assert!(
         reached_quiescence,
         "marked-successor drive exhausted its 512-step bound: {:?}",
@@ -378,14 +378,14 @@ fn assert_nonresident_marked_replacement(
     assert_eq!(
         page_cancellations
             .iter()
-            .filter(|key| **key == superseded_index_key)
+            .filter(|key| **key == index_key)
             .count(),
         0
     );
     assert_eq!(
         page_releases
             .iter()
-            .filter(|key| **key == superseded_index_key)
+            .filter(|key| **key == index_key)
             .count(),
         1
     );

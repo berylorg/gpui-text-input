@@ -467,7 +467,7 @@ impl ExactGeometryOwner {
         }
         self.admit_transition_job_id(job_id)?;
         let key = GeometryJobKey::new(self.key, job_id);
-        let release = self.preview_target_replacement_release();
+        let release = self.preview_target_replacement_release(false);
 
         if self.index.is_none()
             || self
@@ -601,7 +601,7 @@ impl ExactGeometryOwner {
             target,
             anchor,
             predecessor,
-            self.preview_target_replacement_release(),
+            self.preview_target_replacement_release(true),
             &mut self.preparation_capacity(None)?,
         )
     }
@@ -631,7 +631,7 @@ impl ExactGeometryOwner {
             request_id,
             target,
             anchor,
-            self.preview_target_replacement_release(),
+            self.preview_target_replacement_release(false),
             capacity,
         )
     }
@@ -1058,12 +1058,12 @@ impl ExactGeometryOwner {
         }
     }
 
-    fn preview_target_replacement_release(&self) -> PreparedRelease {
+    fn preview_target_replacement_release(&self, retire_index: bool) -> PreparedRelease {
         let mut release = PreparedRelease::default();
         if let Some(active) = self
             .active
             .as_deref()
-            .filter(|active| matches!(active.kind, ActiveKind::Target { .. }))
+            .filter(|active| retire_index || matches!(active.kind, ActiveKind::Target { .. }))
         {
             release.jobs[0] = Some(active.key);
             match active.pending.as_deref().copied() {
@@ -1117,7 +1117,7 @@ impl ExactGeometryOwner {
             if self
                 .active
                 .as_deref()
-                .is_some_and(|active| matches!(active.kind, ActiveKind::Target { .. }))
+                .is_some_and(|active| release.jobs.contains(&active.key))
             {
                 self.active = None;
             }

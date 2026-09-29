@@ -13,6 +13,8 @@ mod mutation_evidence;
 mod mutation_terminal_evidence;
 #[path = "range_widget/propagation.rs"]
 mod propagation;
+#[path = "range_widget/index_retirement.rs"]
+mod index_retirement;
 #[path = "range_widget/range_widget_legacy_contracts.rs"]
 mod range_widget_legacy_contracts;
 #[path = "range_widget/range_widget_protocol.rs"]
@@ -8636,7 +8638,7 @@ fn marker_object_configuration(source: &str, work_per_frame: usize) -> RangeText
 }
 
 #[gpui::test]
-fn selection_retarget_settles_superseded_object_response_and_nonterminal_index_accounting(
+fn selection_retarget_retires_index_object_custody_and_reaches_quiescence(
     cx: &mut gpui::TestAppContext,
 ) {
     let source = "AB";
@@ -8745,7 +8747,8 @@ fn selection_retarget_settles_superseded_object_response_and_nonterminal_index_a
     input.read_with(cx, |input, _| {
         let diagnostics = input.realization_diagnostics();
         assert_eq!(diagnostics.response_rejection_count, 0);
-        assert!(diagnostics.superseded_geometry_object_responses_settled > 0);
+        assert_eq!(diagnostics.current.pending_object_requests, 0);
+        assert_eq!(diagnostics.current.dispatched_object_requests, 0);
         assert_eq!(diagnostics.current.response_custody_count, 0);
         assert!(input.is_surface_current_and_interactive());
         assert!(input.is_quiescent());
