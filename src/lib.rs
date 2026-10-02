@@ -46,12 +46,12 @@ pub use range_clipboard::{
 pub use range_edit::{
     ActiveObjectEffect, AtomChange, MutationBeginRequest, MutationCancelRequest,
     MutationCancellation, MutationCommit, MutationCommitRequest, MutationCounts, MutationCursor,
-    MutationDisposal, MutationError, MutationFinishInput, MutationIdentity, MutationKey,
-    MutationProducerIdentity, MutationPass, MutationPassKind, MutationEvidenceAcknowledgement,
-    MutationKind, MutationLane, MutationLimits, MutationOutcome, MutationPage,
-    MutationPageAcceptance, MutationPageItem, MutationPageKey, MutationPageRequest,
-    MutationPositions, MutationProposal, MutationSettlement, MutationState, MutationStreamFinish,
-    MutationTotals, ObjectChange, ObjectTarget, OperationId, RangeEditCoordinator, SuccessorObject,
+    MutationDisposal, MutationError, MutationEvidenceAcknowledgement, MutationFinishInput,
+    MutationIdentity, MutationKey, MutationKind, MutationLane, MutationLimits, MutationOutcome,
+    MutationPage, MutationPageAcceptance, MutationPageItem, MutationPageKey, MutationPageRequest,
+    MutationPass, MutationPassKind, MutationPositions, MutationProducerIdentity, MutationProposal,
+    MutationSettlement, MutationState, MutationStreamFinish, MutationTotals, ObjectChange,
+    ObjectTarget, OperationId, RangeEditCoordinator, SuccessorObject,
 };
 #[cfg(feature = "test-support")]
 pub use range_geometry::preparation_test_support;
@@ -95,13 +95,13 @@ pub use range_widget::{
     RangePrepublicationValidationKey, RangePrepublicationValidationRequest,
     RangePrepublicationValidationResponse, RangeRealizationCapacityState,
     RangeRealizationDiagnostics, RangeRealizationOwnership, RangeRealizationPriority,
-    RangeRealizationStep, RangeResidentProtection, RangeResidentReservation,
-    RangeResponseRejectionClass,
-    RangeRestorationScrollAnchor, RangeRestorationSeed, RangeSelection, RangeSettlementCoordinator,
-    RangeSourceSelection, RangeSurfaceCharge, RangeSurfaceFiller, RangeSurfaceHit, RangeTextInput,
-    RangeTextInputConfig, RangeTextInputError, RangeTextInputEvent, RangeTextInputLimits,
-    RangeTextInputRequest, RealizedInlineObjectAnchor, RealizedInlineObjectGeometry,
-    RealizedInlineObjectPresentation, RealizedObjectGapGeometry,
+    RangeRealizationStep, RangeResidentLayoutSnapshot, RangeResidentProtection,
+    RangeResidentReservation, RangeResponseRejectionClass, RangeRestorationScrollAnchor,
+    RangeRestorationSeed, RangeSelection, RangeSettlementCoordinator, RangeSourceSelection,
+    RangeSurfaceCharge, RangeSurfaceFiller, RangeSurfaceHit, RangeTextInput, RangeTextInputConfig,
+    RangeTextInputError, RangeTextInputEvent, RangeTextInputLimits, RangeTextInputRequest,
+    RealizedInlineObjectAnchor, RealizedInlineObjectGeometry, RealizedInlineObjectPresentation,
+    RealizedObjectGapGeometry,
 };
 pub use residency::{
     ObjectAnchorProofError, ObjectAnchorProofs, PageAdmission, PageAdmissionError, PageDemand,

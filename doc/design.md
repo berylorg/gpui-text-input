@@ -824,6 +824,13 @@ it is absent without the feature and does not define a production host admission
 
 ## Range-Backed Preserved Resident Adoption
 
+A host may read one bounded snapshot of a resident's current layout binding, geometry style and
+viewport extent when preparing a successor environment. These are the widget's current values,
+including changes accepted during native layout, rather than its original construction settings.
+Reading them performs no realization, request dispatch, mutation or protection change and retains
+no source, service or widget ownership. The snapshot grants no adoption authority: the existing
+protected-cut and current-environment checks still reject later changes.
+
 A host may replace a quiescent resident's publication with a ready prepublication candidate
 without replacing the resident widget or its GPUI entity. This is a separate checked adoption
 boundary; ordinary rebind and restoration import retain their existing contracts. The host first

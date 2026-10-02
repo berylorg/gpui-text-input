@@ -12,6 +12,13 @@ use crate::{
     TextInputEnterKey, TextInputRichPastePolicy,
 };
 
+#[derive(Clone, Debug)]
+pub struct RangeResidentLayoutSnapshot {
+    pub layout: StreamingLayoutBinding,
+    pub style: StreamingGeometryStyle,
+    pub viewport_extent: Pixels,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RangeTextInputLimits {
     pub max_surface_bytes: usize,

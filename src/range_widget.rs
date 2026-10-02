@@ -727,6 +727,14 @@ impl RangeTextInput {
             && self.attached_inline_object_surface.is_none()
     }
 
+    pub fn resident_layout_snapshot(&self) -> RangeResidentLayoutSnapshot {
+        RangeResidentLayoutSnapshot {
+            layout: self.config.layout.clone(),
+            style: self.config.style.clone(),
+            viewport_extent: self.desired.viewport_extent,
+        }
+    }
+
     pub fn is_semantically_quiescent(&self) -> bool {
         self.replacement.is_none()
             && self.segmentation.is_none()

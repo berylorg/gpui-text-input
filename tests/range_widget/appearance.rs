@@ -110,6 +110,70 @@ fn capture_range_appearance_scene(
 }
 
 #[gpui::test]
+fn resident_layout_snapshot_observes_native_geometry_without_changing_work(
+    cx: &mut gpui::TestAppContext,
+) {
+    let configuration = config("", 1);
+    let original_width = configuration.layout.wrap_width;
+    let original_viewport = configuration.viewport_extent;
+    let expected_style = format!("{:?}", configuration.style);
+    let (input, cx, scene, fixture) = add_range_appearance_fixture(cx, configuration, false);
+    assert!(drive_pages(&input, cx, "").is_empty());
+    fixture.update(cx, |fixture, cx| {
+        fixture.bounds = gpui::size(original_width + px(31.), original_viewport + px(17.));
+        cx.notify();
+    });
+    capture_range_appearance_scene(cx, &scene);
+    assert!(drive_pages(&input, cx, "").is_empty());
+    capture_range_appearance_scene(cx, &scene);
+    assert!(drive_pages(&input, cx, "").is_empty());
+    input.read_with(cx, |input, _| {
+        let publication = range_publication_fingerprint_from(input);
+        let ownership = input.realization_diagnostics().current;
+        let quiescent = input.is_quiescent();
+        let snapshot = input.resident_layout_snapshot();
+        assert_eq!(snapshot.layout.wrap_width, original_width + px(31.));
+        assert_eq!(snapshot.viewport_extent, original_viewport + px(17.));
+        assert_eq!(format!("{:?}", snapshot.style), expected_style);
+        assert_eq!(range_publication_fingerprint_from(input), publication);
+        assert_eq!(input.realization_diagnostics().current, ownership);
+        assert_eq!(input.is_quiescent(), quiescent);
+    });
+}
+
+#[gpui::test]
+fn resident_layout_snapshot_preserves_protection_and_environment_rejection(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (input, cx, scene, _) = add_range_appearance_fixture(cx, config("", 1), false);
+    assert!(drive_pages(&input, cx, "").is_empty());
+    capture_range_appearance_scene(cx, &scene);
+    assert!(drive_pages(&input, cx, "").is_empty());
+    input.update(cx, |input, cx| {
+        input.set_enabled(false, cx);
+        let protection = input.protect_resident(cx).unwrap();
+        let publication = range_publication_fingerprint_from(input);
+        let ownership = input.realization_diagnostics().current;
+        let snapshot = input.resident_layout_snapshot();
+        assert!(input.resident_protection_is_current(protection));
+        assert_eq!(
+            input
+                .export_restoration(Some(input.history_frontier()))
+                .unwrap(),
+            protection.seed()
+        );
+        assert_eq!(range_publication_fingerprint_from(input), publication);
+        assert_eq!(input.realization_diagnostics().current, ownership);
+        assert!(matches!(
+            input.set_layout(snapshot.layout, snapshot.style, cx),
+            Err(gpui_text_input::RangeTextInputError::Busy)
+        ));
+        assert!(!input.resident_protection_is_current(protection));
+        assert_eq!(range_publication_fingerprint_from(input), publication);
+    });
+}
+
+#[gpui::test]
 fn range_appearance_repaints_scene_and_preserves_pending_work(cx: &mut gpui::TestAppContext) {
     cx.update(ensure_text_input_bindings);
     let source = (0..100)
