@@ -901,6 +901,15 @@ original window text-system identity remains required. Success invalidates the c
 cut for further preparation while retaining its interaction fence until explicit release; ordinary
 request identifiers and scrollbar generations advance without reuse.
 
+`RangeTextInput::adopt_protected_resident_successor` shares that checked adoption boundary and
+returns a fresh opaque protection cut for the successor publication. It qualifies the next
+protection generation and exact successor restoration seed before consuming adoption custody or
+changing the resident, then installs the prepared protection without another fallible operation.
+Counter exhaustion returns `ProtectionUnavailable` and leaves the predecessor and its protection
+unchanged. Every other refusal retains the ordinary adoption guarantees and cleanup obligations.
+Success remains disabled and protected until the host explicitly releases the returned cut;
+the predecessor cut cannot release the successor or authorize another preparation.
+
 Success consumes the candidate once and publishes its coherent binding, geometry, caret,
 selection, scroll and exact history frontier together through the ordinary staged-publication
 boundary. Resident identity, focus handle, subscriptions and the host's interaction fence survive.

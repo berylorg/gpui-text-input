@@ -22,6 +22,34 @@ pub(super) struct ProtectedResident {
 }
 
 impl RangeTextInput {
+    pub(in crate::range_widget) fn prepare_successor_resident_protection(
+        &self,
+        mut seed: RangeRestorationSeed,
+        cx: &Context<Self>,
+    ) -> Option<RangeResidentProtection> {
+        let generation = self.protection_generation.checked_add(1)?;
+        seed.history = Some(
+            seed.history
+                .unwrap_or_else(|| RangeHistoryFrontier::unavailable(seed.binding)),
+        );
+        Some(RangeResidentProtection {
+            entity: cx.entity_id(),
+            generation,
+            seed,
+        })
+    }
+
+    pub(in crate::range_widget) fn install_successor_resident_protection(
+        &mut self,
+        cut: RangeResidentProtection,
+    ) {
+        self.protection_generation = cut.generation;
+        self.resident_protection = Some(ProtectedResident {
+            cut,
+            invalidated: false,
+        });
+    }
+
     pub(super) fn invalidate_resident_protection(&mut self) {
         if let Some(protected) = self.resident_protection.as_mut() {
             protected.invalidated = true;

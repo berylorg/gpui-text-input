@@ -200,6 +200,7 @@ pub enum RangePrepublicationAdoptionError {
     HistoryMismatch,
     CapacityMismatch,
     CandidateConsumed,
+    ProtectionUnavailable,
     WidgetConstruction,
 }
 

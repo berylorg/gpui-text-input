@@ -6,6 +6,127 @@ use gpui_text_input::{
 };
 
 #[gpui::test]
+fn protected_successor_adoption_renews_exact_cut_without_reopening(cx: &mut TestAppContext) {
+    let source = "alpha\nbeta\ngamma\ndelta";
+    for with_history in [true, false] {
+        let window = cx.add_empty_window();
+        let mut original = seed(source, 1, 8);
+        original.selection.anchor = position(10);
+        original.scroll.intra_anchor = px(2.);
+        if !with_history {
+            original.history = None;
+        }
+        let (input, old_cleanup) =
+            window.update(|window, cx| mounted(source, original, &[], window, cx));
+        window.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                input.set_enabled(false, cx);
+                let prior = input.protect_resident(cx).unwrap();
+                let mut successor = seed(source, 2, 8);
+                successor.selection = original.selection;
+                successor.scroll = original.scroll;
+                if !with_history {
+                    successor.history = None;
+                }
+                let (environment, cleanup) =
+                    make_environment(209, config(source, 2, 32), window.text_system());
+                let (reservation, candidate) =
+                    ready(input, prior, source, successor, &environment, &[], window);
+                let current = RangePrepublicationCurrent {
+                    binding: successor.binding,
+                    history: successor.history,
+                    available_capacity: candidate.adoption_peak(),
+                };
+                let protection = input
+                    .adopt_protected_resident_successor(
+                        reservation,
+                        &environment,
+                        candidate,
+                        current,
+                        window,
+                        cx,
+                    )
+                    .unwrap();
+                assert!(input.resident_protection_is_current(protection));
+                assert!(!input.resident_protection_is_current(prior));
+                assert_eq!(
+                    protection.seed(),
+                    input
+                        .export_restoration(Some(input.history_frontier()))
+                        .unwrap()
+                );
+                assert_eq!(protection.seed().binding, successor.binding);
+                assert_eq!(protection.seed().selection, original.selection);
+                assert_eq!(protection.seed().scroll, original.scroll);
+                assert!(matches!(
+                    input.release_resident_protection(prior, cx),
+                    Err(gpui_text_input::RangeTextInputError::Stale)
+                ));
+                input.set_enabled(true, cx);
+                assert!(!input.is_enabled());
+                assert!(input.take_request().is_none());
+                input.release_resident_protection(protection, cx).unwrap();
+                input.set_enabled(true, cx);
+                assert!(input.is_enabled());
+                assert!(input.dispose(window, cx).is_empty());
+                drain_cleanup(&cleanup);
+                drain_cleanup(&old_cleanup);
+                assert_eq!(cleanup.ownership().active, 0);
+                assert_eq!(old_cleanup.ownership().active, 0);
+            })
+        });
+    }
+}
+
+#[gpui::test]
+fn protected_successor_refusal_preserves_predecessor_and_cleanup(cx: &mut TestAppContext) {
+    let source = "alpha\nbeta\ngamma\ndelta";
+    let original = seed(source, 1, 8);
+    let window = cx.add_empty_window();
+    let (input, old_cleanup) =
+        window.update(|window, cx| mounted(source, original, &[], window, cx));
+    window.update(|window, cx| {
+        input.update(cx, |input, cx| {
+            input.set_enabled(false, cx);
+            let prior = input.protect_resident(cx).unwrap();
+            let successor = seed(source, 2, 8);
+            let (environment, cleanup) =
+                make_environment(210, config(source, 2, 32), window.text_system());
+            let (reservation, candidate) =
+                ready(input, prior, source, successor, &environment, &[], window);
+            let current = RangePrepublicationCurrent {
+                binding: original.binding,
+                history: successor.history,
+                available_capacity: candidate.adoption_peak(),
+            };
+            assert_eq!(
+                input.adopt_protected_resident_successor(
+                    reservation,
+                    &environment,
+                    candidate,
+                    current,
+                    window,
+                    cx,
+                ),
+                Err(RangePrepublicationAdoptionError::SourceMismatch)
+            );
+            assert!(input.resident_protection_is_current(prior));
+            assert_eq!(
+                input.export_restoration(original.history).unwrap(),
+                original
+            );
+            assert!(!input.is_enabled());
+            assert!(input.surface().is_some());
+            drain_cleanup(&cleanup);
+            assert_eq!(cleanup.ownership().active, 0);
+            assert!(input.dispose(window, cx).is_empty());
+            drain_cleanup(&old_cleanup);
+            assert_eq!(old_cleanup.ownership().active, 0);
+        })
+    });
+}
+
+#[gpui::test]
 fn resident_adoption_rejects_candidate_from_another_window(cx: &mut TestAppContext) {
     let source = "alpha\nbeta\ngamma\ndelta";
     let original = seed(source, 1, 8);

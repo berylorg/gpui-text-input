@@ -1,6 +1,34 @@
 use super::*;
 
 #[gpui::test]
+fn successor_protection_exhaustion_preserves_live_cut(cx: &mut gpui::TestAppContext) {
+    let (input, cx) = cx.add_window_view(|window, cx| {
+        RangeTextInput::new(config(2 * 1024 * 1024, 32_768), window, cx).unwrap()
+    });
+    drive_initial_surface(&input, cx);
+    input.update(cx, |input, cx| {
+        input.set_enabled(false, cx);
+        input.protection_generation = u64::MAX - 1;
+        let prior = input.protect_resident(cx).unwrap();
+        let before = transition_fingerprint(input);
+        assert!(
+            input
+                .prepare_successor_resident_protection(prior.seed(), cx)
+                .is_none()
+        );
+        assert_eq!(input.protection_generation, u64::MAX);
+        assert!(input.resident_protection_is_current(prior));
+        assert_eq!(transition_fingerprint(input), before);
+        input.release_resident_protection(prior, cx).unwrap();
+        assert!(matches!(
+            input.protect_resident(cx),
+            Err(RangeTextInputError::Busy)
+        ));
+        assert_eq!(transition_fingerprint(input), before);
+    });
+}
+
+#[gpui::test]
 fn resident_protection_refuses_select_all_left_pending_after_page_failure(
     cx: &mut gpui::TestAppContext,
 ) {

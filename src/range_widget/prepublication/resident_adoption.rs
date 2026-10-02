@@ -2,10 +2,28 @@ use gpui::{Context, Window};
 
 use super::{RangePrepublicationCandidate, adoption::checked_adoption_config, types::*};
 use crate::range_widget::{
-    RangeResidentReservation, RangeTextInput, transition::PreparedResidentPublication,
+    RangeResidentProtection, RangeResidentReservation, RangeTextInput,
+    transition::PreparedResidentPublication,
 };
 
 impl RangeTextInput {
+    pub fn adopt_protected_resident_successor(
+        &mut self,
+        reservation: RangeResidentReservation,
+        environment: &RangePrepublicationEnvironment,
+        candidate: RangePrepublicationCandidate,
+        current: RangePrepublicationCurrent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<RangeResidentProtection, RangePrepublicationAdoptionError> {
+        let successor = self
+            .prepare_successor_resident_protection(candidate.seed, cx)
+            .ok_or(RangePrepublicationAdoptionError::ProtectionUnavailable)?;
+        self.adopt_resident_successor(reservation, environment, candidate, current, window, cx)?;
+        self.install_successor_resident_protection(successor);
+        Ok(successor)
+    }
+
     pub fn adopt_resident_successor(
         &mut self,
         reservation: RangeResidentReservation,
