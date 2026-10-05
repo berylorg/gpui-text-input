@@ -40,8 +40,8 @@ pub use range_clipboard::{
     ClipboardPreparedCommit, ClipboardPreparedStep, ClipboardProgress, ClipboardProvenanceClosure,
     ClipboardProvenanceCursor, ClipboardProvenanceIdentity, ClipboardProvenanceItem,
     ClipboardProvenanceLimits, ClipboardProvenancePage, ClipboardProvenancePageKey,
-    ClipboardProvenancePolicy, ClipboardState, ClipboardWriteOutcome, ClipboardWriteRequest,
-    CutDeletion, RangeClipboardCoordinator,
+    ClipboardProvenancePolicy, ClipboardProvenanceReplay, ClipboardState, ClipboardWriteOutcome,
+    ClipboardWriteRequest, CutDeletion, RangeClipboardCoordinator,
 };
 pub use range_edit::{
     ActiveObjectEffect, AtomChange, MutationBeginRequest, MutationCancelRequest,

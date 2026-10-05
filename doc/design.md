@@ -483,6 +483,13 @@ predecessor positions, and composite selection, including endpoint gap witnesses
 produce empty output ranges but still advance the page item ordinal and object cursor, so any
 number of same-anchor objects remains pageable independently of output bytes.
 
+`ClipboardProvenanceReplay` reproduces the same bounded provenance page chain from a host's
+immutable source replay without constructing another contiguous fallback value. The host supplies
+the original positive provenance limits, exact clipboard key, ordered object facts and checked
+fallback output spans. Emitted pages release at exact acknowledgement; the final closure binds
+the already captured complete fallback text. This pure replay boundary grants no clipboard access,
+source eligibility or paste admission.
+
 Every provenance page has a positive item ceiling and positive retained-byte ceiling, an exact
 selection-qualified start cursor, page ordinal, next cursor, canonical page identity, prior
 cumulative identity, and resulting cumulative identity. Canonical identities include every

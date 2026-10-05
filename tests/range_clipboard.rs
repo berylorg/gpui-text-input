@@ -5,11 +5,12 @@ use gpui_text_input::{
     AtomFact, AtomId, BindingId, ByteOffset, ByteRange, ClipboardCompletion, ClipboardError,
     ClipboardId, ClipboardKey, ClipboardKind, ClipboardLimits, ClipboardProgress,
     ClipboardProvenanceLimits, ClipboardProvenancePage, ClipboardProvenancePolicy,
-    ClipboardWriteOutcome, InlineObjectFact, InlineObjectGap, InlineObjectId, InlineObjectNeighbor,
-    InlineObjectOrder, InlineObjectPresentation, LogicalExtent, MutationPositions, ObjectPage,
-    ObjectPageEdgeFact, ObjectPageId, ObjectRequestId, PageDirection, PageEdgeFact, PageId,
-    PageRequestId, PresentationGeneration, RangeBinding, RangeClipboardCoordinator, RangePage,
-    SourcePosition, SourceRange, SourceRevision, TextInputAtomClipboardPolicy,
+    ClipboardProvenanceReplay, ClipboardWriteOutcome, InlineObjectFact, InlineObjectGap,
+    InlineObjectId, InlineObjectNeighbor, InlineObjectOrder, InlineObjectPresentation,
+    LogicalExtent, MutationPositions, ObjectPage, ObjectPageEdgeFact, ObjectPageId,
+    ObjectRequestId, PageDirection, PageEdgeFact, PageId, PageRequestId, PresentationGeneration,
+    RangeBinding, RangeClipboardCoordinator, RangePage, SourcePosition, SourceRange,
+    SourceRevision, TextInputAtomClipboardPolicy,
 };
 
 trait PreparedClipboardHarness {
@@ -908,6 +909,109 @@ fn provenance_stream_pages_same_anchor_and_empty_fallbacks_exactly() {
         ClipboardCompletion::Copied
     );
     assert_eq!(collector.counts(), Default::default());
+}
+
+#[test]
+fn provenance_replay_reproduces_original_pages_without_an_output_buffer() {
+    let source = "ab";
+    let objects = [
+        object(11, 1, 1, ""),
+        object(12, 1, 2, "XY"),
+        object(13, 1, 3, "z"),
+    ];
+    let selection = SourceRange::new(position(0), position(2)).unwrap();
+    let mut collector = provenance_coordinator(source, 16, 1, 2, 4096);
+    let progress = collector
+        .begin(
+            ClipboardId::new(41),
+            ClipboardKind::Copy,
+            selection,
+            predecessor(selection),
+        )
+        .unwrap();
+    let (pages, write) = collect_provenance(&mut collector, source, &objects, progress);
+    let mut replay =
+        ClipboardProvenanceReplay::new(ClipboardProvenanceLimits::new(2, 4096).unwrap());
+    let baseline = replay.retained_bytes();
+    assert!(!replay.push(&objects[0], 1, 1).unwrap());
+    assert!(replay.push(&objects[1], 1, 3).unwrap());
+    let first = replay.emit(write.key()).unwrap();
+    assert_eq!(first, pages[0]);
+    assert!(replay.closure(write.key(), write.text()).is_err());
+    assert!(replay.push(&objects[2], 3, 4).is_err());
+    assert_eq!(replay.acknowledge(pages[1].clone()), Err(false));
+    replay.acknowledge(first).unwrap();
+    assert_eq!(replay.retained_bytes(), baseline);
+    assert!(!replay.push(&objects[2], 3, 4).unwrap());
+    let last = replay.emit(write.key()).unwrap();
+    assert_eq!(last, pages[1]);
+    replay.acknowledge(last).unwrap();
+    assert_eq!(replay.retained_bytes(), baseline);
+    assert_eq!(
+        replay.closure(write.key(), write.text()).unwrap(),
+        write.provenance().unwrap()
+    );
+    assert_ne!(
+        replay.closure(write.key(), "aXYzc").unwrap(),
+        write.provenance().unwrap()
+    );
+}
+
+#[test]
+fn provenance_replay_different_page_partition_cannot_match_original_closure() {
+    let source = "ab";
+    let objects = [object(11, 1, 1, "X"), object(12, 1, 2, "Y")];
+    let selection = SourceRange::new(position(0), position(2)).unwrap();
+    let mut collector = provenance_coordinator(source, 16, 1, 2, 4096);
+    let progress = collector
+        .begin(
+            ClipboardId::new(42),
+            ClipboardKind::Copy,
+            selection,
+            predecessor(selection),
+        )
+        .unwrap();
+    let (_, write) = collect_provenance(&mut collector, source, &objects, progress);
+    let mut replay =
+        ClipboardProvenanceReplay::new(ClipboardProvenanceLimits::new(1, 4096).unwrap());
+    for (index, object) in objects.iter().enumerate() {
+        assert!(replay.push(object, index + 1, index + 2).unwrap());
+        let page = replay.emit(write.key()).unwrap();
+        replay.acknowledge(page).unwrap();
+    }
+    assert_ne!(
+        replay.closure(write.key(), write.text()).unwrap(),
+        write.provenance().unwrap()
+    );
+}
+
+#[test]
+fn provenance_replay_current_key_collision_releases_and_terminates() {
+    let source = "ab";
+    let selection = SourceRange::new(position(0), position(2)).unwrap();
+    let mut collector = provenance_coordinator(source, 16, 1, 1, 4096);
+    let progress = collector
+        .begin(
+            ClipboardId::new(43),
+            ClipboardKind::Copy,
+            selection,
+            predecessor(selection),
+        )
+        .unwrap();
+    let (_, write) = collect_provenance(&mut collector, source, &[object(11, 1, 1, "X")], progress);
+    let limits = ClipboardProvenanceLimits::new(1, 4096).unwrap();
+    let mut replay = ClipboardProvenanceReplay::new(limits);
+    replay.push(&object(11, 1, 1, "X"), 1, 2).unwrap();
+    let current = replay.emit(write.key()).unwrap();
+    let mut conflicting = ClipboardProvenanceReplay::new(limits);
+    conflicting.push(&object(12, 1, 1, "X"), 1, 2).unwrap();
+    let collision = conflicting.emit(write.key()).unwrap();
+    assert_eq!(replay.acknowledge(collision), Err(true));
+    assert_eq!(replay.retained_bytes(), 0);
+    assert_eq!(replay.acknowledge(current), Err(true));
+    assert!(replay.push(&object(13, 1, 2, "Y"), 2, 3).is_err());
+    assert!(replay.emit(write.key()).is_err());
+    assert!(replay.closure(write.key(), write.text()).is_err());
 }
 
 #[test]

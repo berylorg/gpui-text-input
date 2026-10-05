@@ -5,6 +5,8 @@ use crate::{
 use std::{mem::size_of, sync::Arc};
 
 mod identity;
+mod replay;
+pub use replay::ClipboardProvenanceReplay;
 
 use identity::{canonical_cumulative_identity, canonical_final_identity, canonical_page_identity};
 

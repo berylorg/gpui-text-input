@@ -16,7 +16,7 @@ use provenance::ProvenanceCollection;
 pub use provenance::{
     ClipboardProvenanceClosure, ClipboardProvenanceCursor, ClipboardProvenanceIdentity,
     ClipboardProvenanceItem, ClipboardProvenanceLimits, ClipboardProvenancePage,
-    ClipboardProvenancePageKey, ClipboardProvenancePolicy,
+    ClipboardProvenancePageKey, ClipboardProvenancePolicy, ClipboardProvenanceReplay,
 };
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use storage::ExactOutput;
