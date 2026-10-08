@@ -1132,6 +1132,14 @@ wheel, platform-input, or scrollbar route and therefore creates no input hitbox.
 advance a disabled noninteractive realization surface through ordinary GPUI lifecycle work without
 creating a hidden input or event surface.
 
+Owned-value platform replacement, marked replacement, composition completion, editing-action,
+pointer-selection and wheel delivery also check the current enabled state before changing text,
+selection, composition, history or scroll. Disabling preserves those facts and rejects callbacks
+retained by a previous paint, including queued native input, editing actions and an existing
+selection drag. Re-enabling restores ordinary admission;
+it does not replay rejected input. This check does not cancel or settle already admitted
+range-backed host operations or change their existing lifecycle.
+
 The widget exposes app-neutral callbacks, events, and key-propagation policies for text-input activity. Those hooks report or delegate baseline text-input activity; they do not encode host commands such as settings apply, conversation submission, color-picker opening, numeric stepping, or backend steering.
 
 Rebinding or unmounting cancels every cancellable page, segmentation, clipboard, and geometry job

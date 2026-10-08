@@ -24,6 +24,10 @@ mod render;
 mod theme;
 mod utf16;
 
+#[cfg(test)]
+#[path = "../../tests/widget/disabled_delivery.rs"]
+mod disabled_delivery;
+
 pub use events::{TextInputCommand, TextInputEvent, TextInputSelection};
 pub use geometry_api::{TextInputGeometry, TextInputScrollLimits, TextInputVerticalReveal};
 pub use layout::wrapped_visual_line_count_for_width;

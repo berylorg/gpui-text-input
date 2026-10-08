@@ -37,6 +37,9 @@ impl EntityInputHandler for TextInput {
     }
 
     fn unmark_text(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+        if !self.enabled {
+            return;
+        }
         let changed = self.state.unmark_text();
         self.finish_selection_change(changed, cx);
     }
@@ -48,6 +51,9 @@ impl EntityInputHandler for TextInput {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.enabled {
+            return;
+        }
         if self.should_ignore_platform_newline(new_text) {
             return;
         }
@@ -67,6 +73,9 @@ impl EntityInputHandler for TextInput {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.enabled {
+            return;
+        }
         let range = range_utf16
             .as_ref()
             .map(|range| utf16::range_from_utf16(self.state.text(), range));
