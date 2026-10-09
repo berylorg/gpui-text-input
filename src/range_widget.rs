@@ -669,6 +669,16 @@ impl RangeTextInput {
         Ok(())
     }
 
+    pub fn take_request_if(
+        &mut self,
+        admit: impl FnOnce(&RangeTextInputRequest) -> bool,
+    ) -> Option<RangeTextInputRequest> {
+        if !admit(self.requests.front()?) {
+            return None;
+        }
+        self.take_request()
+    }
+
     pub fn take_request(&mut self) -> Option<RangeTextInputRequest> {
         let request = self.requests.pop_front()?;
         match &request {

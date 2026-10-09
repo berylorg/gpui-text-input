@@ -7,14 +7,16 @@ use std::num::NonZeroUsize;
 mod appearance;
 #[path = "range_widget/eof_realization.rs"]
 mod eof_realization;
+#[path = "range_widget/guarded_request_custody.rs"]
+mod guarded_request_custody;
+#[path = "range_widget/index_retirement.rs"]
+mod index_retirement;
 #[path = "range_widget/mutation_evidence.rs"]
 mod mutation_evidence;
 #[path = "range_widget/mutation_terminal_evidence.rs"]
 mod mutation_terminal_evidence;
 #[path = "range_widget/propagation.rs"]
 mod propagation;
-#[path = "range_widget/index_retirement.rs"]
-mod index_retirement;
 #[path = "range_widget/range_widget_legacy_contracts.rs"]
 mod range_widget_legacy_contracts;
 #[path = "range_widget/range_widget_protocol.rs"]

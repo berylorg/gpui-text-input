@@ -54,6 +54,15 @@ identities, so callers can cancel, reject, reconcile, and release them exactly.
 Partial application, result-free adoption, and cleanup that mutates authoritative text are invalid
 host behavior.
 
+The host may conditionally dequeue the front range-backed request through `take_request_if`.
+The predicate inspects that original request before ownership or dispatch accounting changes.
+Rejection leaves the queue, request order and all dispatch custody unchanged; an empty queue does
+not invoke the predicate. Acceptance delegates to ordinary `take_request` with identical request
+identity and dispatch tracking. The guard neither skips rejected requests nor allocates another
+queue or reconstructs request custody. It permits a host whose source is unavailable to admit
+only exact cancellation/release work and eligible view-demand failure settlement while retaining
+every unsupported request. Response, quiescence and resident-protection rules remain unchanged.
+
 Multiline text-input widgets use app-neutral `gpui-scrollbar` primitives for scrollbar chrome,
 managed visibility and fade behavior, and pointer direct manipulation when measured content
 overflows vertically. Text-input state owns editing-interaction coordination, wheel scrolling,

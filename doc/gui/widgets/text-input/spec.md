@@ -439,6 +439,11 @@ requires canonical page and cumulative-chain equality; conflicting reuse is a co
 page payloads are released after acceptance, and cancellation, collision, rebind, unmount, or late
 response releases all remaining session custody without creating a second terminal settlement.
 
+Guarded host delivery preserves source-owned request identity. `take_request_if` classifies the
+front request before dequeue or dispatch tracking; rejection leaves that request and all queue
+and dispatch custody unchanged, and acceptance uses ordinary request delivery. It does not skip
+the front request, create a replacement queue, or relax response/protection/quiescence admission.
+
 Overlapping text-page and object-page demand coalesces into fixed request windows. Revision changes
 cancel stale requests, and new demand waits or replaces obsolete demand when no request slot is
 available; the widget never queues one request per movement, edit, logical line, source page,
