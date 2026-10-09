@@ -1189,6 +1189,7 @@ impl RangeTextInput {
         let release = self.geometry.fail_object_page(pending.job, key)?;
         self.release_geometry(&release, None, Some(key), Some(cx));
         self.active_geometry = None;
+        self.pending_index_intent = false;
         Err(RangeTextInputError::Stale)
     }
 

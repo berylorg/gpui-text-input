@@ -7,6 +7,8 @@ use std::num::NonZeroUsize;
 mod appearance;
 #[path = "range_widget/eof_realization.rs"]
 mod eof_realization;
+#[path = "range_widget/geometry_object_failure.rs"]
+mod geometry_object_failure;
 #[path = "range_widget/guarded_request_custody.rs"]
 mod guarded_request_custody;
 #[path = "range_widget/index_retirement.rs"]

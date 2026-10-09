@@ -63,6 +63,12 @@ queue or reconstructs request custody. It permits a host whose source is unavail
 only exact cancellation/release work and eligible view-demand failure settlement while retaining
 every unsupported request. Response, quiescence and resident-protection rules remain unchanged.
 
+An authenticated geometry object failure terminates its original producer and pending index
+intent through the same cancellation boundary as text-page failure. It retains existing resident
+publication and exact generated release custody. A foreign object key or job leaves that work
+unchanged. Failed-producer retirement cannot silently restart the index from an orphaned intent;
+later explicitly admitted environment work may request fresh geometry normally.
+
 Multiline text-input widgets use app-neutral `gpui-scrollbar` primitives for scrollbar chrome,
 managed visibility and fade behavior, and pointer direct manipulation when measured content
 overflows vertically. Text-input state owns editing-interaction coordination, wheel scrolling,
