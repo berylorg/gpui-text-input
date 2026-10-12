@@ -117,6 +117,8 @@ impl Scanner {
         source_len: usize,
     ) -> (Self, ExactGeometryCheckpoint) {
         let continuation = StreamingLayoutContinuation {
+            mode: gpui::StreamingLayoutMode::SoftWrap,
+            font_environment: None,
             input_id: binding.input_id,
             segment_policy_id: binding.segment_policy_id,
             next_ordinal: 0,
