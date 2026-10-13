@@ -179,6 +179,12 @@ only fixed control state, cumulative checked counts and lengths, the next cursor
 cumulative identity; it never retains a whole-operation fragment collection or requires the host
 to return one.
 
+`RangeTextInput::insert_text_at_caret` inserts a bounded UTF-8 string at the current directed
+selection head, preserving its exact source position and inline-object gap. Its collapsed
+replacement range leaves selected content intact. It uses the same ordinary transaction and
+evidence replay as other local edits, preserves authored bytes, and changes neither focus nor the
+clipboard. Ordinary current-surface, position-proof, read-only and capacity admission still apply.
+
 Every source or proposal page has a positive item and retained-byte ceiling, an exact cursor and
 ordinal, a canonical page identity, and the prior cumulative identity. Exact replay requires all
 canonical bytes and the cumulative chain to agree. An occupied cursor or operation identity with
@@ -1101,7 +1107,15 @@ the next segment start; deletion consumes the identical ranges; and a point sele
 containing segment. Empty text and document edges clamp to the nearest valid UTF-8 boundary. Hosts
 must not substitute an OS-control-specific or application-specific word algorithm.
 
-Single-line fields normalize inserted newline characters into non-line-breaking spacing. Multiline fields normalize line endings to `\n` and preserve newline insertion.
+Owned-value single-line fields normalize inserted newline characters into non-line-breaking
+spacing. Owned-value multiline fields normalize inserted line endings to `\n` and preserve newline
+insertion. Range-backed source pages and edit transactions preserve their exact UTF-8 bytes;
+host-initiated text insertion does not normalize line endings. Keyboard Enter supplies `\n` when
+configured for newline insertion. Range-backed layout consumes LF and CRLF as logical-line
+delimiters while preserving their exact one-byte or two-byte source ranges, including when CRLF
+crosses a page boundary or exceeds the ordinary shaping-segment byte cap. Delimiter recognition
+retains at most two bytes through the existing checked geometry admission. A lone carriage return
+remains ordinary source text.
 
 Read-only mode preserves focus, caret movement, selection, copy, and text-range queries while rejecting destructive edits, cut, paste, undo, redo, and IME replacements that would mutate text.
 

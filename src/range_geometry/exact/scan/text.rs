@@ -139,6 +139,11 @@ fn append_grapheme(
     let Some(buffer) = job.scanner.grapheme_text.as_ref() else {
         return Ok(());
     };
+    let cap = if matches!((buffer.as_str(), piece), ("", "\r\n") | ("\r", "\n")) {
+        cap.max(2)
+    } else {
+        cap
+    };
     let Some(required) = buffer
         .len()
         .checked_add(piece.len())

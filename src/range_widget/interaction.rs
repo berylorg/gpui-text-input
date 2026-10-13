@@ -823,6 +823,24 @@ impl RangeTextInput {
         Ok(MutationSettlement::Obsolete(outcome))
     }
 
+    pub fn insert_text_at_caret(
+        &mut self,
+        text: String,
+        cx: &mut Context<Self>,
+    ) -> Result<MutationKey, RangeTextInputError> {
+        let position = self
+            .interactive_surface()
+            .ok_or(RangeTextInputError::Busy)?
+            .selection()
+            .head;
+        self.begin_source_replacement(
+            SourceRange::new(position, position).map_err(|_| RangeTextInputError::Stale)?,
+            text,
+            MutationKind::Edit,
+            cx,
+        )
+    }
+
     pub(super) fn insert_text(
         &mut self,
         text: String,

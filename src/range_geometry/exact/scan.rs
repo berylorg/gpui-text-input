@@ -513,7 +513,7 @@ fn complete_grapheme(
         .scanner
         .grapheme_text
         .as_ref()
-        .filter(|text| text.as_str() != "\n")
+        .filter(|text| !matches!(text.as_str(), "\n" | "\r\n"))
     {
         let combined = job
             .scanner
@@ -533,7 +533,7 @@ fn complete_grapheme(
         }
     }
     let end_cursor = job.scanner.cursor.clone();
-    if job.scanner.grapheme_text.as_deref() == Some("\n") {
+    if matches!(job.scanner.grapheme_text.as_deref(), Some("\n" | "\r\n")) {
         job.scanner.cursor = job.scanner.grapheme_start_cursor.clone();
         admit_text_segment(
             job,

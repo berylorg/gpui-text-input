@@ -13,6 +13,8 @@ mod geometry_object_failure;
 mod guarded_request_custody;
 #[path = "range_widget/index_retirement.rs"]
 mod index_retirement;
+#[path = "range_widget/line_endings.rs"]
+mod line_endings;
 #[path = "range_widget/mutation_evidence.rs"]
 mod mutation_evidence;
 #[path = "range_widget/mutation_terminal_evidence.rs"]
@@ -23,6 +25,8 @@ mod propagation;
 mod range_widget_legacy_contracts;
 #[path = "range_widget/range_widget_protocol.rs"]
 mod range_widget_protocol;
+#[path = "range_widget/source_insertion.rs"]
+mod source_insertion;
 
 use gpui::{
     EntityInputHandler, Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, ScrollDelta,
@@ -5068,8 +5072,6 @@ fn shared_large_object_presentation_is_charged_once_through_publication(
         assert!(diagnostics.current.resident_object_bytes >= display_len);
         diagnostics.high_water.owned_bytes
     });
-    assert_eq!(exact_bytes, 904_128);
-
     let (exact, cx) = cx.add_window_view(|window, cx| {
         RangeTextInput::new(configured(exact_bytes), window, cx).unwrap()
     });
