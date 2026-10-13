@@ -1222,6 +1222,32 @@ are host-owned historical-root selections using the fixed-size intent, exact fiv
 settlement, and atomic live-rebind boundary above; the widget retains no authoritative undo snapshot
 stack or inverse content for that variant.
 
+## Range-Backed Protected Source Replacement
+
+A host with explicit authority for a committed source change may retain a disabled quiescent
+input's exact last coherent publication while its logical source/frontier differs. A separate
+published-resident protection cut validates that publication's actual pages, positions and supplied
+history binding and retains the logical source state as part of currentness. It permits no active
+composition, admitted mutation or undrained effect, and does not fabricate a restoration seed from
+another binding. Protection freezes that actual publication and its environment without dispatching
+old-source work.
+
+A distinct source-replacement reservation prepares one bounded prepublication successor against
+that protected cut. The host owns the predecessor/successor association and target position/history
+authority; the ordinary prepublication engine validates the target's exact caret, directed
+selection, inline gaps, scroll and source/history through fresh bounded effects. These target
+positions may differ from the predecessor. The ordinary preserved-resident reservation retains
+its unchanged-position checks and cannot grant source-replacement authority.
+
+Final replacement uses the existing capacity, current-source/history, text-system, environment,
+candidate-generation and cleanup-transfer checks, additionally authenticating the exact protected
+publication and source-replacement reservation. All fallible work precedes same-widget publication.
+Refusal or cancellation keeps the actual prior publication/protection and bounded successor custody;
+success installs the prepared target and renewed protection in one transition without a new entity,
+focus identity, source parser or rendering engine. Combined ownership remains charged under the
+existing finite predecessor/successor envelope. This boundary grants no application-specific
+import, recovery, history selection or persistence authority.
+
 ## Application Neutrality
 
 The public API uses generic text-input names and value types. It must not expose host application nouns, Codex protocol types, Beryl workspace types, settings-window row types, image-label concepts, or persistence concepts.

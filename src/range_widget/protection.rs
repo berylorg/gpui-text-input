@@ -18,7 +18,18 @@ impl RangeResidentProtection {
 
 pub(super) struct ProtectedResident {
     cut: RangeResidentProtection,
+    capture: ResidentCapture,
     invalidated: bool,
+}
+
+#[derive(Clone, Copy)]
+enum ResidentCapture {
+    Current,
+    Published {
+        binding: crate::RangeBinding,
+        history: RangeHistoryFrontier,
+        visible_history: RangeHistoryFrontier,
+    },
 }
 
 impl RangeTextInput {
@@ -46,6 +57,7 @@ impl RangeTextInput {
         self.protection_generation = cut.generation;
         self.resident_protection = Some(ProtectedResident {
             cut,
+            capture: ResidentCapture::Current,
             invalidated: false,
         });
     }
@@ -60,10 +72,35 @@ impl RangeTextInput {
         &mut self,
         cx: &mut Context<Self>,
     ) -> Result<RangeResidentProtection, RangeTextInputError> {
+        self.capture_resident_protection(self.history_frontier(), ResidentCapture::Current, cx)
+    }
+
+    pub fn protect_published_resident(
+        &mut self,
+        history: RangeHistoryFrontier,
+        cx: &mut Context<Self>,
+    ) -> Result<RangeResidentProtection, RangeTextInputError> {
+        let capture = ResidentCapture::Published {
+            binding: self.config.binding,
+            history: self.history_frontier,
+            visible_history: self.history_frontier(),
+        };
+        self.capture_resident_protection(history, capture, cx)
+    }
+
+    fn capture_resident_protection(
+        &mut self,
+        history: RangeHistoryFrontier,
+        capture: ResidentCapture,
+        cx: &mut Context<Self>,
+    ) -> Result<RangeResidentProtection, RangeTextInputError> {
         if self.enabled || self.resident_protection.is_some() {
             return Err(RangeTextInputError::Busy);
         }
-        let seed = self.export_restoration(Some(self.history_frontier()))?;
+        let seed = self.export_restoration(Some(history))?;
+        if matches!(capture, ResidentCapture::Current) && seed.binding != self.config.binding {
+            return Err(RangeTextInputError::Stale);
+        }
         let generation = self
             .protection_generation
             .checked_add(1)
@@ -76,6 +113,7 @@ impl RangeTextInput {
         self.protection_generation = generation;
         self.resident_protection = Some(ProtectedResident {
             cut,
+            capture,
             invalidated: false,
         });
         Ok(cut)
@@ -83,10 +121,28 @@ impl RangeTextInput {
 
     pub fn resident_protection_is_current(&self, cut: RangeResidentProtection) -> bool {
         self.mounted
-            && self
-                .resident_protection
-                .as_ref()
-                .is_some_and(|protected| protected.cut == cut && !protected.invalidated)
+            && self.resident_protection.as_ref().is_some_and(|protected| {
+                protected.cut == cut
+                    && !protected.invalidated
+                    && !self.enabled
+                    && match protected.capture {
+                        ResidentCapture::Current => {
+                            self.config.binding == cut.seed.binding
+                                && self.export_restoration(Some(self.history_frontier())).ok()
+                                    == Some(cut.seed)
+                        }
+                        ResidentCapture::Published {
+                            binding,
+                            history,
+                            visible_history,
+                        } => {
+                            self.config.binding == binding
+                                && self.history_frontier == history
+                                && self.history_frontier() == visible_history
+                                && self.export_restoration(cut.seed.history).ok() == Some(cut.seed)
+                        }
+                    }
+            })
     }
 
     pub fn release_resident_protection(

@@ -7,9 +7,40 @@ pub struct RangeResidentReservation {
     predecessor: RangeSurfaceCharge,
     combined: RangeSurfaceCharge,
     successor: RangeSurfaceCharge,
+    target: RangeRestorationSeed,
+    mode: ResidentSuccessorMode,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ResidentSuccessorMode {
+    Preserved,
+    SourceReplacement,
 }
 
 impl RangeResidentReservation {
+    pub(in crate::range_widget) fn replaces_source(&self) -> bool {
+        matches!(self.mode, ResidentSuccessorMode::SourceReplacement)
+    }
+
+    pub(in crate::range_widget) fn accepts_candidate(
+        &self,
+        generation: RangePrepublicationSessionGeneration,
+        seed: RangeRestorationSeed,
+    ) -> bool {
+        if generation != self.generation || seed != self.target {
+            return false;
+        }
+        match self.mode {
+            ResidentSuccessorMode::Preserved => {
+                let predecessor = self.protection.seed();
+                seed.caret == predecessor.caret
+                    && seed.selection == predecessor.selection
+                    && seed.scroll == predecessor.scroll
+            }
+            ResidentSuccessorMode::SourceReplacement => true,
+        }
+    }
+
     pub fn protection(&self) -> RangeResidentProtection {
         self.protection
     }
@@ -40,13 +71,49 @@ impl RangeTextInput {
         combined: RangeSurfaceCharge,
     ) -> Result<(RangePrepublicationSession, RangeResidentReservation), RangePrepublicationFailure>
     {
+        self.prepare_reserved_successor(
+            protection,
+            seed,
+            environment,
+            combined,
+            ResidentSuccessorMode::Preserved,
+        )
+    }
+
+    pub fn prepare_source_replacement_successor(
+        &self,
+        protection: RangeResidentProtection,
+        seed: RangeRestorationSeed,
+        environment: RangePrepublicationEnvironment,
+        combined: RangeSurfaceCharge,
+    ) -> Result<(RangePrepublicationSession, RangeResidentReservation), RangePrepublicationFailure>
+    {
+        self.prepare_reserved_successor(
+            protection,
+            seed,
+            environment,
+            combined,
+            ResidentSuccessorMode::SourceReplacement,
+        )
+    }
+
+    fn prepare_reserved_successor(
+        &self,
+        protection: RangeResidentProtection,
+        seed: RangeRestorationSeed,
+        environment: RangePrepublicationEnvironment,
+        combined: RangeSurfaceCharge,
+        mode: ResidentSuccessorMode,
+    ) -> Result<(RangePrepublicationSession, RangeResidentReservation), RangePrepublicationFailure>
+    {
         if !self.resident_protection_is_current(protection) {
             return Err(RangePrepublicationFailure::Stale);
         }
         let predecessor_seed = protection.seed();
-        if seed.caret != predecessor_seed.caret
-            || seed.selection != predecessor_seed.selection
-            || seed.scroll != predecessor_seed.scroll
+        if matches!(mode, ResidentSuccessorMode::Preserved)
+            && (seed.caret != predecessor_seed.caret
+                || seed.selection != predecessor_seed.selection
+                || seed.scroll != predecessor_seed.scroll)
         {
             return Err(RangePrepublicationFailure::SourceMismatch);
         }
@@ -75,6 +142,8 @@ impl RangeTextInput {
             predecessor,
             combined,
             successor,
+            target: seed,
+            mode,
         };
         Ok((session, reservation))
     }

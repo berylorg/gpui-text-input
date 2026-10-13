@@ -228,7 +228,7 @@ fn resident_adoption_uses_exact_combined_reservation(cx: &mut TestAppContext) {
     });
 }
 
-fn mounted(
+pub(super) fn mounted(
     source: &str,
     restoration: RangeRestorationSeed,
     objects: &[InlineObjectFact],

@@ -19,12 +19,41 @@ impl RangeTextInput {
         let successor = self
             .prepare_successor_resident_protection(candidate.seed, cx)
             .ok_or(RangePrepublicationAdoptionError::ProtectionUnavailable)?;
-        self.adopt_resident_successor(reservation, environment, candidate, current, window, cx)?;
+        self.adopt_reserved_resident_successor(
+            reservation,
+            environment,
+            candidate,
+            current,
+            window,
+            cx,
+        )?;
         self.install_successor_resident_protection(successor);
         Ok(successor)
     }
 
     pub fn adopt_resident_successor(
+        &mut self,
+        reservation: RangeResidentReservation,
+        environment: &RangePrepublicationEnvironment,
+        candidate: RangePrepublicationCandidate,
+        current: RangePrepublicationCurrent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), RangePrepublicationAdoptionError> {
+        if reservation.replaces_source() {
+            return Err(RangePrepublicationAdoptionError::ReservationMismatch);
+        }
+        self.adopt_reserved_resident_successor(
+            reservation,
+            environment,
+            candidate,
+            current,
+            window,
+            cx,
+        )
+    }
+
+    fn adopt_reserved_resident_successor(
         &mut self,
         reservation: RangeResidentReservation,
         environment: &RangePrepublicationEnvironment,
@@ -34,18 +63,10 @@ impl RangeTextInput {
         cx: &mut Context<Self>,
     ) -> Result<(), RangePrepublicationAdoptionError> {
         let protection = reservation.protection();
-        let predecessor = protection.seed();
-        if !self.resident_protection_is_current(protection)
-            || self.enabled
-            || self.export_restoration(Some(self.history_frontier())).ok() != Some(predecessor)
-        {
+        if !self.resident_protection_is_current(protection) || self.enabled {
             return Err(RangePrepublicationAdoptionError::PredecessorMismatch);
         }
-        if candidate.generation != reservation.session_generation()
-            || candidate.seed.caret != predecessor.caret
-            || candidate.seed.selection != predecessor.selection
-            || candidate.seed.scroll != predecessor.scroll
-        {
+        if !reservation.accepts_candidate(candidate.generation, candidate.seed) {
             return Err(RangePrepublicationAdoptionError::ReservationMismatch);
         }
         let ownership = self.current_realization_ownership();

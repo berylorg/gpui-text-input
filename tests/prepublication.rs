@@ -528,6 +528,9 @@ mod resident_reservation;
 #[path = "prepublication/resident_adoption.rs"]
 mod resident_adoption;
 
+#[path = "prepublication/source_replacement.rs"]
+mod source_replacement;
+
 #[path = "prepublication/resident_ordinary.rs"]
 mod resident_ordinary;
 

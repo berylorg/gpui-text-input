@@ -525,6 +525,14 @@ and release effects through bounded ordinary service before ledger slots are reu
 ledger blocks new request admission; cleanup is never represented only by a discardable return
 value or caller convention.
 
+A disabled quiescent resident may protect its exact last coherent publication with
+`protect_published_resident`, supplying that publication's history binding even when its logical
+source has changed. The protected source-replacement boundary in `doc/design.md` permits a
+distinct `prepare_source_replacement_successor` reservation with independently validated target
+positions. Protected adoption keeps the same widget and focus identity, renews the protection,
+and retains the prior surface on refusal. Ordinary preserved-resident preparation still requires
+unchanged positions. Neither capture nor refusal abandons pending work or admits new source effects.
+
 # Layout
 
 Single-line mode horizontally scrolls to keep the caret visible with reveal padding and vertically centers the shaped line in the current line height.
