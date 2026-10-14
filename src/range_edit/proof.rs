@@ -107,6 +107,79 @@ pub struct MutationPositions {
     selection_head: SourcePosition,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MutationPositionsIntent {
+    Exact(MutationPositions),
+    ReplacementEnd {
+        replacement: SourceRange,
+        inserted_utf8_bytes: u64,
+    },
+}
+
+impl MutationPositionsIntent {
+    pub const fn exact(self) -> Option<MutationPositions> {
+        match self {
+            Self::Exact(positions) => Some(positions),
+            Self::ReplacementEnd { .. } => None,
+        }
+    }
+
+    pub(crate) fn matches_successor(self, positions: MutationPositions) -> bool {
+        match self {
+            Self::Exact(expected) => positions == expected,
+            Self::ReplacementEnd {
+                replacement,
+                inserted_utf8_bytes,
+            } => {
+                let Some(offset) = replacement
+                    .start()
+                    .byte_offset
+                    .get()
+                    .checked_add(inserted_utf8_bytes)
+                else {
+                    return false;
+                };
+                let caret = positions.caret();
+                if positions != MutationPositions::collapsed(caret)
+                    || caret.byte_offset.get() != offset
+                {
+                    return false;
+                }
+                let preceding = if inserted_utf8_bytes == 0 {
+                    match replacement.start().gap {
+                        InlineObjectGap::After(neighbor)
+                        | InlineObjectGap::Between {
+                            preceding: neighbor,
+                            ..
+                        } => Some(neighbor.id()),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+                let following = match replacement.end().gap {
+                    InlineObjectGap::Before(neighbor)
+                    | InlineObjectGap::Between {
+                        following: neighbor,
+                        ..
+                    } => Some(neighbor.id()),
+                    _ => None,
+                };
+                let actual = match caret.gap {
+                    InlineObjectGap::NoObjects => (None, None),
+                    InlineObjectGap::Before(neighbor) => (None, Some(neighbor.id())),
+                    InlineObjectGap::After(neighbor) => (Some(neighbor.id()), None),
+                    InlineObjectGap::Between {
+                        preceding,
+                        following,
+                    } => (Some(preceding.id()), Some(following.id())),
+                };
+                actual == (preceding, following)
+            }
+        }
+    }
+}
+
 impl MutationPositions {
     pub const fn collapsed(position: SourcePosition) -> Self {
         Self::new(position, position, position)

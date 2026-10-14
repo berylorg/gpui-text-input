@@ -60,7 +60,7 @@ fn binding() -> RangeBinding {
     )
 }
 
-fn config(bytes: usize, items: usize) -> RangeTextInputConfig {
+pub(super) fn config(bytes: usize, items: usize) -> RangeTextInputConfig {
     let layout = gpui::StreamingLayoutBinding {
         input_id: 11,
         segment_policy_id: 13,
@@ -367,7 +367,10 @@ fn admitted_successor_sources(
     (binding, text, objects)
 }
 
-fn drive_initial_surface(input: &gpui::Entity<RangeTextInput>, cx: &mut gpui::VisualTestContext) {
+pub(super) fn drive_initial_surface(
+    input: &gpui::Entity<RangeTextInput>,
+    cx: &mut gpui::VisualTestContext,
+) {
     for id in 1..64 {
         cx.update(|window, app| window.draw(app).clear());
         cx.run_until_parked();
@@ -1085,7 +1088,7 @@ fn drive_local_insert_to_finish_pending(
     let mut intended = None;
     while let Some(request) = input.update(cx, |input, _| input.take_request()) {
         if let RangeTextInputRequest::MutationFinishInput(finish) = request {
-            intended = Some(finish.intended());
+            intended = Some(finish.intended().exact().expect("exact position intent"));
         }
     }
     let intended = intended.expect("local mutation finish");
@@ -1211,7 +1214,7 @@ fn index_completion_with_changed_desired_is_a_noninteractive_replacement(
 fn terminal_target_replacement_accepts_fixed_exact_caps_and_rejects_one_under(
     cx: &mut gpui::TestAppContext,
 ) {
-    const EXACT_BYTES: usize = 140_682;
+    const EXACT_BYTES: usize = 142_474;
     const EXACT_ITEMS: usize = 309;
     for (bytes, items, succeeds) in [
         (EXACT_BYTES, 32_768, true),
@@ -1244,7 +1247,8 @@ fn terminal_target_replacement_accepts_fixed_exact_caps_and_rejects_one_under(
         assert_eq!(
             result.is_ok(),
             succeeds,
-            "{result:?}, bytes={bytes}, items={items}"
+            "{result:?}, bytes={bytes}, items={items}, admission={:?}",
+            input.read_with(cx, |input, _| input.last_widget_admission_components.get())
         );
         if succeeds {
             let components = input.read_with(cx, |input, _| {
@@ -2656,7 +2660,7 @@ fn committed_settlement_accepts_exact_fit_and_one_under_is_retryable(
     let mut positions = None;
     while let Some(request) = input.update(cx, |input, _| input.take_request()) {
         if let RangeTextInputRequest::MutationFinishInput(finish) = request {
-            positions = Some(finish.intended());
+            positions = Some(finish.intended().exact().expect("exact position intent"));
         }
     }
     let positions = positions.expect("authenticated successor positions");
@@ -2714,7 +2718,7 @@ fn committed_settlement_accepts_exact_fit_and_one_under_is_retryable(
         WidgetAdmissionComponents {
             realization_owner: RangeTextInput::realization_owner_charge(),
             prior_surface: RangeSurfaceCharge {
-                bytes: 7_238,
+                bytes: 7_254,
                 items: 90,
             },
             current_realization_state,
@@ -2724,11 +2728,11 @@ fn committed_settlement_accepts_exact_fit_and_one_under_is_retryable(
             },
             mutation_request_payload: RangeSurfaceCharge::default(),
             candidate_record: RangeSurfaceCharge {
-                bytes: 10_384,
+                bytes: 10_400,
                 items: 1,
             },
             geometry: RangeSurfaceCharge {
-                bytes: 5_354,
+                bytes: 5_450,
                 items: 34,
             },
             resident_payload: RangeSurfaceCharge { bytes: 0, items: 0 },
@@ -2756,12 +2760,12 @@ fn committed_settlement_accepts_exact_fit_and_one_under_is_retryable(
         }
     );
     let transition_exact = RangeSurfaceCharge {
-        bytes: 144_352,
+        bytes: 146_176,
         items: 328,
     };
     assert_eq!(components.checked_total(), Some(transition_exact));
     let exact = RangeSurfaceCharge {
-        bytes: 144_832,
+        bytes: 146_656,
         items: 331,
     };
     let events = captured_events(&input, cx);

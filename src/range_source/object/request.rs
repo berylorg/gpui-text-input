@@ -25,6 +25,7 @@ pub enum ObjectPurpose {
     Restoration,
     /// Validation of one committed mutation's successor positions.
     MutationSuccessor,
+    MutationPredecessor,
     /// Platform text-range or replacement coordination.
     PlatformRange,
 }

@@ -325,6 +325,7 @@ impl RangeTextInput {
             | super::response_custody::ResponseCustodyProgress::AcceptedTerminal
             | super::response_custody::ResponseCustodyProgress::RetryableTerminalSurfaceCapacity
             | super::response_custody::ResponseCustodyProgress::RetryableClipboardPreparationCapacity => Ok(()),
+            super::response_custody::ResponseCustodyProgress::RetryableMutationPreparationCapacity => Ok(()),
             super::response_custody::ResponseCustodyProgress::Rejected(error) => Err(error),
         }
     }

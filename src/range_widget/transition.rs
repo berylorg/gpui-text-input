@@ -936,6 +936,13 @@ impl RangeTextInput {
                     .is_some(),
             ),
             3,
+            usize::from(
+                self.pending_local_mutation
+                    .as_ref()
+                    .and_then(|local| local.producer.as_ref())
+                    .and_then(|producer| producer.pending)
+                    .is_some_and(|key| self.dispatched_object_pages.contains(&key)),
+            ),
         ])?;
         let effect_capacity = effect_capacity
             .checked_add(usize::from(boundary_retirement.is_some()))

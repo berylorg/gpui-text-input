@@ -177,6 +177,17 @@ fn validate_proposal_page(
     items: &[MutationPageItem],
 ) -> Result<(), MutationError> {
     for item in items {
+        if matches!(
+            item,
+            MutationPageItem::Atom(_)
+                | MutationPageItem::Object(
+                    ObjectChange::Insert { .. }
+                        | ObjectChange::Replace { .. }
+                        | ObjectChange::Move { .. }
+                )
+        ) {
+            candidate.sequence.has_nonreplacement_effect = true;
+        }
         match item {
             MutationPageItem::Utf8 {
                 inserted_offset,
@@ -318,16 +329,39 @@ fn validate_object_change(
 fn validate_intended(
     active: &ActiveMutation,
     intended_extent: LogicalExtent,
-    intended: MutationPositions,
+    intended: MutationPositionsIntent,
 ) -> Result<(), MutationError> {
     let expected_bytes = intended_extent.byte_len();
-    for position in [
-        intended.caret(),
-        intended.selection_anchor(),
-        intended.selection_head(),
-    ] {
-        if position.byte_offset.get() > expected_bytes {
-            return Err(MutationError::IncoherentSuccessor);
+    match intended {
+        MutationPositionsIntent::Exact(positions) => {
+            for position in [
+                positions.caret(),
+                positions.selection_anchor(),
+                positions.selection_head(),
+            ] {
+                if position.byte_offset.get() > expected_bytes {
+                    return Err(MutationError::IncoherentSuccessor);
+                }
+            }
+        }
+        MutationPositionsIntent::ReplacementEnd {
+            replacement,
+            inserted_utf8_bytes,
+        } => {
+            if replacement != active.proposal.replacement()
+                || inserted_utf8_bytes != active.sequence.inserted_bytes
+                || inserted_utf8_bytes != active.proposal_lane.totals.inserted_bytes
+                || active.sequence.has_nonreplacement_effect
+                || active.proposal.kind() != MutationKind::Edit
+                || replacement
+                    .start()
+                    .byte_offset
+                    .get()
+                    .checked_add(inserted_utf8_bytes)
+                    .is_none_or(|offset| offset > expected_bytes)
+            {
+                return Err(MutationError::WrongSuccessorPositions);
+            }
         }
     }
     if active

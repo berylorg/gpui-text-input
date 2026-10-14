@@ -148,13 +148,11 @@ impl RangeTextInput {
         Ok(true)
     }
 
-    pub(super) fn record_marked_mutation(
-        &mut self,
-        key: crate::MutationKey,
+    pub(super) fn prepare_marked_mutation_state(
         replacement: ByteRange,
         text: &str,
         selected: Option<Range<usize>>,
-    ) {
+    ) -> (ByteRange, RangeSourceSelection) {
         let composition = ByteRange::from_u64(
             replacement.start().get(),
             replacement.start().get().saturating_add(text.len() as u64),
@@ -178,22 +176,49 @@ impl RangeTextInput {
                     InlineObjectGap::NoObjects,
                 ))
             });
+        (composition, selected)
+    }
+
+    pub(super) fn record_marked_mutation_state(
+        &mut self,
+        key: crate::MutationKey,
+        (composition, selected): (ByteRange, RangeSourceSelection),
+    ) {
         if let Some(pending) = self
             .pending_local_mutation
             .as_mut()
             .filter(|pending| pending.key == key)
         {
             let finish = pending.finish;
+            let intended = match finish.intended() {
+                crate::MutationPositionsIntent::Exact(positions) => positions,
+                crate::MutationPositionsIntent::ReplacementEnd {
+                    replacement,
+                    inserted_utf8_bytes,
+                } if replacement.start().gap == InlineObjectGap::NoObjects
+                    && replacement.end().gap == InlineObjectGap::NoObjects =>
+                {
+                    let Some(offset) = replacement
+                        .start()
+                        .byte_offset
+                        .get()
+                        .checked_add(inserted_utf8_bytes)
+                    else {
+                        return;
+                    };
+                    crate::MutationPositions::collapsed(SourcePosition::new(
+                        ByteOffset::new(offset),
+                        InlineObjectGap::NoObjects,
+                    ))
+                }
+                _ => return,
+            };
             pending.finish = crate::MutationFinishInput::new(
                 key,
                 finish.source(),
                 finish.proposal(),
                 finish.intended_extent(),
-                crate::MutationPositions::new(
-                    finish.intended().caret(),
-                    selected.anchor,
-                    selected.head,
-                ),
+                crate::MutationPositions::new(intended.caret(), selected.anchor, selected.head),
             );
         }
         self.mutation_composition = Some((key, composition, selected));

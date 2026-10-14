@@ -44,12 +44,13 @@ fn source_insertion_uses_unfocused_selection_head_and_exact_replay(cx: &mut gpui
     input.update(cx, |input, cx| {
         assert_eq!(input.surface().unwrap().selection(), selected);
         let pass = input.request_mutation_evidence(key).unwrap();
-        let (page, finish) = input.local_mutation_evidence(pass).unwrap();
-        let page = page.unwrap().clone();
+        let gpui_text_input::LocalMutationEvidence::Page(page) = input.local_mutation_evidence(pass, cx).unwrap() else { panic!("expected immutable page"); };
+        let page = page.clone();
         assert!(matches!(&page.items()[0], MutationPageItem::Utf8 { inserted_offset: 0, text } if text.as_ref() == exact));
-        assert_eq!(finish.intended(), MutationPositions::collapsed(ordinary_position(3 + exact.len() as u64)));
         let acknowledgement = input.submit_mutation_evidence_page(pass, page.clone(), cx).unwrap();
         input.acknowledge_mutation_evidence_page(acknowledgement).unwrap();
+        let gpui_text_input::LocalMutationEvidence::Finish(finish) = input.local_mutation_evidence(pass, cx).unwrap() else { panic!("expected acknowledged EOF"); };
+        assert_eq!(finish.intended().exact().expect("exact position intent"), MutationPositions::collapsed(ordinary_position(3 + exact.len() as u64)));
         input.submit_mutation_evidence_finish(pass, finish).unwrap();
         input.accept_mutation_preflight(key, cx).unwrap();
         let staging = input.mutation_restart(key).unwrap();
@@ -118,13 +119,48 @@ fn source_insertion_preserves_same_anchor_object_gap(cx: &mut gpui::TestAppConte
             Some(RangeTextInputRequest::MutationBegin(begin)) => begin,
             request => panic!("object-gap insertion begin: {request:?}"),
         };
-        assert_eq!(begin.proposal().replacement(), SourceRange::new(at, at).unwrap());
+        assert_eq!(
+            begin.proposal().replacement(),
+            SourceRange::new(at, at).unwrap()
+        );
         let pass = input.request_mutation_evidence(key).unwrap();
-        let (page, finish) = input.local_mutation_evidence(pass).unwrap();
-        assert_eq!(page.unwrap().items().len(), 1);
-        assert!(matches!(&page.unwrap().items()[0], MutationPageItem::Utf8 { text, .. } if text.as_ref() == "x"));
-        assert_eq!(finish.intended().caret().byte_offset, ByteOffset::new(2));
-        assert_eq!(finish.intended().caret().gap, InlineObjectGap::Before(object_neighbor(402, 20)));
+        let gpui_text_input::LocalMutationEvidence::Page(page) =
+            input.local_mutation_evidence(pass, cx).unwrap()
+        else {
+            panic!("expected immutable page");
+        };
+        let page = page.clone();
+        assert_eq!(page.items().len(), 1);
+        assert!(
+            matches!(&page.items()[0], MutationPageItem::Utf8 { text, .. } if text.as_ref() == "x")
+        );
+        let acknowledgement = input.submit_mutation_evidence_page(pass, page, cx).unwrap();
+        input
+            .acknowledge_mutation_evidence_page(acknowledgement)
+            .unwrap();
+        let gpui_text_input::LocalMutationEvidence::Finish(finish) =
+            input.local_mutation_evidence(pass, cx).unwrap()
+        else {
+            panic!("expected acknowledged EOF");
+        };
+        assert_eq!(
+            finish
+                .intended()
+                .exact()
+                .expect("exact position intent")
+                .caret()
+                .byte_offset,
+            ByteOffset::new(2)
+        );
+        assert_eq!(
+            finish
+                .intended()
+                .exact()
+                .expect("exact position intent")
+                .caret()
+                .gap,
+            InlineObjectGap::Before(object_neighbor(402, 20))
+        );
         assert_eq!(input.surface().unwrap().realized_objects().len(), 2);
     });
 }

@@ -16,6 +16,7 @@ pub(super) enum ResponseCustodyProgress {
     Rejected(RangeTextInputError),
     RetryableTerminalSurfaceCapacity,
     RetryableClipboardPreparationCapacity,
+    RetryableMutationPreparationCapacity,
 }
 
 #[derive(Clone, Debug)]
@@ -272,10 +273,11 @@ impl RangeTextInput {
         let Ok(processing) = response.processing_charge() else {
             return Err(response);
         };
+        let single_owner = matches!(&response, RangeResponseCustody::Object(page) if page.key().purpose() == crate::ObjectPurpose::MutationPredecessor);
         let peak = RangeSurfaceCharge {
             bytes: match current
                 .owned_bytes
-                .checked_add(incremental.bytes)
+                .checked_add(if single_owner { 0 } else { incremental.bytes })
                 .and_then(|bytes| bytes.checked_add(processing.bytes))
             {
                 Some(bytes) => bytes,
@@ -283,7 +285,7 @@ impl RangeTextInput {
             },
             items: match current
                 .owned_items
-                .checked_add(incremental.items)
+                .checked_add(if single_owner { 0 } else { incremental.items })
                 .and_then(|items| items.checked_add(processing.items))
             {
                 Some(items) => items,
@@ -473,6 +475,9 @@ impl RangeTextInput {
         if self.boundary_response_waits_for_release_slot(cx) {
             return ResponseCustodyProgress::Idle;
         }
+        if self.response_custody.is_empty() && self.has_local_replacement_work() {
+            return self.service_local_replacement_work(cx);
+        }
         if self.response_custody.is_empty() {
             if self.clipboard.has_prepared_work() {
                 if !self.try_spend_realization_credit(cx) {
@@ -499,6 +504,10 @@ impl RangeTextInput {
             unreachable!("response custody was checked nonempty")
         };
         self.pending_response_exact_geometry_failure_stage = None;
+        if matches!(&response, RangeResponseCustody::Object(page) if page.key().purpose() == crate::ObjectPurpose::MutationPredecessor)
+        {
+            return self.service_local_replacement_response(response, cx);
+        }
         let direct_clipboard = match &response {
             RangeResponseCustody::Page(page) => {
                 page.key().purpose() == crate::PagePurpose::Clipboard
@@ -627,6 +636,9 @@ impl RangeTextInput {
         if self.boundary_response_waits_for_release_slot(cx) {
             return ResponseCustodyProgress::Idle;
         }
+        if self.response_custody.is_empty() && self.has_local_replacement_work() {
+            return self.service_local_replacement_work(cx);
+        }
         if self.response_custody.is_empty() && self.clipboard.has_prepared_work() {
             if !self.try_spend_realization_credit(cx) {
                 return ResponseCustodyProgress::Idle;
@@ -658,6 +670,10 @@ impl RangeTextInput {
             .pop_front()
             .expect("checked response exists");
         self.pending_response_exact_geometry_failure_stage = None;
+        if matches!(&response, RangeResponseCustody::Object(page) if page.key().purpose() == crate::ObjectPurpose::MutationPredecessor)
+        {
+            return self.service_local_replacement_response(response, cx);
+        }
         if matches!(&response, RangeResponseCustody::Object(page) if page.key().purpose() == crate::ObjectPurpose::Clipboard)
         {
             self.active_response_processing = response
@@ -730,5 +746,100 @@ impl RangeTextInput {
             self.refund_realization_credit();
         }
         self.finish_response_delivery(retry, progress, cx)
+    }
+
+    fn service_local_replacement_work(
+        &mut self,
+        cx: &mut gpui::Context<Self>,
+    ) -> ResponseCustodyProgress {
+        if !self.try_spend_realization_credit(cx) {
+            return ResponseCustodyProgress::Idle;
+        }
+        let result = self.drive_local_replacement(cx);
+        match result {
+            Ok(()) => {
+                self.observe_realization_ownership();
+                ResponseCustodyProgress::Progressed
+            }
+            Err(RangeTextInputError::Busy | RangeTextInputError::SurfaceCapacity) => {
+                self.refund_realization_credit();
+                self.schedule_realization_continuation(cx);
+                ResponseCustodyProgress::RetryableMutationPreparationCapacity
+            }
+            Err(error) => ResponseCustodyProgress::Rejected(error),
+        }
+    }
+
+    fn service_local_replacement_response(
+        &mut self,
+        response: RangeResponseCustody,
+        cx: &mut gpui::Context<Self>,
+    ) -> ResponseCustodyProgress {
+        self.active_response_processing = response
+            .processing_charge()
+            .expect("admitted response processing charge remains representable");
+        self.observe_realization_ownership();
+        let RangeResponseCustody::Object(page) = &response else {
+            unreachable!()
+        };
+        let prepared = self.prepare_local_replacement_object_page(page);
+        let prepared = match prepared {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                let retryable = matches!(
+                    error,
+                    RangeTextInputError::Busy | RangeTextInputError::SurfaceCapacity
+                ) || self.requests.capacity() - self.requests.len() < 2;
+                self.active_response_processing = RangeSurfaceCharge::default();
+                self.refund_realization_credit();
+                if retryable {
+                    self.response_custody.push_front(response);
+                    self.observe_realization_ownership();
+                    self.schedule_realization_continuation(cx);
+                    return ResponseCustodyProgress::RetryableMutationPreparationCapacity;
+                }
+                self.record_response_rejection(&response, &error);
+                let key = page.key();
+                let mutation = self
+                    .pending_local_mutation
+                    .as_ref()
+                    .filter(|local| {
+                        local
+                            .producer
+                            .as_ref()
+                            .is_some_and(|producer| producer.pending == Some(key))
+                    })
+                    .map(|local| local.key);
+                drop(response);
+                self.dispatched_object_pages.remove(&key);
+                self.commit_prepared_request(RangeTextInputRequest::ReleaseObjectPage(key));
+                if let Some(key) = mutation {
+                    let _ = self.cancel_mutation(key, cx);
+                }
+                self.observe_realization_ownership();
+                return ResponseCustodyProgress::Rejected(error);
+            }
+        };
+        let RangeResponseCustody::Object(page) = response else {
+            unreachable!()
+        };
+        let result = self.commit_local_replacement_object_page(page, prepared, cx);
+        self.active_response_processing = RangeSurfaceCharge::default();
+        if let Err(error) = result {
+            if matches!(
+                error,
+                RangeTextInputError::Busy | RangeTextInputError::SurfaceCapacity
+            ) {
+                self.schedule_realization_continuation(cx);
+                return ResponseCustodyProgress::RetryableMutationPreparationCapacity;
+            }
+            self.observe_realization_ownership();
+            return ResponseCustodyProgress::AcceptedTerminal;
+        }
+        if !self.response_custody.is_empty() || self.has_local_replacement_work() {
+            self.schedule_realization_continuation(cx);
+        }
+        self.observe_realization_ownership();
+        ResponseCustodyProgress::Progressed
     }
 }

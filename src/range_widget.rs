@@ -19,12 +19,14 @@ mod render;
 mod replacement;
 mod response_custody;
 mod restoration;
+mod source_replacement;
 mod surface;
 #[cfg(test)]
 mod terminal_tests;
 mod transition;
 mod types;
 
+pub use mutation_evidence::LocalMutationEvidence;
 pub use prepublication::*;
 pub use protection::{RangeResidentProtection, RangeResidentReservation};
 pub use surface::{
@@ -118,7 +120,7 @@ pub struct RangeTextInput {
     replacement: Option<replacement::ReplacementScan>,
     pending_history: Option<history::PendingHistory>,
     history_frontier: RangeHistoryFrontier,
-    mutation_positions: Option<(crate::MutationKey, crate::MutationPositions)>,
+    mutation_positions: Option<(crate::MutationKey, crate::MutationPositionsIntent)>,
     adopted_positions: Option<crate::MutationPositions>,
     admitted_edit_proofs: Vec<crate::range_edit::SourcePositionProof>,
     mutation_composition: Option<(crate::MutationKey, ByteRange, RangeSourceSelection)>,

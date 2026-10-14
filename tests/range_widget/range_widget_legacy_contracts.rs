@@ -95,7 +95,15 @@ fn live_range_widget_builds_one_exact_surface_and_drives_ime_mutation(
     let requests = drive_pages(&input, cx, source);
     let begin = begin_request(&requests);
     let finish = accept_local_to_commit(&input, cx, source, begin);
-    assert_eq!(finish.intended().caret().byte_offset, ByteOffset::new(1));
+    assert_eq!(
+        finish
+            .intended()
+            .exact()
+            .expect("exact position intent")
+            .caret()
+            .byte_offset,
+        ByteOffset::new(1)
+    );
 }
 
 #[gpui::test]
@@ -188,11 +196,33 @@ fn assert_nonresident_marked_replacement(
         ordinary_range(ByteRange::from_u64(150, 160).unwrap())
     );
     let finish = accept_local_to_commit(&input, cx, &source, begin);
-    assert_eq!(finish.intended().caret().byte_offset, ByteOffset::new(156));
-    assert_eq!(finish.intended().selection_anchor(), ordinary_position(152));
-    assert_eq!(finish.intended().selection_head(), ordinary_position(156));
+    assert_eq!(
+        finish
+            .intended()
+            .exact()
+            .expect("exact position intent")
+            .caret()
+            .byte_offset,
+        ByteOffset::new(156)
+    );
+    assert_eq!(
+        finish
+            .intended()
+            .exact()
+            .expect("exact position intent")
+            .selection_anchor(),
+        ordinary_position(152)
+    );
+    assert_eq!(
+        finish
+            .intended()
+            .exact()
+            .expect("exact position intent")
+            .selection_head(),
+        ordinary_position(156)
+    );
     let successor = format!("{}{}{}", &source[..150], inserted, &source[160..]);
-    let intended = finish.intended();
+    let intended = finish.intended().exact().expect("exact position intent");
     let positions = [
         intended.caret(),
         intended.selection_anchor(),
@@ -264,8 +294,7 @@ fn assert_nonresident_marked_replacement(
                     index_key = Some(request.key());
                 }
                 #[cfg(feature = "test-support")]
-                let limit_this_response = limit_index_response
-                    && Some(request.key()) == index_key;
+                let limit_this_response = limit_index_response && Some(request.key()) == index_key;
                 #[cfg(feature = "test-support")]
                 let page = if limit_this_response {
                     page_for_with_reserved_atom_capacity(
@@ -1150,7 +1179,7 @@ fn committed_object_removal_and_replacement_emit_exact_realization_loss(
             panic!("object commit begin")
         };
         let finish = accept_local_to_commit(&input, cx, source, begin);
-        let positions = finish.intended();
+        let positions = finish.intended().exact().expect("exact position intent");
         let successor = replacement.map_or_else(|| source.to_owned(), |text| format!("a{text}b"));
         let successor_positions = [
             positions.caret(),

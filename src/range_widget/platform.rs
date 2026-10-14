@@ -321,15 +321,18 @@ impl super::RangeTextInput {
                 removed_line_breaks,
             } => {
                 let range = crate::ByteRange::from_u64(bytes.start, bytes.end)?;
+                let marked_state = marked.map(|marked| {
+                    Self::prepare_marked_mutation_state(range, &text, marked.selected)
+                });
                 let key = self.begin_replacement_with_lines(
                     range,
                     removed_line_breaks,
-                    text.clone(),
+                    text,
                     crate::MutationKind::Edit,
                     cx,
                 )?;
-                if let Some(marked) = marked {
-                    self.record_marked_mutation(key, range, &text, marked.selected);
+                if let Some(state) = marked_state {
+                    self.record_marked_mutation_state(key, state);
                 }
             }
         }

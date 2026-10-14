@@ -16,6 +16,8 @@ pub(super) struct PendingLocalMutation {
     pub key: MutationKey,
     pub page: Option<MutationPage>,
     pub finish: MutationFinishInput,
+    pub producer: Option<super::source_replacement::LocalReplacementProducer>,
+    pub evidence_page_acknowledged: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -369,18 +371,10 @@ impl RangeTextInput {
             && matches!(replacement.start().gap, crate::InlineObjectGap::NoObjects)
             && matches!(replacement.end().gap, crate::InlineObjectGap::NoObjects)
         {
-            return self.begin_replacement(
-                ByteRange::new(
-                    replacement.start().byte_offset,
-                    replacement.end().byte_offset,
-                )?,
-                text,
-                kind,
-                cx,
-            );
+            return self.begin_composite_replacement(replacement, text, kind, cx);
         }
         if selected_object.is_none() && !replacement.is_empty() {
-            return Err(RangeTextInputError::Pending);
+            return self.begin_composite_replacement(replacement, text, kind, cx);
         }
         let required_items = usize::from(!text.is_empty())
             .checked_add(usize::from(selected_object.is_some()))
@@ -484,19 +478,16 @@ impl RangeTextInput {
         Ok(key)
     }
 
-    pub(super) fn begin_local_mutation(
+    pub(super) fn claim_local_mutation_proposal(
         &mut self,
         proposal: MutationProposal,
-        items: Vec<MutationPageItem>,
-        intended: MutationPositions,
-        cx: &mut Context<Self>,
-    ) -> Result<(), RangeTextInputError> {
+    ) -> Result<MutationProposal, RangeTextInputError> {
         let operation = match self.prepared_local_operation.take() {
             Some(operation) if operation == proposal.key().operation() => operation,
             Some(_) => return Err(RangeTextInputError::Stale),
             None => self.config.settlement_coordinator.allocate_operation()?,
         };
-        let proposal = if operation == proposal.key().operation() {
+        Ok(if operation == proposal.key().operation() {
             proposal
         } else {
             MutationProposal::new(
@@ -510,7 +501,17 @@ impl RangeTextInput {
                 proposal.replacement(),
                 proposal.replacement_line_breaks(),
             )
-        };
+        })
+    }
+
+    pub(super) fn begin_local_mutation(
+        &mut self,
+        proposal: MutationProposal,
+        items: Vec<MutationPageItem>,
+        intended: MutationPositions,
+        cx: &mut Context<Self>,
+    ) -> Result<(), RangeTextInputError> {
+        let proposal = self.claim_local_mutation_proposal(proposal)?;
         let key = proposal.key();
         let source_cursor = MutationCursor::new(0);
         let proposal_cursor = MutationCursor::new(0);
@@ -564,7 +565,13 @@ impl RangeTextInput {
             self.check_mutation_payload_capacity(crate::RangeSurfaceCharge { bytes, items })?;
         }
         self.edits.begin(begin)?;
-        self.pending_local_mutation = Some(PendingLocalMutation { key, page, finish });
+        self.pending_local_mutation = Some(PendingLocalMutation {
+            key,
+            page,
+            finish,
+            producer: None,
+            evidence_page_acknowledged: false,
+        });
         self.push_request(RangeTextInputRequest::MutationBegin(begin), cx)?;
         Ok(())
     }
@@ -596,6 +603,14 @@ impl RangeTextInput {
         )?;
         if self.edits.mutation_restart(key).is_ok() {
             return Ok(());
+        }
+        if let Some(producer) = self
+            .pending_local_mutation
+            .as_mut()
+            .and_then(|local| local.producer.as_mut())
+        {
+            producer.restart(super::source_replacement::ProducerMode::Staging(None));
+            return self.drive_local_replacement(cx);
         }
         if let Some(pending) = self
             .pending_local_mutation
@@ -672,6 +687,15 @@ impl RangeTextInput {
         outcome: MutationOutcome,
         cx: &mut Context<Self>,
     ) {
+        if let Some(pending) = self
+            .pending_local_mutation
+            .as_ref()
+            .filter(|local| local.key == key)
+            .and_then(|local| local.producer.as_ref())
+            .and_then(|producer| producer.pending)
+        {
+            self.cancel_object_page_dispatch(pending);
+        }
         self.requests.retain(|request| {
             !matches!(request,
                 RangeTextInputRequest::MutationBegin(begin) if begin.proposal().key() == key
@@ -740,7 +764,7 @@ impl RangeTextInput {
                 .map(|(_, positions)| positions)
                 .ok_or(RangeTextInputError::Stale)?;
             if let MutationOutcome::Committed(successor) = outcome {
-                if successor.positions() != intended {
+                if !intended.matches_successor(successor.positions()) {
                     return Err(MutationError::WrongSuccessorPositions.into());
                 }
                 let positions = successor.positions();
@@ -1134,7 +1158,7 @@ impl RangeTextInput {
     }
 }
 
-fn local_successor_extent(
+pub(super) fn local_successor_extent(
     base: LogicalExtent,
     proposal: MutationProposal,
     totals: crate::MutationTotals,

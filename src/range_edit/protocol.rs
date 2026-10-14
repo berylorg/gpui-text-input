@@ -287,7 +287,7 @@ pub struct MutationFinishInput {
     source: MutationStreamFinish,
     proposal: MutationStreamFinish,
     intended_extent: LogicalExtent,
-    intended: MutationPositions,
+    intended: MutationPositionsIntent,
 }
 
 impl MutationFinishInput {
@@ -297,6 +297,22 @@ impl MutationFinishInput {
         proposal: MutationStreamFinish,
         intended_extent: LogicalExtent,
         intended: MutationPositions,
+    ) -> Self {
+        Self::with_positions_intent(
+            key,
+            source,
+            proposal,
+            intended_extent,
+            MutationPositionsIntent::Exact(intended),
+        )
+    }
+
+    pub const fn with_positions_intent(
+        key: MutationKey,
+        source: MutationStreamFinish,
+        proposal: MutationStreamFinish,
+        intended_extent: LogicalExtent,
+        intended: MutationPositionsIntent,
     ) -> Self {
         Self {
             key,
@@ -323,7 +339,7 @@ impl MutationFinishInput {
         self.intended_extent
     }
 
-    pub const fn intended(self) -> MutationPositions {
+    pub const fn intended(self) -> MutationPositionsIntent {
         self.intended
     }
 }

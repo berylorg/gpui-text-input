@@ -27,12 +27,21 @@ fn evidence_late_transport_after_commit_emits_no_second_settlement(cx: &mut gpui
     let key = begin.proposal().key();
     let (evidence, staging, page, finish) = input.update(cx, |input, cx| {
         let evidence = input.request_mutation_evidence(key).unwrap();
-        let (page, finish) = input.local_mutation_evidence(evidence).unwrap();
-        let page = page.unwrap().clone();
+        let gpui_text_input::LocalMutationEvidence::Page(page) =
+            input.local_mutation_evidence(evidence, cx).unwrap()
+        else {
+            panic!("expected immutable page");
+        };
+        let page = page.clone();
         let ack = input
             .submit_mutation_evidence_page(evidence, page.clone(), cx)
             .unwrap();
         input.acknowledge_mutation_evidence_page(ack).unwrap();
+        let gpui_text_input::LocalMutationEvidence::Finish(finish) =
+            input.local_mutation_evidence(evidence, cx).unwrap()
+        else {
+            panic!("expected acknowledged EOF");
+        };
         input
             .submit_mutation_evidence_finish(evidence, finish)
             .unwrap();
@@ -54,14 +63,22 @@ fn evidence_late_transport_after_commit_emits_no_second_settlement(cx: &mut gpui
         ));
         (evidence, staging, page, finish)
     });
-    let (text, objects) = admitted_sources("xabc", 2, &[finish.intended().caret()]);
+    let (text, objects) = admitted_sources(
+        "xabc",
+        2,
+        &[finish
+            .intended()
+            .exact()
+            .expect("exact position intent")
+            .caret()],
+    );
     cx.update(|window, app| {
         input.update(app, |input, cx| {
             input
                 .settle_committed_mutation(
                     key,
                     binding("xabc", 2),
-                    finish.intended(),
+                    finish.intended().exact().expect("exact position intent"),
                     &text,
                     &objects,
                     window,

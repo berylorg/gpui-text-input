@@ -264,7 +264,7 @@ fn evidence_rejects_changed_finish_extent_and_directed_endpoints() {
                 closure.intended_extent()
             },
             if change_extent {
-                closure.intended()
+                closure.intended().exact().expect("exact position intent")
             } else {
                 MutationPositions::new(position(300), position(10), position(300))
             },

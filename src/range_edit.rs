@@ -483,7 +483,7 @@ struct ActiveMutation {
     state: MutationState,
     source: LaneState,
     proposal_lane: LaneState,
-    intended: Option<MutationPositions>,
+    intended: Option<MutationPositionsIntent>,
     intended_extent: Option<LogicalExtent>,
     initial_source_cursor: MutationCursor,
     initial_proposal_cursor: MutationCursor,
@@ -513,6 +513,7 @@ struct PageReceipt {
 
 #[derive(Clone, Copy, Debug, Default)]
 struct MutationSequenceState {
+    has_nonreplacement_effect: bool,
     inserted_bytes: u64,
     inserted_line_breaks: u64,
     last_inserted_atom: Option<(AtomId, ByteRange)>,

@@ -4,7 +4,8 @@ use super::{
 };
 use crate::{
     AtomChange, ByteRange, InlineObjectGap, LogicalExtent, MutationKind, MutationPositions,
-    MutationProposal, ObjectChange, ObjectTarget, SourcePosition, SuccessorObject,
+    MutationPositionsIntent, MutationProposal, ObjectChange, ObjectTarget, SourcePosition,
+    SuccessorObject,
 };
 
 pub(crate) fn canonical_begin_identity(
@@ -47,7 +48,7 @@ pub(crate) fn canonical_finish_identity(
     source: MutationStreamFinish,
     proposal_finish: MutationStreamFinish,
     intended_extent: LogicalExtent,
-    intended: MutationPositions,
+    intended: MutationPositionsIntent,
     combined_totals: MutationTotals,
 ) -> MutationIdentity {
     let mut digest = IdentityBuilder::new(MutationIdentity::ROOT);
@@ -76,7 +77,21 @@ pub(crate) fn canonical_finish_identity(
     digest.stream(source);
     digest.stream(proposal_finish);
     digest.extent(intended_extent);
-    digest.positions(intended);
+    match intended {
+        MutationPositionsIntent::Exact(positions) => {
+            digest.u64(0);
+            digest.positions(positions);
+        }
+        MutationPositionsIntent::ReplacementEnd {
+            replacement,
+            inserted_utf8_bytes,
+        } => {
+            digest.u64(1);
+            digest.position(replacement.start());
+            digest.position(replacement.end());
+            digest.u64(inserted_utf8_bytes);
+        }
+    }
     digest.totals(combined_totals);
     digest.finish()
 }

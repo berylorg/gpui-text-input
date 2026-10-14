@@ -562,7 +562,7 @@ fn range_appearance_repaints_marked_underline_scene(cx: &mut gpui::TestAppContex
             else {
                 panic!("marked replacement should finish mutation input")
             };
-            let positions = finish.intended();
+            let positions = finish.intended().exact().expect("exact position intent");
             input.accept_mutation_finish(key, cx).unwrap();
             assert!(matches!(
                 input.take_request(),

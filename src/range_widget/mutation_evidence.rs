@@ -5,19 +5,58 @@ use crate::{
 };
 use gpui::Context;
 
+#[derive(Debug)]
+pub enum LocalMutationEvidence<'a> {
+    Pending,
+    Page(&'a MutationPage),
+    Finish(MutationFinishInput),
+}
+
 impl RangeTextInput {
     pub(super) fn local_mutation_payload_charge(
         &self,
     ) -> Result<crate::RangeSurfaceCharge, RangeTextInputError> {
-        self.pending_local_mutation
+        let page = self
+            .pending_local_mutation
             .as_ref()
             .and_then(|local| local.page.as_ref())
-            .map_or(Ok(crate::RangeSurfaceCharge::default()), |page| {
-                let (bytes, items) = page
-                    .payload_allocation_charge()
-                    .ok_or(RangeTextInputError::SurfaceCapacity)?;
-                Ok(crate::RangeSurfaceCharge { bytes, items })
-            })
+            .map_or(
+                Ok::<_, RangeTextInputError>(crate::RangeSurfaceCharge::default()),
+                |page| {
+                    let (bytes, items) = page
+                        .payload_allocation_charge()
+                        .ok_or(RangeTextInputError::SurfaceCapacity)?;
+                    Ok(crate::RangeSurfaceCharge { bytes, items })
+                },
+            )?;
+        let producer = self
+            .pending_local_mutation
+            .as_ref()
+            .and_then(|local| local.producer.as_ref())
+            .map_or(crate::RangeSurfaceCharge::default(), |producer| {
+                crate::RangeSurfaceCharge {
+                    bytes: producer.text.capacity(),
+                    items: usize::from(producer.text.capacity() != 0),
+                }
+            });
+        let scan = self
+            .replacement
+            .as_ref()
+            .map_or(crate::RangeSurfaceCharge::default(), |scan| {
+                scan.payload_charge()
+            });
+        Ok(crate::RangeSurfaceCharge {
+            bytes: page
+                .bytes
+                .checked_add(producer.bytes)
+                .and_then(|bytes| bytes.checked_add(scan.bytes))
+                .ok_or(RangeTextInputError::SurfaceCapacity)?,
+            items: page
+                .items
+                .checked_add(producer.items)
+                .and_then(|items| items.checked_add(scan.items))
+                .ok_or(RangeTextInputError::SurfaceCapacity)?,
+        })
     }
 
     pub(super) fn check_mutation_payload_capacity(
@@ -57,20 +96,53 @@ impl RangeTextInput {
         &mut self,
         key: MutationKey,
     ) -> Result<MutationPass, RangeTextInputError> {
-        Ok(self.edits.request_evidence(key)?)
+        let pass = self.edits.request_evidence(key)?;
+        if let Some(local) = self
+            .pending_local_mutation
+            .as_mut()
+            .filter(|local| local.key == key)
+        {
+            local.evidence_page_acknowledged = false;
+            if let Some(producer) = local.producer.as_mut() {
+                producer.restart(super::source_replacement::ProducerMode::Evidence(pass));
+            }
+        }
+        Ok(pass)
     }
 
     pub fn local_mutation_evidence(
-        &self,
+        &mut self,
         pass: MutationPass,
-    ) -> Result<(Option<&MutationPage>, MutationFinishInput), RangeTextInputError> {
+        cx: &mut Context<Self>,
+    ) -> Result<LocalMutationEvidence<'_>, RangeTextInputError> {
         self.edits.validate_evidence_pass(pass)?;
+        self.prepare_local_replacement(cx)?;
         let local = self
             .pending_local_mutation
             .as_ref()
             .filter(|local| local.key == pass.key())
             .ok_or(crate::MutationError::EvidenceUnavailable)?;
-        Ok((local.page.as_ref(), local.finish))
+        if let Some(producer) = local.producer.as_ref() {
+            if !matches!(producer.mode, super::source_replacement::ProducerMode::Evidence(current) if current == pass)
+            {
+                return Err(RangeTextInputError::Stale);
+            }
+            return Ok(if let Some(page) = local.page.as_ref() {
+                LocalMutationEvidence::Page(page)
+            } else if producer.pending.is_none() && producer.is_complete() {
+                LocalMutationEvidence::Finish(producer.finish(local.finish))
+            } else {
+                LocalMutationEvidence::Pending
+            });
+        }
+        Ok(if !local.evidence_page_acknowledged {
+            local.page.as_ref().map_or(
+                LocalMutationEvidence::Finish(local.finish),
+                LocalMutationEvidence::Page,
+            )
+        } else {
+            LocalMutationEvidence::Finish(local.finish)
+        })
     }
 
     pub fn submit_mutation_evidence_page(
@@ -91,7 +163,14 @@ impl RangeTextInput {
         &mut self,
         acknowledgement: MutationEvidenceAcknowledgement,
     ) -> Result<(), RangeTextInputError> {
-        Ok(self.edits.acknowledge_evidence_page(acknowledgement)?)
+        self.edits.acknowledge_evidence_page(acknowledgement)?;
+        if let Some(local) = self.pending_local_mutation.as_mut() {
+            local.evidence_page_acknowledged = true;
+            if local.producer.is_some() {
+                local.page = None;
+            }
+        }
+        Ok(())
     }
 
     pub fn submit_mutation_evidence_finish(
@@ -133,6 +212,16 @@ impl RangeTextInput {
         }
         self.check_mutation_payload_capacity(crate::RangeSurfaceCharge::default())?;
         self.edits.acknowledge_restart(pass)?;
+        if let Some(local) = self
+            .pending_local_mutation
+            .as_mut()
+            .filter(|local| local.key == pass.key())
+            && let Some(producer) = local.producer.as_mut()
+        {
+            local.page = None;
+            producer.restart(super::source_replacement::ProducerMode::Staging(Some(pass)));
+            return self.drive_local_replacement(cx);
+        }
         if let Some(local) = self.pending_local_mutation.take() {
             if let Some(page) = local.page {
                 self.submit_mutation_pass_page(pass, page, cx)?;

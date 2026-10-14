@@ -461,7 +461,10 @@ impl RangeTextInput {
             return Err(RangeTextInputError::ObjectResponseRejected(page));
         }
         let key = page.key();
-        if !self.dispatched_object_pages.contains(&key) {
+        if !self.dispatched_object_pages.contains(&key)
+            || (key.purpose() == crate::ObjectPurpose::MutationPredecessor
+                && !self.local_replacement_response_is_current(key))
+        {
             return Err(RangeTextInputError::ObjectResponseRejected(page));
         }
         self.admit_response_custody(super::response_custody::RangeResponseCustody::Object(page))
@@ -480,6 +483,7 @@ impl RangeTextInput {
             | super::response_custody::ResponseCustodyProgress::AcceptedTerminal
             | super::response_custody::ResponseCustodyProgress::RetryableTerminalSurfaceCapacity
             | super::response_custody::ResponseCustodyProgress::RetryableClipboardPreparationCapacity => Ok(()),
+            super::response_custody::ResponseCustodyProgress::RetryableMutationPreparationCapacity => Ok(()),
             super::response_custody::ResponseCustodyProgress::Rejected(error) => Err(error),
         }
     }
@@ -534,6 +538,9 @@ impl RangeTextInput {
                 self.dispatched_object_pages.remove(&key);
                 self.deliver_boundary_move_page(page, cx)
             }
+            crate::ObjectPurpose::MutationPredecessor => {
+                unreachable!("predecessor pages use single-owner response preparation")
+            }
             crate::ObjectPurpose::GeometryIndex | crate::ObjectPurpose::GeometryTarget => {
                 unreachable!("geometry object purposes were routed before generic delivery")
             }
@@ -568,7 +575,10 @@ impl RangeTextInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), RangeTextInputError> {
-        if !self.dispatched_object_pages.contains(&page.key()) {
+        if !self.dispatched_object_pages.contains(&page.key())
+            || (page.key().purpose() == crate::ObjectPurpose::MutationPredecessor
+                && !self.local_replacement_response_is_current(page.key()))
+        {
             return Err(RangeTextInputError::ObjectResponseRejected(page));
         }
         self.admit_response_custody(super::response_custody::RangeResponseCustody::Object(page))
@@ -611,6 +621,21 @@ impl RangeTextInput {
                 Ok(())
             }
             crate::ObjectPurpose::Selection => self.fail_boundary_move_page(key),
+            crate::ObjectPurpose::MutationPredecessor => {
+                let mutation = self
+                    .pending_local_mutation
+                    .as_ref()
+                    .filter(|local| {
+                        local
+                            .producer
+                            .as_ref()
+                            .is_some_and(|producer| producer.pending == Some(key))
+                    })
+                    .map(|local| local.key)
+                    .ok_or(RangeTextInputError::Stale)?;
+                self.cancel_mutation(mutation, cx)?;
+                Ok(())
+            }
             crate::ObjectPurpose::GeometryIndex | crate::ObjectPurpose::GeometryTarget => {
                 self.fail_geometry_object_page(key, failure, cx)
             }

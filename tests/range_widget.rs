@@ -15,6 +15,8 @@ mod guarded_request_custody;
 mod index_retirement;
 #[path = "range_widget/line_endings.rs"]
 mod line_endings;
+#[path = "range_widget/mixed_source_replacement.rs"]
+mod mixed_source_replacement;
 #[path = "range_widget/mutation_evidence.rs"]
 mod mutation_evidence;
 #[path = "range_widget/mutation_terminal_evidence.rs"]
@@ -1219,7 +1221,7 @@ fn restoration_object_page(
         ObjectDirection::Forward => 0,
         ObjectDirection::Backward => eligible.len() - count,
     };
-    let objects = eligible[start..]
+    let objects = eligible[start..start + count]
         .iter()
         .map(|fact| (*fact).clone())
         .collect::<Vec<_>>();

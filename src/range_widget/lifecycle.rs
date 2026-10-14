@@ -615,6 +615,14 @@ impl RangeTextInput {
         self.adopted_positions = None;
         self.admitted_edit_proofs = Vec::new();
         self.mutation_composition = None;
+        if let Some(key) = self
+            .pending_local_mutation
+            .as_ref()
+            .and_then(|local| local.producer.as_ref())
+            .and_then(|producer| producer.pending)
+        {
+            self.cancel_object_page_dispatch(key);
+        }
         self.pending_local_mutation = None;
         self.prepared_local_operation = None;
         self.pending_select_all = false;

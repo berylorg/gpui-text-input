@@ -1,6 +1,8 @@
 use gpui::{Hsla, px};
 #[path = "range_mutations/evidence.rs"]
 mod evidence;
+#[path = "range_mutations/replacement_mapping.rs"]
+mod replacement_mapping;
 use gpui_text_input::{
     BindingId, ByteOffset, ByteRange, InlineObjectFact, InlineObjectGap, InlineObjectId,
     InlineObjectOrder, InlineObjectPresentation, LogicalExtent, MutationBeginRequest,

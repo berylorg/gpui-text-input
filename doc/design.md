@@ -201,10 +201,34 @@ producer retains an immutable replayable source handle and initial lane cursors;
 edit may retain its one bounded page. A one-shot producer that cannot regenerate its pages reports
 typed unavailability before admission. Neither side buffers the complete edit to make it replayable.
 
+Local replacement of a composite selection uses that same ordinary session and evidence protocol.
+The widget preserves the exact predecessor binding, caret, directed selection and replacement
+endpoints while paging selected text and objects, including nonresident and same-anchor objects.
+Its local producer retains only fixed cursors, checked cumulative counts, one bounded pending page
+and one object lookahead for exact gap witnesses. It emits selected object removals and text effects
+as bounded ordered fragments, never a whole-selection object collection or a text-only envelope
+that silently omits selected objects. Small text-only edits retain the existing single-page path.
+
+Prerequisite object reads use the existing bounded request, page and ordinary-edit owners against
+the immutable predecessor. Pending progress advances no canonical page or EOF frontier. Accepted
+page acknowledgement releases its payload; evidence restart resets the producer's fixed cursors
+and regenerates identical pages and explicit EOF for staging. Stale responses, rebind, cancellation
+and disposal follow the existing admission and settlement custody rules and release pre-admission
+requests and producer payload without changing the authoritative draft.
+
+`local_mutation_evidence(pass, cx)` exposes this producer as typed
+`LocalMutationEvidence::Pending`, `Page`, or `Finish` progress. Pending requests prerequisite
+input without advancing canonical evidence; Page requires the existing exact acknowledgement;
+Finish supplies explicit complete closure. `ObjectPurpose::MutationPredecessor` identifies the
+producer's predecessor-qualified object requests within the existing bounded object-page protocol.
+Hosts route those reads against the captured source and do not reinterpret them as viewport
+demand or permission to mutate the predecessor.
+
 Evidence and staging have distinct transport pass identities while canonical operation, page,
 cursor, and cumulative identities remain unchanged. Evidence pages and their acknowledgements obey
 the same count, byte, ordering, and per-frame bounds as staging. Explicit evidence EOF freezes both
-lane frontiers, checked totals, intended successor extent, caret, and directed selection. Missing
+lane frontiers, checked totals, intended successor extent and exact positions or fixed replacement-end
+intent. Missing
 EOF cannot authorize admission. After the host accepts begin, an exact restart acknowledgement
 resets only canonical producer cursors and lane accumulation for staging; request allocation stays
 monotonic. Late evidence responses cannot advance staging, and another producer cannot replace the
@@ -217,6 +241,29 @@ control state survives between passes. Cancellation, rejection, rebind, disposal
 loss release pre-admission producer and evidence custody; already admitted work retains its exact
 ordinary settlement obligations. Hosts needing no evidence may accept ordinary begin directly;
 requesting evidence makes its complete replay check mandatory for that operation.
+
+`MutationPositionsIntent` distinguishes exact positions from a fixed `ReplacementEnd` intent
+carrying the original composite replacement range and checked inserted-byte total. The latter
+applies only to complete UTF-8 replacement and selected object removals. It must match the captured
+begin range, complete source/proposal totals and expected successor extent, and remains byte-equal
+in the frozen evidence and staging closure. It supplies no guessed successor gap or new mutation
+authority. Exact-position fast paths retain their existing equality checks.
+
+For replacement-end settlement, caret and both directed-selection endpoints collapse at the checked
+replacement start plus inserted-byte total. With no inserted bytes, the gap is between the surviving
+preceding object of the original start and following object of the original end, omitting absent
+neighbors. With inserted text, the preceding start neighbor stays before that text and the caret
+is immediately before the surviving end neighbor, or in an empty gap when it is absent. The host
+returns exact successor positions with authoritative successor order keys. Validation requires those
+captured surviving identities and sides, exact collapse byte and extent, current committed binding
+and revision, and ordinary exact successor text/object proofs before adoption. A merely valid gap
+at the same byte or predecessor order keys cannot substitute for this mapping.
+
+Hosts may derive a planned exact mapping before their canonical finish and prove it against the
+completed successor before commit. A host unable to represent the exact successor under its own
+source-order constraints returns its typed noncommit with the predecessor intact; it never invents
+order keys, a coordinate, or a partially applied edit. The widget supports host-assigned fresh keys,
+including when objects from different predecessor anchors become adjacent at one successor anchor.
 
 The protocol carries inserted UTF-8, source-covering atom changes, and source-zero-width object
 insertions, removals, replacements, or moves as bounded ordered fragments. Removal coordinates are

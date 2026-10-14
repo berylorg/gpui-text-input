@@ -47,7 +47,10 @@ fn validate_commit(
     {
         return Err(MutationError::IncoherentSuccessor);
     }
-    if active.intended != Some(commit.positions()) {
+    if !active
+        .intended
+        .is_some_and(|intended| intended.matches_successor(commit.positions()))
+    {
         return Err(MutationError::WrongSuccessorPositions);
     }
     if commit
