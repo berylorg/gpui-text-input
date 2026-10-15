@@ -339,12 +339,28 @@ impl RangeTextInput {
             ),
             index_geometry_page_waits: usize::from(
                 self.pending_geometry_page.as_ref().is_some_and(|pending| {
-                    pending.request.key().purpose() == crate::PagePurpose::GeometryIndex
+                    matches!(
+                        pending.wait,
+                        geometry::GeometryPageWait::Unstarted {
+                            purpose: crate::PagePurpose::GeometryIndex,
+                            ..
+                        }
+                    ) || pending.request.is_some_and(|request| {
+                        request.key().purpose() == crate::PagePurpose::GeometryIndex
+                    })
                 }),
             ),
             target_geometry_page_waits: usize::from(
                 self.pending_geometry_page.as_ref().is_some_and(|pending| {
-                    pending.request.key().purpose() == crate::PagePurpose::GeometryTarget
+                    matches!(
+                        pending.wait,
+                        geometry::GeometryPageWait::Unstarted {
+                            purpose: crate::PagePurpose::GeometryTarget,
+                            ..
+                        }
+                    ) || pending.request.is_some_and(|request| {
+                        request.key().purpose() == crate::PagePurpose::GeometryTarget
+                    })
                 }),
             ),
             deferred_geometry_responses: usize::from(self.deferred_geometry_response.is_some()),

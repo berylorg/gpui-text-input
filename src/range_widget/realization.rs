@@ -339,6 +339,9 @@ impl RangeTextInput {
         let Some(intent) = self.pending_target_intent else {
             return Ok(None);
         };
+        if self.edits.active_key().is_some() {
+            return Ok(None);
+        }
         if !self.try_spend_realization_credit(cx) {
             return Ok(None);
         }
@@ -431,6 +434,9 @@ impl RangeTextInput {
         cx: &mut Context<Self>,
     ) -> Result<Option<ExactGeometryProgress>, RangeTextInputError> {
         if self.pending_layout_intent.is_none() && self.pending_presentation_intent.is_none() {
+            return Ok(None);
+        }
+        if self.edits.active_key().is_some() {
             return Ok(None);
         }
         if !self.try_spend_realization_credit(cx) {

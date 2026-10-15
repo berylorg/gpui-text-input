@@ -22,9 +22,9 @@ impl RangeTextInput {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn prepare_nonterminal_response_publication(
+    pub(in crate::range_widget) fn prepare_nonterminal_response_publication(
         &self,
-        geometry: crate::range_geometry::PreparedTargetResponse,
+        mut geometry: crate::range_geometry::PreparedTargetResponse,
         text_admission: Option<crate::residency::PreparedRangePageAdmission>,
         object_admission: Option<crate::object_residency::PreparedObjectPageAdmission>,
         text_touch: Option<PageId>,
@@ -48,6 +48,10 @@ impl RangeTextInput {
             .as_ref()
             .map_or_else(|| geometry.key(), |target| target.job);
         let successor = geometry.successor().ok_or(RangeTextInputError::Stale)?;
+        let deferred = self.edits.active_key().is_some();
+        if deferred {
+            geometry.defer_successor();
+        }
         let successor_is_index = match successor {
             crate::range_geometry::PreparedTargetSuccessor::Page(request) => {
                 request.key().purpose() == crate::PagePurpose::GeometryIndex
@@ -63,6 +67,33 @@ impl RangeTextInput {
         let mut pending_page = None;
         let mut pending_object = None;
         let (text_demand, object_demand, request_effect) = match successor {
+            crate::range_geometry::PreparedTargetSuccessor::Page(request)
+                if self.edits.active_key().is_some() =>
+            {
+                pending_page = Some(PendingGeometryPage {
+                    job,
+                    request: None,
+                    wait: GeometryPageWait::Unstarted {
+                        purpose: request.key().purpose(),
+                        demand: request.key().demand(),
+                    },
+                });
+                (None, None, None)
+            }
+            crate::range_geometry::PreparedTargetSuccessor::Object { request, text_page }
+                if self.edits.active_key().is_some() =>
+            {
+                pending_object = Some(PendingGeometryObject {
+                    job,
+                    request: None,
+                    text_page,
+                    wait: GeometryObjectWait::Unstarted {
+                        purpose: request.key().purpose(),
+                        demand: request.key().demand(),
+                    },
+                });
+                (None, None, None)
+            }
             crate::range_geometry::PreparedTargetSuccessor::Page(request) => {
                 let prepared = if let Some(admission) = text_admission.as_ref() {
                     self.residency.prepare_demand_after_retirement_from(
@@ -90,7 +121,7 @@ impl RangeTextInput {
                         text_touches[1] = Some(page);
                         pending_page = Some(PendingGeometryPage {
                             job,
-                            request,
+                            request: Some(request),
                             wait: GeometryPageWait::Resident(page),
                         });
                         None
@@ -98,7 +129,7 @@ impl RangeTextInput {
                     PageDemand::Coalesced(existing) => {
                         pending_page = Some(PendingGeometryPage {
                             job,
-                            request,
+                            request: Some(request),
                             wait: GeometryPageWait::Coalesced(existing),
                         });
                         None
@@ -142,7 +173,7 @@ impl RangeTextInput {
                 };
                 pending_object = Some(PendingGeometryObject {
                     job,
-                    request,
+                    request: Some(request),
                     text_page,
                     wait,
                 });
@@ -341,14 +372,26 @@ impl RangeTextInput {
         }
         let (next_id, desired, surface_candidate) = if let Some(target) = index_target {
             (
-                target.committed_next_id,
+                if deferred {
+                    self.next_id
+                        .checked_add(1)
+                        .ok_or(RangeTextInputError::Stale)?
+                } else {
+                    target.committed_next_id
+                },
                 Some(target.desired),
                 Some(target.surface_candidate),
             )
         } else {
             (
                 self.next_id
-                    .checked_add(if successor_is_index { 2 } else { 1 })
+                    .checked_add(if deferred {
+                        0
+                    } else if successor_is_index {
+                        2
+                    } else {
+                        1
+                    })
                     .ok_or(RangeTextInputError::Busy)?,
                 None,
                 None,

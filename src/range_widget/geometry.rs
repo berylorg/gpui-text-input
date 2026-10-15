@@ -25,13 +25,13 @@ use crate::{
 
 pub(super) struct PendingGeometryPage {
     pub(super) job: crate::GeometryJobKey,
-    pub(super) request: PageRequest,
+    pub(super) request: Option<PageRequest>,
     pub(super) wait: GeometryPageWait,
 }
 
 pub(super) struct PendingGeometryObject {
     pub(super) job: crate::GeometryJobKey,
-    pub(super) request: crate::ObjectRequest,
+    pub(super) request: Option<crate::ObjectRequest>,
     pub(super) text_page: PageId,
     pub(super) wait: GeometryObjectWait,
 }
@@ -64,7 +64,7 @@ pub(super) struct PreparedTerminalResponsePublication {
     next_id: Option<u64>,
 }
 
-struct PreparedNonterminalResponsePublication {
+pub(super) struct PreparedNonterminalResponsePublication {
     geometry: crate::range_geometry::PreparedTargetResponse,
     text_admission: Option<crate::residency::PreparedRangePageAdmission>,
     object_admission: Option<crate::object_residency::PreparedObjectPageAdmission>,
@@ -210,17 +210,153 @@ fn resolve_prepared_active_object(
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(super) enum GeometryObjectWait {
+    Unstarted {
+        purpose: crate::ObjectPurpose,
+        demand: crate::ObjectDemandEnvelope,
+    },
     Resident(ObjectPageId),
     Coalesced(ObjectRequestKey),
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(super) enum GeometryPageWait {
+    Unstarted {
+        purpose: crate::PagePurpose,
+        demand: crate::PageDemandEnvelope,
+    },
     Resident(PageId),
     Coalesced(PageRequestKey),
 }
 
 impl RangeTextInput {
+    fn delayed_geometry_peak(
+        &self,
+        bytes: usize,
+        items: usize,
+    ) -> Result<crate::RangeSurfaceCharge, RangeTextInputError> {
+        let current = self.current_realization_ownership();
+        let peak = crate::RangeSurfaceCharge {
+            bytes: current
+                .owned_bytes
+                .checked_add(bytes)
+                .ok_or(RangeTextInputError::SurfaceCapacity)?,
+            items: current
+                .owned_items
+                .checked_add(items)
+                .ok_or(RangeTextInputError::SurfaceCapacity)?,
+        };
+        if peak.bytes > self.config.limits.max_surface_bytes
+            || peak.items > self.config.limits.max_surface_items
+        {
+            return Err(RangeTextInputError::SurfaceCapacity);
+        }
+        Ok(peak)
+    }
+
+    fn admit_unstarted_page(
+        &mut self,
+        pending: &mut PendingGeometryPage,
+    ) -> Result<PageDemand, RangeTextInputError> {
+        let GeometryPageWait::Unstarted { purpose, demand } = pending.wait else {
+            return Err(RangeTextInputError::Stale);
+        };
+        let next_id = self
+            .next_id
+            .checked_add(1)
+            .ok_or(RangeTextInputError::Stale)?;
+        let id = PageRequestId::new(self.next_id);
+        let request = self.geometry.preview_page_request(pending.job, id)?;
+        if request.key().purpose() != purpose || request.key().demand() != demand {
+            return Err(RangeTextInputError::Stale);
+        }
+        let prepared = self
+            .residency
+            .prepare_demand_after_retirement(id, purpose, demand, &[])
+            .map_err(|_| RangeTextInputError::Busy)?;
+        let bytes = prepared
+            .retained_bytes()
+            .checked_add(size_of::<crate::residency::PreparedPageDemand>())
+            .and_then(|n| n.checked_add(size_of::<PendingGeometryPage>()))
+            .and_then(|n| n.checked_add(size_of::<PageRequestKey>()))
+            .ok_or(RangeTextInputError::SurfaceCapacity)?;
+        let peak = self.delayed_geometry_peak(
+            bytes,
+            prepared
+                .retained_items()
+                .checked_add(2)
+                .ok_or(RangeTextInputError::SurfaceCapacity)?,
+        )?;
+        self.geometry.request_page(pending.job, id)?;
+        let outcome = self.residency.commit_prepared_demand(prepared);
+        pending.request = Some(request);
+        self.next_id = next_id;
+        self.observe_surface_admission_peak(peak);
+        Ok(outcome)
+    }
+
+    fn admit_unstarted_object(
+        &mut self,
+        pending: &mut PendingGeometryObject,
+    ) -> Result<ObjectDemand, RangeTextInputError> {
+        let GeometryObjectWait::Unstarted { purpose, demand } = pending.wait else {
+            return Err(RangeTextInputError::Stale);
+        };
+        let next_id = self
+            .next_id
+            .checked_add(1)
+            .ok_or(RangeTextInputError::Stale)?;
+        let id = ObjectRequestId::new(self.next_id);
+        let request = self.geometry.preview_object_page_request(
+            pending.job,
+            id,
+            demand.max_objects(),
+            demand.max_retained_bytes(),
+        )?;
+        if request.key().purpose() != purpose || request.key().demand() != demand {
+            return Err(RangeTextInputError::Stale);
+        }
+        let prepared = self
+            .object_residency
+            .prepare_demand_after_retirement_from(
+                id,
+                purpose,
+                demand,
+                &[],
+                self.object_residency.resident_page_iter(),
+            )
+            .map_err(|_| RangeTextInputError::Busy)?;
+        let (reservation_bytes, reservation_items) = match prepared.outcome() {
+            ObjectDemand::Requested(request) => (request.key().demand().max_retained_bytes(), 1),
+            _ => (0, 0),
+        };
+        let bytes = prepared
+            .retained_bytes()
+            .checked_add(reservation_bytes)
+            .and_then(|n| n.checked_add(size_of::<crate::object_residency::PreparedObjectDemand>()))
+            .and_then(|n| n.checked_add(size_of::<PendingGeometryObject>()))
+            .and_then(|n| n.checked_add(size_of::<ObjectRequestKey>()))
+            .ok_or(RangeTextInputError::SurfaceCapacity)?;
+        let peak = self.delayed_geometry_peak(
+            bytes,
+            prepared
+                .retained_items()
+                .checked_add(reservation_items)
+                .and_then(|n| n.checked_add(2))
+                .ok_or(RangeTextInputError::SurfaceCapacity)?,
+        )?;
+        self.geometry.request_object_page(
+            pending.job,
+            id,
+            demand.max_objects(),
+            demand.max_retained_bytes(),
+        )?;
+        let outcome = self.object_residency.commit_prepared_demand(prepared);
+        pending.request = Some(request);
+        self.next_id = next_id;
+        self.observe_surface_admission_peak(peak);
+        Ok(outcome)
+    }
+
     pub(super) fn target_response_successor(
         &self,
     ) -> Result<crate::range_geometry::TargetResponseSuccessor, RangeTextInputError> {
@@ -330,14 +466,14 @@ impl RangeTextInput {
             PageDemand::ResidentAdjacent(page) => {
                 self.pending_geometry_page = Some(PendingGeometryPage {
                     job,
-                    request,
+                    request: Some(request),
                     wait: GeometryPageWait::Resident(page),
                 });
             }
             PageDemand::Coalesced(existing) => {
                 self.pending_geometry_page = Some(PendingGeometryPage {
                     job,
-                    request,
+                    request: Some(request),
                     wait: GeometryPageWait::Coalesced(existing),
                 });
             }
@@ -348,6 +484,10 @@ impl RangeTextInput {
     }
 
     pub(super) fn start_index(&mut self) -> Result<(), RangeTextInputError> {
+        if self.edits.active_key().is_some() {
+            self.pending_index_intent = true;
+            return Ok(());
+        }
         let candidate = self.prepare_index_transition()?;
         match self.commit_widget_transition(candidate, None) {
             ExactGeometryProgress::Scanning => Ok(()),
@@ -359,7 +499,10 @@ impl RangeTextInput {
         &mut self,
         cx: &mut Context<Self>,
     ) -> Result<bool, RangeTextInputError> {
-        if !self.pending_index_intent || self.active_geometry.is_some() {
+        if !self.pending_index_intent
+            || self.active_geometry.is_some()
+            || self.edits.active_key().is_some()
+        {
             return Ok(false);
         }
         if self.geometry.index().is_some() {
@@ -403,6 +546,9 @@ impl RangeTextInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), RangeTextInputError> {
+        if self.edits.active_key().is_some() {
+            return Ok(());
+        }
         let result = if self.pending_geometry_object.is_some() {
             self.service_geometry_object(window, cx)
         } else {
@@ -422,6 +568,9 @@ impl RangeTextInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), RangeTextInputError> {
+        if self.edits.active_key().is_some() {
+            return Ok(());
+        }
         self.service_pending_boundary_move(cx)?;
         if self.requests.is_empty() && self.service_pending_index_intent(cx)? {
             self.last_realization_step.reached_external_boundary = true;
@@ -458,6 +607,9 @@ impl RangeTextInput {
             {
                 return Err(error);
             }
+        }
+        if self.edits.active_key().is_some() {
+            return Ok(());
         }
         if self.requests.is_empty() && self.service_pending_index_intent(cx)? {
             self.last_realization_step.reached_external_boundary = true;
@@ -513,18 +665,34 @@ impl RangeTextInput {
         &self,
     ) -> (
         Option<crate::GeometryJobKey>,
-        Option<(crate::GeometryJobKey, PageRequestKey, GeometryPageWait)>,
-        Option<(crate::GeometryJobKey, ObjectRequestKey, GeometryObjectWait)>,
+        Option<(
+            crate::GeometryJobKey,
+            Option<PageRequestKey>,
+            GeometryPageWait,
+        )>,
+        Option<(
+            crate::GeometryJobKey,
+            Option<ObjectRequestKey>,
+            GeometryObjectWait,
+        )>,
         usize,
     ) {
         (
             self.active_geometry,
-            self.pending_geometry_page
-                .as_ref()
-                .map(|pending| (pending.job, pending.request.key(), pending.wait)),
-            self.pending_geometry_object
-                .as_ref()
-                .map(|pending| (pending.job, pending.request.key(), pending.wait)),
+            self.pending_geometry_page.as_ref().map(|pending| {
+                (
+                    pending.job,
+                    pending.request.map(|request| request.key()),
+                    pending.wait,
+                )
+            }),
+            self.pending_geometry_object.as_ref().map(|pending| {
+                (
+                    pending.job,
+                    pending.request.map(|request| request.key()),
+                    pending.wait,
+                )
+            }),
             self.requests.len(),
         )
     }
@@ -539,11 +707,17 @@ impl RangeTextInput {
         let GeometryObjectWait::Resident(object_page_id) = pending.wait else {
             return None;
         };
-        if pending.request.key().purpose() != crate::ObjectPurpose::GeometryTarget {
+        if pending
+            .request
+            .expect("admitted geometry request")
+            .key()
+            .purpose()
+            != crate::ObjectPurpose::GeometryTarget
+        {
             return None;
         }
         let job = pending.job;
-        let key = pending.request.key();
+        let key = pending.request.expect("admitted geometry request").key();
         let text_page_id = pending.text_page;
         if self.active_geometry != Some(job) {
             return Some(Err(RangeTextInputError::Stale));
@@ -623,11 +797,17 @@ impl RangeTextInput {
         let GeometryObjectWait::Resident(object_page_id) = pending.wait else {
             return None;
         };
-        if pending.request.key().purpose() != crate::ObjectPurpose::GeometryIndex {
+        if pending
+            .request
+            .expect("admitted geometry request")
+            .key()
+            .purpose()
+            != crate::ObjectPurpose::GeometryIndex
+        {
             return None;
         }
         let job = pending.job;
-        let key = pending.request.key();
+        let key = pending.request.expect("admitted geometry request").key();
         let text_page_id = pending.text_page;
         if self.active_geometry != Some(job) {
             return Some(Err(RangeTextInputError::Stale));
@@ -729,11 +909,35 @@ impl RangeTextInput {
         if self.active_geometry != Some(pending.job) {
             return Err(RangeTextInputError::Stale);
         }
-        if let GeometryObjectWait::Coalesced(existing) = pending.wait {
-            if self
-                .object_residency
-                .pending_requests()
-                .any(|request| request == existing)
+        if matches!(pending.wait, GeometryObjectWait::Unstarted { .. }) {
+            if self.requests.len() == self.requests.capacity() {
+                self.pending_geometry_object = Some(pending);
+                return Ok(());
+            }
+            let outcome = match self.admit_unstarted_object(&mut pending) {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    self.pending_geometry_object = Some(pending);
+                    return Err(error);
+                }
+            };
+            pending.wait = match outcome {
+                ObjectDemand::Resident(page) => {
+                    return self.reissue_geometry_object_from_resident(pending, page, Some(cx));
+                }
+                ObjectDemand::Coalesced(key) => GeometryObjectWait::Coalesced(key),
+                ObjectDemand::Requested(request) => {
+                    pending.wait = GeometryObjectWait::Coalesced(request.key());
+                    self.commit_prepared_request(RangeTextInputRequest::ObjectPage(request));
+                    self.pending_geometry_object = Some(pending);
+                    cx.notify();
+                    return Ok(());
+                }
+            };
+        }
+        if matches!(pending.wait, GeometryObjectWait::Coalesced(_)) {
+            if matches!(pending.wait, GeometryObjectWait::Coalesced(existing)
+                if self.object_residency.pending_requests().any(|request| request == existing))
             {
                 self.pending_geometry_object = Some(pending);
                 return Ok(());
@@ -745,9 +949,21 @@ impl RangeTextInput {
                 return Ok(());
             }
             let demand = match self.object_residency.demand(
-                pending.request.key().id(),
-                pending.request.key().purpose(),
-                pending.request.key().demand(),
+                pending
+                    .request
+                    .expect("admitted geometry request")
+                    .key()
+                    .id(),
+                pending
+                    .request
+                    .expect("admitted geometry request")
+                    .key()
+                    .purpose(),
+                pending
+                    .request
+                    .expect("admitted geometry request")
+                    .key()
+                    .demand(),
             ) {
                 Ok(demand) => demand,
                 Err(_) => {
@@ -760,7 +976,11 @@ impl RangeTextInput {
                     return self.reissue_geometry_object_from_resident(pending, page, Some(cx));
                 }
                 ObjectDemand::Coalesced(request) => GeometryObjectWait::Coalesced(request),
-                ObjectDemand::Requested(request) if request.key() == pending.request.key() => {
+                ObjectDemand::Requested(request)
+                    if request.key()
+                        == pending.request.expect("admitted geometry request").key() =>
+                {
+                    pending.wait = GeometryObjectWait::Coalesced(request.key());
                     self.requests
                         .push_back(RangeTextInputRequest::ObjectPage(request));
                     self.pending_geometry_object = Some(pending);
@@ -805,11 +1025,17 @@ impl RangeTextInput {
         let GeometryPageWait::Resident(page_id) = pending.wait else {
             return None;
         };
-        if pending.request.key().purpose() != crate::PagePurpose::GeometryTarget {
+        if pending
+            .request
+            .expect("admitted geometry request")
+            .key()
+            .purpose()
+            != crate::PagePurpose::GeometryTarget
+        {
             return None;
         }
         let job = pending.job;
-        let key = pending.request.key();
+        let key = pending.request.expect("admitted geometry request").key();
         if self.active_geometry != Some(job) {
             return Some(Err(RangeTextInputError::Stale));
         }
@@ -870,11 +1096,17 @@ impl RangeTextInput {
         let GeometryPageWait::Resident(page_id) = pending.wait else {
             return None;
         };
-        if pending.request.key().purpose() != crate::PagePurpose::GeometryIndex {
+        if pending
+            .request
+            .expect("admitted geometry request")
+            .key()
+            .purpose()
+            != crate::PagePurpose::GeometryIndex
+        {
             return None;
         }
         let job = pending.job;
-        let key = pending.request.key();
+        let key = pending.request.expect("admitted geometry request").key();
         if self.active_geometry != Some(job) {
             return Some(Err(RangeTextInputError::Stale));
         }
@@ -957,11 +1189,32 @@ impl RangeTextInput {
         if self.active_geometry != Some(pending.job) {
             return Err(RangeTextInputError::Stale);
         }
-        if let GeometryPageWait::Coalesced(existing) = pending.wait {
-            if self
-                .residency
-                .pending_requests()
-                .any(|request| request == existing)
+        if matches!(pending.wait, GeometryPageWait::Unstarted { .. }) {
+            if self.requests.len() == self.requests.capacity() {
+                self.pending_geometry_page = Some(pending);
+                return Ok(());
+            }
+            let outcome = match self.admit_unstarted_page(&mut pending) {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    self.pending_geometry_page = Some(pending);
+                    return Err(error);
+                }
+            };
+            pending.wait = match outcome {
+                PageDemand::ResidentAdjacent(page) => GeometryPageWait::Resident(page),
+                PageDemand::Coalesced(key) => GeometryPageWait::Coalesced(key),
+                PageDemand::Requested(request) => {
+                    self.commit_prepared_request(RangeTextInputRequest::Page(request));
+                    cx.notify();
+                    return Ok(());
+                }
+                _ => return Err(RangeTextInputError::Stale),
+            };
+        }
+        if matches!(pending.wait, GeometryPageWait::Coalesced(_)) {
+            if matches!(pending.wait, GeometryPageWait::Coalesced(existing)
+                if self.residency.pending_requests().any(|request| request == existing))
             {
                 self.pending_geometry_page = Some(pending);
                 return Ok(());
@@ -973,9 +1226,21 @@ impl RangeTextInput {
                 return Ok(());
             }
             let demand = match self.residency.demand(
-                pending.request.key().id(),
-                pending.request.key().purpose(),
-                pending.request.key().demand(),
+                pending
+                    .request
+                    .expect("admitted geometry request")
+                    .key()
+                    .id(),
+                pending
+                    .request
+                    .expect("admitted geometry request")
+                    .key()
+                    .purpose(),
+                pending
+                    .request
+                    .expect("admitted geometry request")
+                    .key()
+                    .demand(),
             ) {
                 Ok(demand) => demand,
                 Err(_) => {
@@ -986,7 +1251,10 @@ impl RangeTextInput {
             pending.wait = match demand {
                 PageDemand::ResidentAdjacent(page) => GeometryPageWait::Resident(page),
                 PageDemand::Coalesced(request) => GeometryPageWait::Coalesced(request),
-                PageDemand::Requested(request) if request.key() == pending.request.key() => {
+                PageDemand::Requested(request)
+                    if request.key()
+                        == pending.request.expect("admitted geometry request").key() =>
+                {
                     self.requests
                         .push_back(RangeTextInputRequest::Page(request));
                     cx.notify();
@@ -1024,7 +1292,7 @@ impl RangeTextInput {
             .pending_geometry_object
             .as_ref()
             .ok_or(RangeTextInputError::Stale)?;
-        let pending_key = pending.request.key();
+        let pending_key = pending.request.ok_or(RangeTextInputError::Stale)?.key();
         let coalesced = matches!(pending.wait, GeometryObjectWait::Coalesced(wait) if wait == key);
         let detached_job = self.active_geometry != Some(pending.job);
         if coalesced && (pending_key != key || detached_job) {
@@ -1181,7 +1449,9 @@ impl RangeTextInput {
             .pending_geometry_object
             .take()
             .ok_or(RangeTextInputError::Stale)?;
-        if pending.request.key() != key || self.active_geometry != Some(pending.job) {
+        if pending.request.map(|request| request.key()) != Some(key)
+            || self.active_geometry != Some(pending.job)
+        {
             self.pending_geometry_object = Some(pending);
             return Err(RangeTextInputError::Stale);
         }
@@ -1318,7 +1588,7 @@ impl RangeTextInput {
             .pending_geometry_object
             .as_ref()
             .ok_or(RangeTextInputError::Stale)?;
-        let pending_key = pending.request.key();
+        let pending_key = pending.request.ok_or(RangeTextInputError::Stale)?.key();
         let coalesced = matches!(pending.wait, GeometryObjectWait::Coalesced(wait) if wait == key);
         let detached_job = self.active_geometry != Some(pending.job);
         if coalesced && (pending_key != key || detached_job) {
@@ -1876,7 +2146,10 @@ impl RangeTextInput {
         mut cx: Option<&mut Context<Self>>,
     ) {
         if self.pending_geometry_page.as_ref().is_some_and(|pending| {
-            release.jobs.contains(&pending.job) || release.pages.contains(&pending.request.key())
+            release.jobs.contains(&pending.job)
+                || pending
+                    .request
+                    .is_some_and(|request| release.pages.contains(&request.key()))
         }) {
             self.pending_geometry_page = None;
         }
@@ -1885,7 +2158,9 @@ impl RangeTextInput {
             .as_ref()
             .is_some_and(|pending| {
                 release.jobs.contains(&pending.job)
-                    || release.object_pages.contains(&pending.request.key())
+                    || pending
+                        .request
+                        .is_some_and(|request| release.object_pages.contains(&request.key()))
             })
         {
             self.pending_geometry_object = None;

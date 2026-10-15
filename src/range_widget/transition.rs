@@ -1619,7 +1619,10 @@ impl RangeTextInput {
             self.deferred_geometry_response = None;
         }
         if self.pending_geometry_page.as_ref().is_some_and(|pending| {
-            release.jobs.contains(&pending.job) || release.pages.contains(&pending.request.key())
+            release.jobs.contains(&pending.job)
+                || pending
+                    .request
+                    .is_some_and(|request| release.pages.contains(&request.key()))
         }) {
             self.pending_geometry_page = None;
         }
@@ -1628,7 +1631,9 @@ impl RangeTextInput {
             .as_ref()
             .is_some_and(|pending| {
                 release.jobs.contains(&pending.job)
-                    || release.object_pages.contains(&pending.request.key())
+                    || pending
+                        .request
+                        .is_some_and(|request| release.object_pages.contains(&request.key()))
             })
         {
             self.pending_geometry_object = None;

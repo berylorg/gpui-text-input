@@ -122,7 +122,7 @@ impl RangeTextInput {
             return Err(RangeTextInputError::Stale);
         }
         if pending.job != job
-            || pending.request.key() != pending_key
+            || pending.request.map(|request| request.key()) != Some(pending_key)
             || !matches!(pending.wait, GeometryObjectWait::Coalesced(key) if key == response_key)
             || !self.dispatched_object_pages.contains(&response_key)
             || detached_job != (self.active_geometry != Some(job))
@@ -190,7 +190,10 @@ impl RangeTextInput {
             .as_ref()
             .expect("prepared residency response failure retains its pending input");
         debug_assert_eq!(pending.job, job);
-        debug_assert_eq!(pending.request.key(), pending_key);
+        debug_assert_eq!(
+            pending.request.expect("admitted geometry request").key(),
+            pending_key
+        );
         debug_assert!(
             matches!(pending.wait, GeometryObjectWait::Coalesced(key) if key == response_key)
         );

@@ -151,6 +151,25 @@ impl PreparedTargetResponse {
         self.successor
     }
 
+    pub(crate) fn defer_successor(&mut self) {
+        let Some(successor) = self.successor.take() else {
+            return;
+        };
+        match &mut self.state {
+            PreparedTargetResponseState::Active(active) => active.delta.pending = None,
+            PreparedTargetResponseState::CompleteIndex { target, .. } => {
+                target.defer_page_request()
+            }
+            PreparedTargetResponseState::CompleteTarget(_) => unreachable!(),
+        }
+        let bytes = match successor {
+            PreparedTargetSuccessor::Page(_) => size_of::<PageRequestKey>(),
+            PreparedTargetSuccessor::Object { .. } => size_of::<ObjectRequestKey>(),
+        };
+        self.retained_bytes -= bytes;
+        self.retained_items -= 1;
+    }
+
     pub(crate) const fn retained_bytes(&self) -> usize {
         self.retained_bytes
     }

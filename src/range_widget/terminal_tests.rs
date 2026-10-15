@@ -12,6 +12,8 @@ mod protection;
 mod release;
 mod seal;
 mod terminal_failure;
+#[path = "../../tests/support/view_demand_edit_lifecycle.rs"]
+mod view_demand_edit_lifecycle;
 
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
@@ -627,6 +629,7 @@ struct GeometryFingerprint {
 
 #[derive(Debug, PartialEq)]
 enum GeometryPageWaitFingerprint {
+    Unstarted(crate::PagePurpose, crate::PageDemandEnvelope),
     Resident(PageId),
     Coalesced(crate::PageRequestKey),
 }
@@ -634,12 +637,13 @@ enum GeometryPageWaitFingerprint {
 #[derive(Debug, PartialEq)]
 struct PendingGeometryPageFingerprint {
     job: crate::GeometryJobKey,
-    request: crate::PageRequestKey,
+    request: Option<crate::PageRequestKey>,
     wait: GeometryPageWaitFingerprint,
 }
 
 #[derive(Debug, PartialEq)]
 enum GeometryObjectWaitFingerprint {
+    Unstarted(crate::ObjectPurpose, crate::ObjectDemandEnvelope),
     Resident(ObjectPageId),
     Coalesced(crate::ObjectRequestKey),
 }
@@ -647,7 +651,7 @@ enum GeometryObjectWaitFingerprint {
 #[derive(Debug, PartialEq)]
 struct PendingGeometryObjectFingerprint {
     job: crate::GeometryJobKey,
-    request: crate::ObjectRequestKey,
+    request: Option<crate::ObjectRequestKey>,
     text_page: PageId,
     wait: GeometryObjectWaitFingerprint,
 }
@@ -811,8 +815,11 @@ fn transition_fingerprint(input: &RangeTextInput) -> TransitionFingerprint {
             .as_ref()
             .map(|pending| PendingGeometryPageFingerprint {
                 job: pending.job,
-                request: pending.request.key(),
+                request: pending.request.map(|request| request.key()),
                 wait: match pending.wait {
+                    geometry::GeometryPageWait::Unstarted { purpose, demand } => {
+                        GeometryPageWaitFingerprint::Unstarted(purpose, demand)
+                    }
                     geometry::GeometryPageWait::Resident(page) => {
                         GeometryPageWaitFingerprint::Resident(page)
                     }
@@ -827,9 +834,12 @@ fn transition_fingerprint(input: &RangeTextInput) -> TransitionFingerprint {
             .as_ref()
             .map(|pending| PendingGeometryObjectFingerprint {
                 job: pending.job,
-                request: pending.request.key(),
+                request: pending.request.map(|request| request.key()),
                 text_page: pending.text_page,
                 wait: match pending.wait {
+                    geometry::GeometryObjectWait::Unstarted { purpose, demand } => {
+                        GeometryObjectWaitFingerprint::Unstarted(purpose, demand)
+                    }
                     geometry::GeometryObjectWait::Resident(page) => {
                         GeometryObjectWaitFingerprint::Resident(page)
                     }
@@ -1344,7 +1354,13 @@ fn prepaint_stops_before_nonresident_successor_and_defers_explicit_progress(
 
     let before = input.read_with(cx, |input, _| fingerprint(input));
     let pending_key = input.read_with(cx, |input, _| {
-        input.pending_geometry_page.as_ref().unwrap().request.key()
+        input
+            .pending_geometry_page
+            .as_ref()
+            .unwrap()
+            .request
+            .expect("admitted geometry request")
+            .key()
     });
     input.update(cx, |input, _| input.config.limits.max_surface_bytes = 1);
     let rejected = cx.update(|window, app| {
@@ -1359,7 +1375,13 @@ fn prepaint_stops_before_nonresident_successor_and_defers_explicit_progress(
     input.read_with(cx, |input, _| {
         assert_eq!(fingerprint(input), before);
         assert_eq!(
-            input.pending_geometry_page.as_ref().unwrap().request.key(),
+            input
+                .pending_geometry_page
+                .as_ref()
+                .unwrap()
+                .request
+                .expect("admitted geometry request")
+                .key(),
             pending_key
         );
         assert!(input.requests.is_empty());
@@ -1425,6 +1447,7 @@ fn prepaint_defers_terminal_resident_index_object_publication(cx: &mut gpui::Tes
                     .as_ref()
                     .unwrap()
                     .request
+                    .expect("admitted geometry request")
                     .key()
                     .purpose(),
                 ObjectPurpose::GeometryIndex
@@ -1500,6 +1523,7 @@ fn prepaint_defers_terminal_resident_target_object_publication(cx: &mut gpui::Te
                     .as_ref()
                     .unwrap()
                     .request
+                    .expect("admitted geometry request")
                     .key()
                     .purpose(),
                 ObjectPurpose::GeometryTarget

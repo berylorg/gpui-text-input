@@ -380,6 +380,27 @@ identity. The layout epoch changes whenever wrapping width, font or shaping inpu
 atom geometry, or another geometry-affecting input changes. Jobs page through source ranges without
 retaining shaped output for every visited line.
 
+While an exact ordinary edit is active, ordinary target, layout, presentation, index and external
+geometry demand production waits in the existing bounded intents and jobs. It does not request
+the predecessor as an ordinary view source during the host's unfinished semantic transition.
+Mutation-predecessor reads, edit evidence and proposal transport, and original cleanup continue
+through their existing owners. FIFO request delivery and guarded front-request dequeue remain
+unchanged; deferral does not skip a rejected request or create a second queue.
+
+Already admitted geometry responses still settle and release normally. A successor demand that
+cannot yet be admitted remains unstarted in that same job's bounded pending text-page or object-page
+slot as exact logical job, purpose, demand and cursor state, without reserving a transport request
+identity, admitting a source-residency request or acquiring dispatch custody. Allocate the next
+monotonic transport identity when the retained demand attempts actual source admission. Independent
+clipboard or semantic work may advance request identities while it waits; resumption must not reuse
+an older reserved identity. Exhaustion and admission refusal retain the original exact failure and
+custody guarantees, and only admitted/dispatched work grants response authority. Its retained record
+and transition peak remain inside existing geometry accounting and configured limits. Exact edit settlement resumes eligible
+work: commit/rebind retires obsolete jobs and waits, while a nonmutating terminal outcome resumes
+their retained original intent. Cancellation and retirement release unstarted records directly and
+perform ordinary exact cancellation only for requests that acquired dispatch custody. Neither
+source validation nor the current binding changes merely to permit deferred view work.
+
 The geometry owner admits byte and semantic-item residency independently under a configured
 retained-memory budget and a configured per-frame work budget. Neither budget is derived from raw
 viewport dimensions. Admission consumes GPUI's exact returned fragment-graph item charge and

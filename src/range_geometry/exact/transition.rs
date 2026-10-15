@@ -44,6 +44,14 @@ enum PreparedGeometryState {
 }
 
 impl PreparedGeometryTransition {
+    pub(in crate::range_geometry::exact) fn defer_page_request(&mut self) {
+        if let PreparedGeometryState::Index(active) | PreparedGeometryState::Target(active) =
+            &mut self.state
+        {
+            active.pending = None;
+            self.highest_request = None;
+        }
+    }
     pub(crate) const fn key(&self) -> GeometryJobKey {
         match &self.state {
             PreparedGeometryState::Index(active) | PreparedGeometryState::Target(active) => {

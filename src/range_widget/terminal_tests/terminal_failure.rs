@@ -182,6 +182,7 @@ fn delivered_text_then_resident_terminal_incomplete_surface_closes_once(
                 .as_ref()
                 .expect("terminal text delivery advances to resident object validation")
                 .request
+                .expect("admitted geometry request")
                 .key(),
         )
     });
@@ -312,10 +313,10 @@ fn stage_active_coalesced_object_response(
         if let Some((pending_key, job)) = input.read_with(cx, |input, _| {
             let pending = input.pending_geometry_object.as_ref()?;
             (input.active_geometry == Some(pending.job)
-                && pending.request.key() != response_key
+                && pending.request.expect("admitted geometry request").key() != response_key
                 && matches!(pending.wait, GeometryObjectWait::Coalesced(wait) if wait == response_key)
                 && input.dispatched_object_pages.contains(&response_key))
-            .then_some((pending.request.key(), pending.job))
+            .then_some((pending.request.expect("admitted geometry request").key(), pending.job))
         }) {
             return (response_key, pending_key, job);
         }
@@ -689,14 +690,17 @@ fn active_coalesced_object_residency_limit_settles_response_and_reissues_current
     let (job, pending_key, target_intent, index_intent, surface, resident, settled) =
         input.update(cx, |input, _| {
             let pending = input.pending_geometry_object.as_ref().unwrap();
-            assert_eq!(pending.request.key(), staged_pending_key);
+            assert_eq!(
+                pending.request.expect("admitted geometry request").key(),
+                staged_pending_key
+            );
             assert_eq!(pending.job, staged_job);
             assert_eq!(input.active_geometry, Some(staged_job));
             assert!(matches!(pending.wait, GeometryObjectWait::Coalesced(wait) if wait == key));
             input.object_residency.force_next_admission_limit();
             (
                 pending.job,
-                pending.request.key(),
+                pending.request.expect("admitted geometry request").key(),
                 input.pending_target_intent.is_some(),
                 input.pending_index_intent,
                 fingerprint(input).surface,
@@ -730,7 +734,7 @@ fn active_coalesced_object_residency_limit_settles_response_and_reissues_current
         let pending = input.pending_geometry_object.as_ref().unwrap();
         assert_eq!(input.active_geometry, Some(job));
         assert_eq!(pending.job, job);
-        assert_eq!(pending.request.key(), pending_key);
+        assert_eq!(pending.request.expect("admitted geometry request").key(), pending_key);
         assert!(matches!(pending.wait, GeometryObjectWait::Coalesced(wait) if wait == key));
         assert_eq!(input.pending_target_intent.is_some(), target_intent);
         assert_eq!(input.pending_index_intent, index_intent);
@@ -782,6 +786,7 @@ fn active_coalesced_object_residency_limit_settles_response_and_reissues_current
                     .as_ref()
                     .unwrap()
                     .request
+                    .expect("admitted geometry request")
                     .key(),
                 pending_key
             );
@@ -824,7 +829,7 @@ fn active_coalesced_object_full_request_queue_preserves_queue_custody_and_reissu
     let custody_page = page_for(PageRequest::new(custody_key), 930_000);
     let (job, pending_key, maximum, preserved, settled) = input.update(cx, |input, _| {
         let pending = input.pending_geometry_object.as_ref().unwrap();
-        assert_eq!(pending.request.key(), staged_pending_key);
+        assert_eq!(pending.request.expect("admitted geometry request").key(), staged_pending_key);
         assert_eq!(pending.job, staged_job);
         assert_eq!(input.active_geometry, Some(staged_job));
         input
@@ -860,7 +865,7 @@ fn active_coalesced_object_full_request_queue_preserves_queue_custody_and_reissu
             .collect::<Vec<_>>();
         (
             pending.job,
-            pending.request.key(),
+            pending.request.expect("admitted geometry request").key(),
             super::super::checked_request_capacity(&input.config).unwrap(),
             preserved,
             input.superseded_geometry_object_responses_settled,
@@ -877,7 +882,7 @@ fn active_coalesced_object_full_request_queue_preserves_queue_custody_and_reissu
             let pending = input.pending_geometry_object.as_ref().unwrap();
             assert_eq!(input.active_geometry, Some(job));
             assert_eq!(pending.job, job);
-            assert_eq!(pending.request.key(), pending_key);
+            assert_eq!(pending.request.expect("admitted geometry request").key(), pending_key);
             assert!(matches!(pending.wait, GeometryObjectWait::Coalesced(wait) if wait == key));
             assert!(!input.dispatched_object_pages.contains(&key));
             assert!(input.requests.len() <= maximum);
@@ -973,7 +978,7 @@ fn public_active_coalesced_object_full_queue_waits_for_capacity_before_exact_rei
     let (job, pending_key, target_intent, index_intent, maximum, preserved, settled) =
         input.update(cx, |input, _| {
             let pending = input.pending_geometry_object.as_ref().unwrap();
-            assert_eq!(pending.request.key(), staged_pending_key);
+            assert_eq!(pending.request.expect("admitted geometry request").key(), staged_pending_key);
             assert_eq!(pending.job, staged_job);
             assert_eq!(input.active_geometry, Some(staged_job));
             input
@@ -1007,7 +1012,7 @@ fn public_active_coalesced_object_full_queue_waits_for_capacity_before_exact_rei
             assert!(!input.realization_continuation_scheduled);
             (
                 pending.job,
-                pending.request.key(),
+                pending.request.expect("admitted geometry request").key(),
                 input.pending_target_intent.is_some(),
                 input.pending_index_intent,
                 super::super::checked_request_capacity(&input.config).unwrap(),
@@ -1029,7 +1034,7 @@ fn public_active_coalesced_object_full_queue_waits_for_capacity_before_exact_rei
             assert_eq!(input.requests.capacity(), maximum);
             assert_eq!(input.active_geometry, Some(job));
             assert_eq!(pending.job, job);
-            assert_eq!(pending.request.key(), pending_key);
+            assert_eq!(pending.request.expect("admitted geometry request").key(), pending_key);
             assert!(matches!(pending.wait, GeometryObjectWait::Coalesced(wait) if wait == key));
             assert_eq!(input.pending_target_intent.is_some(), target_intent);
             assert_eq!(input.pending_index_intent, index_intent);
@@ -1098,7 +1103,7 @@ fn public_active_coalesced_object_full_queue_waits_for_capacity_before_exact_rei
                     .pending_geometry_object
                     .as_ref()
                     .unwrap()
-                    .request
+                    .request.expect("admitted geometry request")
                     .key(),
                 pending_key
             );
