@@ -936,3 +936,221 @@ fn zero_credit_geometry_callback_notifies_without_minting_credit(cx: &mut gpui::
         assert_bounds(input);
     });
 }
+
+fn observe_replacement_source(
+    input: &gpui::Entity<RangeTextInput>,
+    window: &gpui::Window,
+    app: &mut gpui::App,
+    retired: std::rc::Rc<std::cell::Cell<Option<crate::ObjectRequestKey>>>,
+    progress: std::rc::Rc<ResizeSourceProgress>,
+) -> gpui::Subscription {
+    let handle = window.window_handle();
+    app.observe(input, move |input, app| {
+        let notifications = progress.notifications.get() + 1;
+        progress.notifications.set(notifications);
+        assert!(
+            notifications <= 128,
+            "replacement source notification bound"
+        );
+        let input = input.downgrade();
+        let retired = retired.clone();
+        let progress = progress.clone();
+        app.defer(move |app| {
+            progress.callbacks.set(progress.callbacks.get() + 1);
+            let input = input.upgrade().expect("replacement input remains alive");
+            handle
+                .update(app, |_, window, app| {
+                    loop {
+                        let request = input.update(app, |input, _| input.take_request());
+                        let Some(request) = request else {
+                            return;
+                        };
+                        let requests = progress.requests.get() + 1;
+                        progress.requests.set(requests);
+                        assert!(requests <= 128, "replacement source request bound");
+                        match request {
+                            RangeTextInputRequest::Page(request) => {
+                                let page = page_for_source(
+                                    request,
+                                    request.key().id().get(),
+                                    "saved draft 1",
+                                );
+                                input.update(app, |input, cx| {
+                                    input.deliver_page(page, window, cx).unwrap();
+                                });
+                            }
+                            RangeTextInputRequest::ObjectPage(request) => {
+                                assert_ne!(Some(request.key()), retired.get());
+                                let page = ObjectPage::new(
+                                    ObjectPageId::new(request.key().id().get()),
+                                    request.key(),
+                                    vec![],
+                                    ObjectPageEdgeFact::EnvelopeBoundary,
+                                    ObjectPageEdgeFact::EnvelopeBoundary,
+                                    true,
+                                    None,
+                                )
+                                .unwrap();
+                                input.update(app, |input, cx| {
+                                    input
+                                        .deliver_object_page_in_window(page, window, cx)
+                                        .unwrap();
+                                });
+                            }
+                            RangeTextInputRequest::CancelPage(_)
+                            | RangeTextInputRequest::ReleasePage(_)
+                            | RangeTextInputRequest::CancelObjectPage(_)
+                            | RangeTextInputRequest::ReleaseObjectPage(_) => {}
+                            request => panic!("unexpected replacement request: {request:?}"),
+                        }
+                        input.read_with(app, |input, _| assert_bounds(input));
+                    }
+                })
+                .unwrap();
+        });
+    })
+}
+
+#[gpui::test]
+fn queued_cleanup_preserves_automatic_resident_layout_progress(cx: &mut gpui::TestAppContext) {
+    let source = "saved draft 1";
+    assert_eq!(source.len(), 13);
+    let mut configuration = config(2 * 1024 * 1024, 32_768);
+    configuration.binding = RangeBinding::new(
+        BindingId::new(71),
+        SourceRevision::new(1),
+        LogicalExtent::new(source.len() as u64, 1),
+    );
+    configuration.limits.max_realization_work_per_frame = 64;
+    let original_binding = configuration.binding;
+    let (input, cx) =
+        cx.add_window_view(|window, cx| RangeTextInput::new(configuration, window, cx).unwrap());
+    let original_input = input.entity_id();
+    cx.update(|window, app| window.draw(app).clear());
+    let viewport = cx.update(|window, _| window.viewport_size());
+    let resized = gpui::size(viewport.width + px(79.), viewport.height);
+    cx.simulate_resize(resized);
+    let retired = std::rc::Rc::new(std::cell::Cell::new(None));
+    let progress = std::rc::Rc::new(ResizeSourceProgress::default());
+    let mut cleanup_count = 0;
+    let _source = cx.update(|window, app| {
+        let subscription = observe_replacement_source(
+            &input,
+            window,
+            app,
+            retired.clone(),
+            progress.clone(),
+        );
+        let old_request = input.update(app, |input, cx| {
+            let mut old_request = None;
+            for _ in 0..16 {
+                match input.take_request().expect("initial geometry request") {
+                    RangeTextInputRequest::Page(request) => {
+                        let page = page_for_source(request, request.key().id().get(), source);
+                        input.deliver_page(page, window, cx).unwrap();
+                    }
+                    RangeTextInputRequest::ObjectPage(request) => {
+                        assert!(matches!(
+                            request.key().purpose(),
+                            ObjectPurpose::GeometryTarget | ObjectPurpose::GeometryIndex
+                        ));
+                        assert!(input.dispatched_object_pages.contains(&request.key()));
+                        assert_eq!(
+                            input.pending_geometry_object.as_ref().unwrap().request.unwrap().key(),
+                            request.key()
+                        );
+                        old_request = Some(request.key());
+                        break;
+                    }
+                    RangeTextInputRequest::CancelPage(_)
+                    | RangeTextInputRequest::ReleasePage(_)
+                    | RangeTextInputRequest::CancelObjectPage(_)
+                    | RangeTextInputRequest::ReleaseObjectPage(_) => {}
+                    request => panic!("unexpected initial geometry request: {request:?}"),
+                }
+            }
+            let old_request = old_request.expect("genuine dispatched predecessor object request");
+            retired.set(Some(old_request));
+            let old_job = input.active_geometry.expect("predecessor geometry job");
+            let mut layout = input.config.layout.clone();
+            layout.wrap_width = resized.width;
+            layout.font_size += px(1.);
+            input.set_layout(layout, input.config.style.clone(), cx).unwrap();
+            assert_ne!(input.active_geometry, Some(old_job));
+            assert!(!input.dispatched_object_pages.contains(&old_request));
+            assert!(input.requests.iter().any(|request| {
+                matches!(request, RangeTextInputRequest::CancelObjectPage(key) if *key == old_request)
+            }));
+            assert_bounds(input);
+            old_request
+        });
+        window.draw(app).clear();
+        input.update(app, |input, _| {
+            assert_eq!(input.config.layout.wrap_width, resized.width);
+            assert_eq!(input.last_bounds.unwrap().size.width, resized.width);
+            assert!(input.last_realization_step.remaining > 0);
+            assert!(input.last_realization_step.reached_external_boundary);
+            assert!(input.pending_geometry_object.is_none());
+            let pending = input.pending_geometry_page.as_ref().expect("resident target wait");
+            assert_eq!(Some(pending.job), input.active_geometry);
+            assert_eq!(pending.request.unwrap().key().purpose(), PagePurpose::GeometryTarget);
+            let super::super::geometry::GeometryPageWait::Resident(page) = pending.wait else {
+                panic!("replacement target must already have resident text");
+            };
+            assert!(input.residency.peek_page_by_id(page).is_some());
+            assert!(!input.requests.is_empty());
+            assert!(input.requests.iter().all(|request| matches!(
+                request,
+                RangeTextInputRequest::CancelPage(_)
+                    | RangeTextInputRequest::ReleasePage(_)
+                    | RangeTextInputRequest::CancelObjectPage(_)
+                    | RangeTextInputRequest::ReleaseObjectPage(_)
+            )));
+            assert!(input.requests.iter().any(|request| {
+                matches!(request, RangeTextInputRequest::CancelObjectPage(key) if *key == old_request)
+            }));
+            while let Some(request) = input.take_request() {
+                assert!(matches!(
+                    request,
+                    RangeTextInputRequest::CancelPage(_)
+                        | RangeTextInputRequest::ReleasePage(_)
+                        | RangeTextInputRequest::CancelObjectPage(_)
+                        | RangeTextInputRequest::ReleaseObjectPage(_)
+                ));
+                cleanup_count += 1;
+                assert!(cleanup_count <= 16);
+            }
+            assert!(!input.is_surface_current_and_interactive());
+            assert!(!input.is_quiescent());
+            assert_bounds(input);
+        });
+        subscription
+    });
+    assert!(cleanup_count > 0);
+    cx.run_until_parked();
+    assert_eq!(input.entity_id(), original_input);
+    input.read_with(cx, |input, _| {
+        assert_eq!(input.config.binding, original_binding);
+        assert_eq!(input.config.layout.wrap_width, resized.width);
+        assert_bounds(input);
+        assert!(
+            input.is_surface_current_and_interactive() && input.is_quiescent(),
+            "queued cleanup stranded resident work; notifications={}; callbacks={}; requests={}; state={:?}; diagnostics={:?}",
+            progress.notifications.get(), progress.callbacks.get(), progress.requests.get(),
+            fingerprint(input), input.realization_diagnostics(),
+        );
+        assert!(progress.requests.get() > 0);
+        assert_eq!(input.surface().unwrap().binding(), original_binding);
+        assert_eq!(input.surface().unwrap().source_caret().byte_offset.get(), 0);
+        assert!(input.requests.is_empty());
+        assert!(input.active_geometry.is_none());
+        assert!(input.pending_geometry_page.is_none());
+        assert!(input.pending_geometry_object.is_none());
+        assert!(input.response_custody.is_empty());
+        assert_eq!(input.dispatched_pages.len(), 0);
+        assert_eq!(input.dispatched_object_pages.len(), 0);
+        assert_eq!(input.residency.counts().pending_requests, 0);
+        assert_eq!(input.object_residency.counts().pending_requests, 0);
+        assert_eq!(input.realization_diagnostics().response_rejection_count, 0);
+    });
+}

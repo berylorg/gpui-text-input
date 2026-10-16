@@ -82,35 +82,33 @@ fn new_resident_chain(
 }
 
 fn service_one_resident_advance(
-    input: &gpui::Entity<RangeTextInput>,
-    cx: &mut gpui::VisualTestContext,
+    input: &mut RangeTextInput,
+    window: &mut gpui::Window,
+    cx: &mut gpui::Context<RangeTextInput>,
 ) {
-    cx.update(|window, app| {
-        input.update(app, |input, cx| {
-            assert!(!input.response_custody.is_empty());
-            input.begin_realization_frame();
-            assert!(custody_progressed(
-                input.service_response_custody(window, cx)
-            ));
-            let diagnostics = input.realization_diagnostics();
-            assert_eq!(diagnostics.frame.spent, 1);
-            assert_eq!(diagnostics.frame.remaining, 0);
-            assert!(input.response_custody.len() <= 1);
-        })
-    });
+    assert!(!input.response_custody.is_empty());
+    input.begin_realization_frame();
+    assert!(custody_progressed(
+        input.service_response_custody(window, cx)
+    ));
+    let diagnostics = input.realization_diagnostics();
+    assert_eq!(diagnostics.frame.spent, 1);
+    assert_eq!(diagnostics.frame.remaining, 0);
+    assert!(input.response_custody.len() <= 1);
 }
 
 fn drain_resident_advances(
-    input: &gpui::Entity<RangeTextInput>,
-    cx: &mut gpui::VisualTestContext,
+    input: &mut RangeTextInput,
+    window: &mut gpui::Window,
+    cx: &mut gpui::Context<RangeTextInput>,
 ) -> usize {
     let mut advances = 0;
-    while input.read_with(cx, |input, _| !input.response_custody.is_empty()) {
+    while !input.response_custody.is_empty() {
         assert!(
             advances < PAGE_COUNT + 4,
             "resident continuation did not terminate"
         );
-        service_one_resident_advance(input, cx);
+        service_one_resident_advance(input, window, cx);
         advances += 1;
     }
     advances
@@ -137,25 +135,23 @@ fn dispose_resident_chain(input: &gpui::Entity<RangeTextInput>, cx: &mut gpui::V
 #[gpui::test]
 fn resident_platform_replay_advances_one_page_per_frame(cx: &mut gpui::TestAppContext) {
     let (source, input, cx) = new_resident_chain(cx);
-    assert!(matches!(
-        input.update(cx, |input, cx| input
-            .platform_text_for_range(0..source.len(), cx)
-            .unwrap()),
-        crate::PlatformRangeResult::Pending(_)
-    ));
-    service_one_resident_advance(&input, cx);
-    input.read_with(cx, |input, _| {
-        assert!(input.platform.is_some());
-        assert_eq!(input.response_custody.len(), 1);
+    cx.update(|window, app| {
+        input.update(app, |input, cx| {
+            assert!(matches!(
+                input.platform_text_for_range(0..source.len(), cx).unwrap(),
+                crate::PlatformRangeResult::Pending(_)
+            ));
+            service_one_resident_advance(input, window, cx);
+            assert!(input.platform.is_some());
+            assert_eq!(input.response_custody.len(), 1);
+            let later_advances = drain_resident_advances(input, window, cx);
+            assert_many_bounded_advances(later_advances + 1);
+            assert_eq!(
+                input.platform_text_for_range(0..source.len(), cx).unwrap(),
+                crate::PlatformRangeResult::Ready(source)
+            );
+        });
     });
-    let later_advances = drain_resident_advances(&input, cx);
-    assert_many_bounded_advances(later_advances + 1);
-    assert_eq!(
-        input.update(cx, |input, cx| input
-            .platform_text_for_range(0..source.len(), cx)
-            .unwrap()),
-        crate::PlatformRangeResult::Ready(source)
-    );
     dispose_resident_chain(&input, cx);
 }
 
@@ -178,26 +174,22 @@ fn resident_segmentation_advances_one_page_per_frame(cx: &mut gpui::TestAppConte
                     cx,
                 )
                 .unwrap();
+            service_one_resident_advance(input, window, cx);
+            assert!(input.segmentation.is_some());
+            assert_eq!(input.response_custody.len(), 1);
+            let later_advances = drain_resident_advances(input, window, cx);
+            assert_many_bounded_advances(later_advances + 1);
+            assert!(input.segmentation.is_none());
+            assert_eq!(
+                input
+                    .target_intent_desired()
+                    .source_selection
+                    .unwrap()
+                    .head
+                    .byte_offset,
+                ByteOffset::new(source.len() as u64)
+            );
         })
-    });
-    service_one_resident_advance(&input, cx);
-    input.read_with(cx, |input, _| {
-        assert!(input.segmentation.is_some());
-        assert_eq!(input.response_custody.len(), 1);
-    });
-    let later_advances = drain_resident_advances(&input, cx);
-    assert_many_bounded_advances(later_advances + 1);
-    input.read_with(cx, |input, _| {
-        assert!(input.segmentation.is_none());
-        assert_eq!(
-            input
-                .target_intent_desired()
-                .source_selection
-                .unwrap()
-                .head
-                .byte_offset,
-            ByteOffset::new(source.len() as u64)
-        );
     });
     dispose_resident_chain(&input, cx);
 }
@@ -216,30 +208,30 @@ fn resident_replacement_scan_advances_one_page_per_frame(cx: &mut gpui::TestAppC
             .admit_edit_positions(&[start, end], &text, &objects)
             .unwrap()
     });
-    assert!(matches!(
-        input.update(cx, |input, cx| input.begin_replacement(
-            ByteRange::from_u64(0, source.len() as u64).unwrap(),
-            "x".to_owned(),
-            crate::MutationKind::Edit,
-            cx,
-        )),
-        Err(RangeTextInputError::Pending)
-    ));
-    service_one_resident_advance(&input, cx);
-    input.read_with(cx, |input, _| {
-        assert!(input.replacement.is_some());
-        assert_eq!(input.response_custody.len(), 1);
-    });
-    let later_advances = drain_resident_advances(&input, cx);
-    assert_many_bounded_advances(later_advances + 1);
-    input.read_with(cx, |input, _| {
-        assert!(input.replacement.is_none());
-        assert!(
-            input
-                .requests
-                .iter()
-                .any(|request| matches!(request, RangeTextInputRequest::MutationBegin(_)))
-        );
+    cx.update(|window, app| {
+        input.update(app, |input, cx| {
+            assert!(matches!(
+                input.begin_replacement(
+                    ByteRange::from_u64(0, source.len() as u64).unwrap(),
+                    "x".to_owned(),
+                    crate::MutationKind::Edit,
+                    cx,
+                ),
+                Err(RangeTextInputError::Pending)
+            ));
+            service_one_resident_advance(input, window, cx);
+            assert!(input.replacement.is_some());
+            assert_eq!(input.response_custody.len(), 1);
+            let later_advances = drain_resident_advances(input, window, cx);
+            assert_many_bounded_advances(later_advances + 1);
+            assert!(input.replacement.is_none());
+            assert!(
+                input
+                    .requests
+                    .iter()
+                    .any(|request| matches!(request, RangeTextInputRequest::MutationBegin(_)))
+            );
+        });
     });
     dispose_resident_chain(&input, cx);
 }
@@ -291,15 +283,13 @@ fn resident_clipboard_collection_advances_one_page_per_frame(cx: &mut gpui::Test
                 .unwrap();
             assert_eq!(input.realization_diagnostics().frame.spent, 1);
             assert_eq!(input.response_custody.len(), 1);
+            service_one_resident_advance(input, window, cx);
+            assert_eq!(input.response_custody.len(), 1);
+            assert!(input.clipboard.pending_text_page().is_some());
+            let later_advances = drain_resident_advances(input, window, cx);
+            assert_many_bounded_advances(later_advances + 1);
         })
     });
-    service_one_resident_advance(&input, cx);
-    input.read_with(cx, |input, _| {
-        assert_eq!(input.response_custody.len(), 1);
-        assert!(input.clipboard.pending_text_page().is_some());
-    });
-    let later_advances = drain_resident_advances(&input, cx);
-    assert_many_bounded_advances(later_advances + 1);
     let write = loop {
         match input.update(cx, |input, _| input.take_request()).unwrap() {
             RangeTextInputRequest::ClipboardWrite(write) => break write,

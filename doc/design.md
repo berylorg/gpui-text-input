@@ -1195,6 +1195,9 @@ changes; a new legitimate request may retarget that wake to current generation. 
 new enrollment cannot authorize old work. The callback checks mounted/current-generation authority
 before clearing its current work-needed flag and servicing remaining credit. At zero credit it
 issues the existing next-frame notification outside Draw and grants no additional work quantum.
+Leaving prepaint because effects are already queued must also retain the ordinary handoff. A
+queued release or cancellation produces no input response, so draining it cannot be relied on to
+restart admitted resident geometry. Existing coalesced enrollment and remaining-credit rules apply.
 
 Wheel, scrollbar, reveal, and other rapid-retarget entry points derive proposed desired state in a
 local value and pass it directly into candidate preparation. They never write widget desired state

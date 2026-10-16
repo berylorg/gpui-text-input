@@ -172,24 +172,23 @@ fn delivered_text_then_resident_terminal_incomplete_surface_closes_once(
             origin: None,
         });
     });
-    cx.update(|window, app| input.update(app, |input, cx| input.deliver_page(page, window, cx)))
-        .unwrap();
-    let (before, object_key) = input.read_with(cx, |input, _| {
-        (
-            preserved_terminal_state(input),
-            input
-                .pending_geometry_object
-                .as_ref()
-                .expect("terminal text delivery advances to resident object validation")
-                .request
-                .expect("admitted geometry request")
-                .key(),
-        )
-    });
-    let result = cx.update(|window, app| {
+    let (before, object_key, result) = cx.update(|window, app| {
         input.update(app, |input, cx| {
             input.begin_realization_frame();
-            input.service_geometry_page(window, cx)
+            input.deliver_page(page, window, cx).unwrap();
+            let (before, object_key) = (
+                preserved_terminal_state(input),
+                input
+                    .pending_geometry_object
+                    .as_ref()
+                    .expect("terminal text delivery advances to resident object validation")
+                    .request
+                    .expect("admitted geometry request")
+                    .key(),
+            );
+            input.begin_realization_frame();
+            let result = input.service_geometry_page(window, cx);
+            (before, object_key, result)
         })
     });
     assert!(
@@ -712,54 +711,52 @@ fn active_coalesced_object_residency_limit_settles_response_and_reissues_current
                 input.superseded_geometry_object_responses_settled,
             )
         });
-    let progress = cx.update(|window, app| {
+    cx.update(|window, app| {
         input.update(app, |input, cx| {
-            input.deliver_geometry_target_object_page_inner(
+            let progress = input.deliver_geometry_target_object_page_inner(
                 empty_terminal_object_response(key),
                 true,
                 window,
                 cx,
-            )
+            );
+            assert!(matches!(
+                progress,
+                Ok(
+                    super::response_custody::ResponseDeliveryProgress::AcceptedTerminal(
+                        RangeTextInputError::SurfaceCapacity
+                    )
+                )
+            ));
+            let pending = input.pending_geometry_object.as_ref().unwrap();
+            assert_eq!(input.active_geometry, Some(job));
+            assert_eq!(pending.job, job);
+            assert_eq!(pending.request.expect("admitted geometry request").key(), pending_key);
+            assert!(matches!(pending.wait, GeometryObjectWait::Coalesced(wait) if wait == key));
+            assert_eq!(input.pending_target_intent.is_some(), target_intent);
+            assert_eq!(input.pending_index_intent, index_intent);
+            assert_eq!(fingerprint(input).surface, surface);
+            assert_eq!(
+                input
+                    .object_residency
+                    .resident_pages()
+                    .map(|page| page.id())
+                    .collect::<Vec<_>>(),
+                resident
+            );
+            assert_eq!(
+                input.superseded_geometry_object_responses_settled,
+                settled
+            );
+            assert!(!input.dispatched_object_pages.contains(&key));
+            assert_eq!(
+                input
+                    .requests
+                    .iter()
+                    .filter(|request| matches!(request, RangeTextInputRequest::ReleaseObjectPage(released) if *released == key))
+                    .count(),
+                1
+            );
         })
-    });
-    assert!(matches!(
-        progress,
-        Ok(
-            super::response_custody::ResponseDeliveryProgress::AcceptedTerminal(
-                RangeTextInputError::SurfaceCapacity
-            )
-        )
-    ));
-    input.read_with(cx, |input, _| {
-        let pending = input.pending_geometry_object.as_ref().unwrap();
-        assert_eq!(input.active_geometry, Some(job));
-        assert_eq!(pending.job, job);
-        assert_eq!(pending.request.expect("admitted geometry request").key(), pending_key);
-        assert!(matches!(pending.wait, GeometryObjectWait::Coalesced(wait) if wait == key));
-        assert_eq!(input.pending_target_intent.is_some(), target_intent);
-        assert_eq!(input.pending_index_intent, index_intent);
-        assert_eq!(fingerprint(input).surface, surface);
-        assert_eq!(
-            input
-                .object_residency
-                .resident_pages()
-                .map(|page| page.id())
-                .collect::<Vec<_>>(),
-            resident
-        );
-        assert_eq!(
-            input.superseded_geometry_object_responses_settled,
-            settled
-        );
-        assert!(!input.dispatched_object_pages.contains(&key));
-        assert_eq!(
-            input
-                .requests
-                .iter()
-                .filter(|request| matches!(request, RangeTextInputRequest::ReleaseObjectPage(released) if *released == key))
-                .count(),
-            1
-        );
     });
     cx.update(|window, app| {
         input.update(app, |input, cx| {
@@ -1160,40 +1157,38 @@ fn superseded_object_residency_admission_capacity_settles_old_response_only(
         input.object_residency.force_next_admission_limit();
         input.superseded_geometry_object_responses_settled
     });
-    let progress = cx.update(|window, app| {
+    cx.update(|window, app| {
         input.update(app, |input, cx| {
-            input.deliver_geometry_target_object_page_inner(
+            let progress = input.deliver_geometry_target_object_page_inner(
                 empty_terminal_object_response(key),
                 true,
                 window,
                 cx,
-            )
+            );
+            assert!(matches!(
+                progress,
+                Ok(
+                    super::response_custody::ResponseDeliveryProgress::AcceptedTerminal(
+                        RangeTextInputError::SurfaceCapacity
+                    )
+                )
+            ));
+            assert_eq!(input.active_geometry, Some(newer));
+            assert!(input.pending_geometry_object.is_none());
+            assert!(!input.dispatched_object_pages.contains(&key));
+            assert_eq!(
+                input.superseded_geometry_object_responses_settled,
+                before + 1
+            );
+            assert_eq!(
+                input
+                    .requests
+                    .iter()
+                    .filter(|request| matches!(request, RangeTextInputRequest::ReleaseObjectPage(released) if *released == key))
+                    .count(),
+                1
+            );
         })
-    });
-    assert!(matches!(
-        progress,
-        Ok(
-            super::response_custody::ResponseDeliveryProgress::AcceptedTerminal(
-                RangeTextInputError::SurfaceCapacity
-            )
-        )
-    ));
-    input.read_with(cx, |input, _| {
-        assert_eq!(input.active_geometry, Some(newer));
-        assert!(input.pending_geometry_object.is_none());
-        assert!(!input.dispatched_object_pages.contains(&key));
-        assert_eq!(
-            input.superseded_geometry_object_responses_settled,
-            before + 1
-        );
-        assert_eq!(
-            input
-                .requests
-                .iter()
-                .filter(|request| matches!(request, RangeTextInputRequest::ReleaseObjectPage(released) if *released == key))
-                .count(),
-            1
-        );
     });
 }
 
@@ -1241,44 +1236,42 @@ fn superseded_object_full_request_queue_retires_exact_cancel_for_release(
         assert_eq!(input.requests.len(), input.requests.capacity());
         input.superseded_geometry_object_responses_settled
     });
-    let progress = cx.update(|window, app| {
+    cx.update(|window, app| {
         input.update(app, |input, cx| {
-            input.deliver_geometry_target_object_page_inner(
+            let progress = input.deliver_geometry_target_object_page_inner(
                 empty_terminal_object_response(key),
                 true,
                 window,
                 cx,
-            )
+            );
+            assert!(matches!(
+                progress,
+                Ok(
+                    super::response_custody::ResponseDeliveryProgress::AcceptedTerminal(
+                        RangeTextInputError::SurfaceCapacity
+                    )
+                )
+            ));
+            assert_eq!(input.active_geometry, Some(newer));
+            assert!(input.pending_geometry_object.is_none());
+            assert!(!input.dispatched_object_pages.contains(&key));
+            assert_eq!(input.requests.len(), input.requests.capacity());
+            assert!(!input.requests.iter().any(
+                |request| matches!(request, RangeTextInputRequest::CancelObjectPage(cancelled) if *cancelled == key)
+            ));
+            assert_eq!(
+                input
+                    .requests
+                    .iter()
+                    .filter(|request| matches!(request, RangeTextInputRequest::ReleaseObjectPage(released) if *released == key))
+                    .count(),
+                1
+            );
+            assert_eq!(
+                input.superseded_geometry_object_responses_settled,
+                before + 1
+            );
         })
-    });
-    assert!(matches!(
-        progress,
-        Ok(
-            super::response_custody::ResponseDeliveryProgress::AcceptedTerminal(
-                RangeTextInputError::SurfaceCapacity
-            )
-        )
-    ));
-    input.read_with(cx, |input, _| {
-        assert_eq!(input.active_geometry, Some(newer));
-        assert!(input.pending_geometry_object.is_none());
-        assert!(!input.dispatched_object_pages.contains(&key));
-        assert_eq!(input.requests.len(), input.requests.capacity());
-        assert!(!input.requests.iter().any(
-            |request| matches!(request, RangeTextInputRequest::CancelObjectPage(cancelled) if *cancelled == key)
-        ));
-        assert_eq!(
-            input
-                .requests
-                .iter()
-                .filter(|request| matches!(request, RangeTextInputRequest::ReleaseObjectPage(released) if *released == key))
-                .count(),
-            1
-        );
-        assert_eq!(
-            input.superseded_geometry_object_responses_settled,
-            before + 1
-        );
     });
 }
 

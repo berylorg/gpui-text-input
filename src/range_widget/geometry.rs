@@ -618,11 +618,13 @@ impl RangeTextInput {
         }
         if !self.requests.is_empty() {
             self.last_realization_step.reached_external_boundary = true;
+            self.defer_realization_continuation(window, cx);
             return Ok(());
         }
         loop {
             if !self.requests.is_empty() {
                 self.last_realization_step.reached_external_boundary = true;
+                self.defer_realization_continuation(window, cx);
                 return Ok(());
             }
             if !self.try_spend_realization_credit(cx) {
