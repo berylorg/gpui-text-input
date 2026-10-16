@@ -1453,6 +1453,7 @@ impl RangeTextInput {
                 self.config.presentation_generation = generation;
             }
             Some(TransitionConfigUpdate::Rebind { binding, .. }) => {
+                self.retire_measured_layout();
                 self.retire_boundary_move();
                 self.config.binding = binding;
                 self.pending_target_intent = None;

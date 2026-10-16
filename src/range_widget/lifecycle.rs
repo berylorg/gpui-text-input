@@ -544,6 +544,7 @@ impl RangeTextInput {
                 });
         self.attached_inline_object_surface = None;
         self.mounted = false;
+        self.retire_measured_layout();
         self.resident_protection = None;
         self.obsolete_realization_continuation();
         self.deferred_geometry_response = None;

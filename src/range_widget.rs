@@ -6,6 +6,7 @@ mod ime;
 mod interaction;
 mod keyboard;
 mod lifecycle;
+mod measured_layout;
 mod mutation_evidence;
 mod object_edit;
 mod object_surface;
@@ -82,6 +83,7 @@ pub struct RangeTextInput {
     last_realization_step: RangeRealizationStep,
     realization_frame_generation: u64,
     realization_continuation_scheduled: bool,
+    realization_continuation_enrollment: Option<u64>,
     realization_high_water: RangeRealizationOwnership,
     surface_high_water: RangeSurfaceCharge,
     deferred_geometry_response: Option<geometry::DeferredGeometryResponse>,
@@ -95,6 +97,8 @@ pub struct RangeTextInput {
     pending_target_intent: Option<realization::PendingTargetIntent>,
     pending_index_intent: bool,
     pending_layout_intent: Option<realization::PendingLayoutIntent>,
+    measured_layout: Option<measured_layout::MeasuredLayout>,
+    measured_layout_callback_scheduled: bool,
     pending_presentation_intent: Option<crate::PresentationGeneration>,
     pending_rebind_intent: Option<realization::PendingRebindIntent>,
     #[cfg(test)]
@@ -477,6 +481,7 @@ impl RangeTextInput {
             },
             realization_frame_generation: 0,
             realization_continuation_scheduled: false,
+            realization_continuation_enrollment: None,
             realization_high_water: RangeRealizationOwnership::default(),
             surface_high_water: surface_charge.unwrap_or_default(),
             deferred_geometry_response: None,
@@ -490,6 +495,8 @@ impl RangeTextInput {
             pending_target_intent: None,
             pending_index_intent: false,
             pending_layout_intent: None,
+            measured_layout: None,
+            measured_layout_callback_scheduled: false,
             pending_presentation_intent: None,
             pending_rebind_intent: None,
             #[cfg(test)]
@@ -628,6 +635,7 @@ impl RangeTextInput {
                 && self.pending_history.is_none()
                 && self.pending_target_intent.is_none()
                 && self.pending_layout_intent.is_none()
+                && self.measured_layout.is_none()
                 && self.pending_presentation_intent.is_none()
                 && self.pending_rebind_intent.is_none()
                 && self
@@ -724,6 +732,7 @@ impl RangeTextInput {
             && self.pending_target_intent.is_none()
             && !self.pending_index_intent
             && self.pending_layout_intent.is_none()
+            && !self.has_pending_measured_layout()
             && self.pending_presentation_intent.is_none()
             && self.pending_rebind_intent.is_none()
             && !self.realization_continuation_scheduled
@@ -846,6 +855,7 @@ impl RangeTextInput {
             return Err(RangeTextInputError::NotMounted);
         }
         let progress = self.request_layout_intent(layout, style, cx)?;
+        self.retire_measured_layout();
         debug_assert!(
             progress.is_none_or(|progress| { progress == crate::ExactGeometryProgress::Scanning })
         );

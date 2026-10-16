@@ -300,14 +300,21 @@ impl RangeTextInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.realization_continuation_scheduled {
-            self.realization_continuation_scheduled = true;
-            self.observe_realization_ownership();
-            let frame_generation = self.realization_frame_generation;
-            cx.defer_in(window, move |input, window, cx| {
+        self.realization_continuation_scheduled = true;
+        let previous = self
+            .realization_continuation_enrollment
+            .replace(self.realization_frame_generation);
+        self.observe_realization_ownership();
+        if previous.is_none() {
+            cx.defer_in(window, |input, window, cx| {
+                let Some(frame_generation) = input.realization_continuation_enrollment.take()
+                else {
+                    return;
+                };
                 if !input.mounted
                     || !input.realization_continuation_scheduled
                     || input.realization_frame_generation != frame_generation
+                    || input.resident_protection.is_some()
                 {
                     return;
                 }

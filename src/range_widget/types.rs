@@ -733,6 +733,7 @@ pub enum RangeTextInputRequest {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum RangeTextInputEvent {
+    MeasuredLayoutRejected(RangeMeasuredLayoutRejection),
     CommandPropagated(TextInputCommand),
     InlineAtomClicked(crate::AtomId),
     FocusLost,
@@ -747,6 +748,12 @@ pub enum RangeTextInputEvent {
     RestorationRejected,
     InlineObjectActivated(InlineObjectActivation),
     InlineObjectRealizationLost(InlineObjectRealizationLoss),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RangeMeasuredLayoutRejection {
+    pub binding: RangeBinding,
+    pub wrap_width: Pixels,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -535,6 +535,16 @@ unchanged positions. Neither capture nor refusal abandons pending work or admits
 
 # Layout
 
+Range-backed paint records one bounded latest available-width measurement without preparing or
+committing layout. A pending or rejected differing measurement keeps the coherent surface visible
+but unavailable for exact-current input. One ordinary deferred lifecycle transition applies the
+width to current layout/style, using existing staged admission and remaining work credit, and
+notifies the host of real request work. Same-width repaint does not create a callback queue or
+retry a rejection. The package design owns supersession, protection, edit waiting and disposal.
+Measured-layout rejection reports one specific app-neutral event naming the exact binding and
+width; the host owns error presentation and recovery. The prior coherent paint remains retained,
+and readiness remains false until the rejected measurement is explicitly superseded.
+
 Single-line mode horizontally scrolls to keep the caret visible with reveal padding and vertically centers the shaped line in the current line height.
 
 Multiline mode wraps text to the available width, splits logical lines on `\n`, computes content height from visual line count, clamps vertical scroll to content bounds, and reveals the active endpoint with half-line padding.

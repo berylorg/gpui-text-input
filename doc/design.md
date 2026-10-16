@@ -1139,11 +1139,62 @@ the immutable coherent surface directly and do not inspect a candidate. This bou
 registry, routine scan, or per-lookup allocation to those paths and preserves GPUI's existing text-
 map asymptotics and constant-time realized-object lookup after fragment identification.
 
+Paint may observe a finite positive available wrap width and retain one fixed-size, last-wins
+measurement for its exact mounted binding. Recording that measurement neither prepares nor commits
+a geometry candidate, emits a host event, nor changes layout/style. A differing pending measurement
+excludes exact-current interaction and quiescence immediately; the prior coherent
+surface remains paintable. Repeated paint of the same measurement does not accumulate work.
+
+One coalesced ordinary deferred lifecycle callback applies the latest eligible measurement after
+draw has ended. It uses then-current layout/style, first settles older admitted configuration,
+and follows the existing staged-publication boundary and remaining frame work credit. Waiting for
+an active edit or exhausted credit retains the measurement and uses ordinary settlement/frame
+notification; it grants no additional quantum. A committed layout's real notification and ordinary
+geometry service must expose new provider requests and advance resident work. Obsoleting an older
+geometry continuation during this commit cannot strand the new generation. No polling, forced
+paint, global invalidation change or per-paint callback accumulation is permitted.
+
+An accepted explicit layout/style request supersedes an older measurement; a refused request
+preserves it. A later genuine measured width applies to the then-current accepted configuration,
+never to a captured old style. Rebind and unmount retire old-bound measurements and make stale
+callbacks harmless. Resident protection admits no width measurement or layout service and retains
+its exact protected layout; release resumes ordinary measurement. Pending measurements cannot
+bypass a protection capture's existing readiness requirements. An active edit retains its ordinary
+source and settlement ownership while measured layout waits.
+
+Measured-layout admission or local service rejection has a fixed-size terminal receipt naming the
+exact binding and requested width, and emits one operation-specific measured-layout rejection
+event through the ordinary lifecycle event boundary, followed by notification. It preserves the
+last coherent publication and all original staged rejection/cancellation custody. The rejected
+measurement continues to exclude currentness; repainting the same width neither
+retries nor repeats the event. A different genuine width, accepted explicit layout request, rebind
+or unmount supersedes that terminal measurement through the rules above. Returning to an already
+accepted width may retire an obsolete measurement without a new geometry commit. Hosts own their
+ordinary error presentation and recovery from the specific event; it is not a mutation, restoration
+or provider-response failure. A terminal rejection alone is not running work and does not prevent
+quiescence or disposal; original geometry, response and request custody still settle normally.
+Event consumers authenticate the receipt against the input's current measured-layout rejection
+before reporting it, so a superseded queued event cannot fail a newer accepted operation. This
+boundary introduces no generic asynchronous error service.
+
+Verification covers automatic provider-request notification after resize, resident completion
+with existing frame credit, last-wins coalescing, latest-style precedence, exact stale-callback
+retirement, protection/edit waiting, and one terminal rejection with retained coherent paint and
+false currentness. Real provider replies and ordinary deferred callbacks must suffice after the
+external resize stimulus; an explicit recurring frame/service driver supplies no liveness proof.
+
 Prepaint may spend one configured bounded work quantum advancing already admitted geometry whose
 required text, object, and continuation inputs are resident. This resident-only advancement stops
 before dispatching a request, invoking a host callback, or performing any other external work. If
 it reaches terminal object work, it leaves terminal object publication and every externally
 observable effect to the widget's ordinary service path through this staged-publication boundary.
+Pending background-index admission also belongs to ordinary lifecycle service; prepaint only
+enrolls its wake. A frame-needed notification is not evidence that an ordinary callback exists.
+One fixed enrollment ticket coalesces the actual callback across repeated requests and generation
+changes; a new legitimate request may retarget that wake to current generation. Retirement without
+new enrollment cannot authorize old work. The callback checks mounted/current-generation authority
+before clearing its current work-needed flag and servicing remaining credit. At zero credit it
+issues the existing next-frame notification outside Draw and grants no additional work quantum.
 
 Wheel, scrollbar, reveal, and other rapid-retarget entry points derive proposed desired state in a
 local value and pass it directly into candidate preparation. They never write widget desired state

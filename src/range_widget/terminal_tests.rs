@@ -10,6 +10,8 @@ mod lifecycle;
 mod priority;
 mod protection;
 mod release;
+#[path = "../../tests/support/resident_layout.rs"]
+mod resident_layout;
 mod seal;
 mod terminal_failure;
 #[path = "../../tests/support/view_demand_edit_lifecycle.rs"]
@@ -1224,19 +1226,78 @@ fn index_completion_with_changed_desired_is_a_noninteractive_replacement(
 fn terminal_target_replacement_accepts_fixed_exact_caps_and_rejects_one_under(
     cx: &mut gpui::TestAppContext,
 ) {
-    const EXACT_BYTES: usize = 142_474;
-    const EXACT_ITEMS: usize = 309;
-    for (bytes, items, succeeds) in [
-        (EXACT_BYTES, 32_768, true),
-        (EXACT_BYTES - 1, 32_768, false),
-        (2 * 1024 * 1024, EXACT_ITEMS, true),
-        (2 * 1024 * 1024, EXACT_ITEMS - 1, false),
+    for (byte_under, item_under, succeeds) in [
+        (Some(0), None, true),
+        (Some(1), None, false),
+        (None, Some(0), true),
+        (None, Some(1), false),
     ] {
         let (input, cx) = cx.add_window_view(|window, cx| {
             RangeTextInput::new(config(2 * 1024 * 1024, 32_768), window, cx).unwrap()
         });
         drive_initial_surface(&input, cx);
         let resident_charge = input.update(cx, |input, _| install_resident_payloads(input));
+        let (owner, current_realization_state) = input.read_with(cx, |input, _| {
+            (
+                RangeTextInput::realization_owner_charge(),
+                input.current_auxiliary_realization_charge().unwrap(),
+            )
+        });
+        let exact = RangeSurfaceCharge {
+            bytes: 111_346usize
+                .checked_add(owner.bytes)
+                .and_then(|bytes| bytes.checked_add(current_realization_state.bytes))
+                .unwrap(),
+            items: 256usize
+                .checked_add(owner.items)
+                .and_then(|items| items.checked_add(current_realization_state.items))
+                .unwrap(),
+        };
+        let expected_components = WidgetAdmissionComponents {
+            realization_owner: owner,
+            prior_surface: RangeSurfaceCharge {
+                bytes: 7_254,
+                items: 90,
+            },
+            current_realization_state,
+            current_request_storage: RangeSurfaceCharge {
+                bytes: 43_520,
+                items: 68,
+            },
+            mutation_request_payload: RangeSurfaceCharge::default(),
+            candidate_record: RangeSurfaceCharge {
+                bytes: 10_400,
+                items: 1,
+            },
+            geometry: RangeSurfaceCharge {
+                bytes: 3_925,
+                items: 22,
+            },
+            resident_payload: RangeSurfaceCharge {
+                bytes: 807,
+                items: 3,
+            },
+            publication_allocation: RangeSurfaceCharge::default(),
+            effect_storage: RangeSurfaceCharge {
+                bytes: 1_920,
+                items: 3,
+            },
+            event_storage: RangeSurfaceCharge::default(),
+            page_demand: RangeSurfaceCharge { bytes: 0, items: 1 },
+            object_rebind: RangeSurfaceCharge::default(),
+            residency_rebind: RangeSurfaceCharge::default(),
+            detached_edit_storage: RangeSurfaceCharge::default(),
+            destination_request_storage: RangeSurfaceCharge {
+                bytes: 43_520,
+                items: 68,
+            },
+            proof_storage: RangeSurfaceCharge::default(),
+        };
+        assert_eq!(expected_components.checked_total(), Some(exact));
+        let bytes = byte_under.map_or(2 * 1024 * 1024, |under| {
+            exact.bytes.checked_sub(under).unwrap()
+        });
+        let items = item_under.map_or(32_768, |under| exact.items.checked_sub(under).unwrap());
         input.update(cx, |input, _| {
             input.config.limits.max_surface_bytes = bytes;
             input.config.limits.max_surface_items = items;
@@ -1264,13 +1325,8 @@ fn terminal_target_replacement_accepts_fixed_exact_caps_and_rejects_one_under(
             let components = input.read_with(cx, |input, _| {
                 input.last_widget_admission_components.get().unwrap()
             });
-            assert_eq!(
-                components.checked_total(),
-                Some(RangeSurfaceCharge {
-                    bytes: EXACT_BYTES,
-                    items: EXACT_ITEMS,
-                })
-            );
+            assert_eq!(components, expected_components);
+            assert_eq!(components.checked_total(), Some(exact));
             let after = input.read_with(cx, |input, _| fingerprint(input));
             assert_ne!(
                 after, before,
@@ -1278,10 +1334,7 @@ fn terminal_target_replacement_accepts_fixed_exact_caps_and_rejects_one_under(
             );
             assert_eq!(
                 input.read_with(cx, |input, _| input.last_surface_admission),
-                Some(RangeSurfaceCharge {
-                    bytes: EXACT_BYTES,
-                    items: EXACT_ITEMS,
-                })
+                Some(exact)
             );
         } else {
             assert!(matches!(result, Err(RangeTextInputError::SurfaceCapacity)));
@@ -2783,14 +2836,21 @@ fn committed_settlement_accepts_exact_fit_and_one_under_is_retryable(
             },
         }
     );
+    let owner = RangeTextInput::realization_owner_charge();
     let transition_exact = RangeSurfaceCharge {
-        bytes: 146_176,
-        items: 328,
+        bytes: 114_016usize
+            .checked_add(owner.bytes)
+            .and_then(|bytes| bytes.checked_add(current_realization_state.bytes))
+            .unwrap(),
+        items: 272usize
+            .checked_add(owner.items)
+            .and_then(|items| items.checked_add(current_realization_state.items))
+            .unwrap(),
     };
     assert_eq!(components.checked_total(), Some(transition_exact));
     let exact = RangeSurfaceCharge {
-        bytes: 146_656,
-        items: 331,
+        bytes: transition_exact.bytes.checked_add(480).unwrap(),
+        items: transition_exact.items.checked_add(3).unwrap(),
     };
     let events = captured_events(&input, cx);
     input.update(cx, |input, _| {

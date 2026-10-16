@@ -611,8 +611,9 @@ impl RangeTextInput {
         if self.edits.active_key().is_some() {
             return Ok(());
         }
-        if self.requests.is_empty() && self.service_pending_index_intent(cx)? {
+        if self.requests.is_empty() && self.pending_index_intent && self.active_geometry.is_none() {
             self.last_realization_step.reached_external_boundary = true;
+            self.defer_realization_continuation(window, cx);
             return Ok(());
         }
         if !self.requests.is_empty() {

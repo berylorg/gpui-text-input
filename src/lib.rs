@@ -85,7 +85,7 @@ pub use range_widget::{
     InlineObjectInputOrigin, InlineObjectRealizationLoss, InlineObjectRealizationLossReason,
     InlineObjectSurfaceAttachment, InlineObjectSurfaceDismissal, LocalMutationEvidence,
     PlatformRangeResult, RangeHistoryCommit, RangeHistoryFrontier, RangeHistoryIntent,
-    RangeHistoryOutcome, RangeHistorySession, RangeHistorySettlement,
+    RangeHistoryOutcome, RangeHistorySession, RangeHistorySettlement, RangeMeasuredLayoutRejection,
     RangePrepublicationAdoptionError, RangePrepublicationCandidate,
     RangePrepublicationCleanupAcknowledgement, RangePrepublicationCleanupEffect,
     RangePrepublicationCleanupLedger, RangePrepublicationCleanupOwnership,

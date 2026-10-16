@@ -254,7 +254,9 @@ impl Element for RangeTextInputElement {
                 return;
             }
             if input.resident_protection.is_some() {
-                if input.last_bounds.is_some_and(|previous| previous.size != bounds.size)
+                if input
+                    .last_bounds
+                    .is_some_and(|previous| previous.size != bounds.size)
                     || bounds.size.width != input.config.layout.wrap_width
                     || bounds.size.height != input.desired.viewport_extent
                 {
@@ -263,6 +265,7 @@ impl Element for RangeTextInputElement {
                 return;
             }
             input.begin_realization_frame();
+            input.defer_measured_layout(window, cx);
             if input.pending_boundary_move.is_some() {
                 input.defer_realization_continuation(window, cx);
             }
@@ -439,15 +442,8 @@ impl Element for RangeTextInputElement {
             if input.resident_protection.is_some() {
                 return;
             }
-            let width_changed = bounds.size.width > Pixels::ZERO
-                && bounds.size.width != input.config.layout.wrap_width;
             input.last_bounds = Some(bounds);
-            if width_changed {
-                let mut layout = input.config.layout.clone();
-                layout.wrap_width = bounds.size.width;
-                let style = input.config.style.clone();
-                let _ = input.set_layout(layout, style, cx);
-            }
+            input.record_measured_layout(bounds.size.width, window, cx);
         });
     }
 }
