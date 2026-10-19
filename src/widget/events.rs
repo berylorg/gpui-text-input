@@ -48,6 +48,10 @@ pub struct TextInputSelection {
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum TextInputEvent {
+    ValueLimitExceeded {
+        limit: usize,
+        attempted_bytes: usize,
+    },
     Changed(TextInputChange),
     SelectionChanged(TextInputSelection),
     CommandHandled(TextInputCommand),

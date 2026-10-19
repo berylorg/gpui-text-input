@@ -6,6 +6,8 @@ use gpui::{
     ScrollDelta, ScrollWheelEvent, Window, div, point, px, size,
 };
 use gpui_scrollbar::{ScrollbarStyle, scrollbar_metrics, scrollbar_track_geometry};
+#[path = "widget/value_limits.rs"]
+mod value_limits;
 use gpui_text_input::{
     TextInput, TextInputAtom, TextInputEnterKey, TextInputEvent, TextInputGeometry, TextInputMode,
     TextInputOptions, TextInputRetainedCounts, TextInputSingleLineVerticalKey,

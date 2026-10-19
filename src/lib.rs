@@ -15,7 +15,10 @@ mod range_source;
 mod range_widget;
 mod residency;
 mod state;
+mod value_limit;
 mod widget;
+
+pub use value_limit::TextInputValueLimitError;
 
 pub use actions::{
     Backspace, Copy, Cut, Delete, DeleteWordBackward, DeleteWordForward, Enter, InsertNewline,

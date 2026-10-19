@@ -143,6 +143,10 @@ impl TextInputState {
             return None;
         }
 
+        let bytes = self.undo_stack.back()?.text.len();
+        if !self.admit_value_bytes(bytes) {
+            return None;
+        }
         let snapshot = self.undo_stack.pop_back()?;
         let old_text = self.text.clone();
         let current = self.snapshot();
@@ -161,6 +165,10 @@ impl TextInputState {
             return None;
         }
 
+        let bytes = self.redo_stack.back()?.text.len();
+        if !self.admit_value_bytes(bytes) {
+            return None;
+        }
         let snapshot = self.redo_stack.pop_back()?;
         let old_text = self.text.clone();
         let current = self.snapshot();
@@ -175,7 +183,7 @@ impl TextInputState {
 
     /// Clears the marked-text range without changing the buffer.
     pub fn unmark_text(&mut self) -> bool {
-        if self.marked_range.is_none() {
+        if self.options.is_read_only() || self.marked_range.is_none() {
             return false;
         }
 
@@ -193,8 +201,11 @@ impl TextInputState {
             return None;
         }
 
-        let replacement = normalize_text(new_text, self.options.mode());
         let range = self.active_edit_range(replacement_range);
+        if !self.admit_replacement(&range, new_text) {
+            return None;
+        }
+        let replacement = normalize_text(new_text, self.options.mode());
         let cursor = range.start + replacement.len();
         self.apply_edit(range, replacement, cursor..cursor, false, None)
     }
@@ -207,6 +218,13 @@ impl TextInputState {
         atom_id: impl Into<String>,
         atom_copy_text: impl Into<String>,
     ) -> Result<Option<TextInputChange>, TextInputAtomError> {
+        if self.options.is_read_only() {
+            return Ok(None);
+        }
+        let range = self.active_edit_range(replacement_range.clone());
+        if !self.admit_replacement(&range, atom_text) {
+            return Ok(None);
+        }
         let display_text = normalize_text(atom_text, self.options.mode());
         let atom = TextInputSelectionAtom::new(
             atom_id,
@@ -229,8 +247,11 @@ impl TextInputState {
             return Ok(None);
         }
 
-        let normalized_text = normalize_text(display_text, self.options.mode());
         let range = self.active_edit_range(replacement_range);
+        if !self.admit_replacement(&range, display_text) {
+            return Ok(None);
+        }
+        let normalized_text = normalize_text(display_text, self.options.mode());
         let inserted_atoms =
             Self::selection_atoms_for_display_text(range.start, &normalized_text, atoms)?;
         let cursor = range.start + normalized_text.len();
@@ -270,8 +291,11 @@ impl TextInputState {
             return None;
         }
 
-        let replacement = normalize_text(new_text, self.options.mode());
         let range = self.active_edit_range(replacement_range);
+        if !self.admit_replacement(&range, new_text) {
+            return None;
+        }
+        let replacement = normalize_text(new_text, self.options.mode());
         let inserted_range = range.start..range.start + replacement.len();
         let selected_range =
             relative_inserted_selection(&replacement, inserted_range.start, new_selected_range);

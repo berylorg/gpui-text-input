@@ -1241,6 +1241,28 @@ remains ordinary source text.
 
 Read-only mode preserves focus, caret movement, selection, copy, and text-range queries while rejecting destructive edits, cut, paste, undo, redo, and IME replacements that would mutate text.
 
+Hosts may update owned-value read-only state synchronously on the existing input. The update
+preserves text, atoms, caret, directed selection, composition, scroll, history and focus identity.
+Previously retained native/edit callbacks consult current read-only state before mutation;
+returning to editable mode does not replay refused input. Host presentation replacement remains
+distinct from user-edit admission and still obeys any installed value byte limit.
+
+## Owned-Value Byte Limit
+
+An owned-value input may carry an optional host-supplied maximum normalized UTF-8 value length.
+The default is unlimited; range-backed source limits and protocols are unaffected. Changing the
+limit is fallible: a limit below the existing value is refused without changing the limit or editor.
+A zero limit permits only an empty value. Construction and domain validation remain separate;
+hosts validate initial values before installing the limit on the constructed input.
+
+Every owned-value mutation checks the complete normalized successor before changing text, atoms,
+caret, directed selection, composition, scroll, undo or redo. This includes typing, paste, drop,
+programmatic replacement, marked replacement, composition completion and history selection.
+Oversize operations are refused whole, never truncated or accepted then rolled back. Rejection
+retains no attempted text and reports only a bounded app-neutral byte-limit failure. Existing
+within-limit invalid domain text remains editable. The widget exposes refusal separately from a
+successful text-change event so hosts can present local feedback without reconstructing editor state.
+
 ## Range-Backed Live Appearance
 
 The mounted range-backed widget accepts its complete `TextInputTheme` and `ScrollbarStyle`

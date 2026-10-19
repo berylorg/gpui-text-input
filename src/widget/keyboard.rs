@@ -97,7 +97,9 @@ impl TextInput {
     fn perform_insert_newline_action(&mut self, cx: &mut Context<Self>) {
         let changed = self.state.insert_newline();
         if changed.is_none() {
-            cx.propagate();
+            if !self.emit_value_limit_error(cx) {
+                cx.propagate();
+            }
             return;
         }
         self.finish_text_command(TextInputCommand::InsertNewline, changed, cx);
@@ -294,12 +296,7 @@ impl TextInput {
         change: Option<TextInputChange>,
         cx: &mut Context<Self>,
     ) {
-        if let Some(change) = change {
-            self.reveal_cursor = true;
-            self.emit_selection_changed(cx);
-            cx.emit(TextInputEvent::Changed(change));
-            cx.notify();
-        }
+        self.finish_change(change, cx);
         cx.emit(TextInputEvent::CommandHandled(command));
     }
 

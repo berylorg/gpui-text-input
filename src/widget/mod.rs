@@ -12,6 +12,7 @@ use gpui_scrollbar::{
 use crate::{
     TextInputAtom, TextInputAtomError, TextInputChange, TextInputMode, TextInputOptions,
     TextInputRetainedCounts, TextInputSelectionAtom, TextInputSelectionExport, TextInputState,
+    TextInputValueLimitError,
 };
 
 mod construction;
@@ -232,7 +233,37 @@ impl TextInput {
     }
 
     pub fn set_text(&mut self, text: impl Into<String>, cx: &mut Context<Self>) -> bool {
-        let changed = self.state.reset_text(text);
+        self.set_text_with_selection(text, false, cx)
+    }
+
+    pub fn set_value_byte_limit(
+        &mut self,
+        limit: Option<usize>,
+        _: &mut Context<Self>,
+    ) -> Result<(), TextInputValueLimitError> {
+        self.state.set_value_byte_limit(limit)
+    }
+
+    pub fn set_read_only(&mut self, read_only: bool, cx: &mut Context<Self>) {
+        if self.state.is_read_only() != read_only {
+            self.state.set_read_only(read_only);
+            cx.notify();
+        }
+    }
+
+    fn set_text_with_selection(
+        &mut self,
+        text: impl Into<String>,
+        select_all: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let mut changed = self.state.reset_text(text);
+        if self.emit_value_limit_error(cx) {
+            return false;
+        }
+        if select_all {
+            changed |= self.state.select_all();
+        }
         self.scroll_x = px(0.0);
         self.scroll_y = px(0.0);
         self.reveal_cursor = true;
@@ -241,9 +272,7 @@ impl TextInput {
     }
 
     pub fn set_text_and_select(&mut self, text: impl Into<String>, cx: &mut Context<Self>) -> bool {
-        let changed = self.set_text(text, cx) | self.state.select_all();
-        self.finish_selection_change(changed, cx);
-        changed
+        self.set_text_with_selection(text, true, cx)
     }
 
     pub fn set_atoms(
@@ -337,6 +366,9 @@ impl TextInput {
     }
 
     fn finish_change(&mut self, change: Option<TextInputChange>, cx: &mut Context<Self>) -> bool {
+        if self.emit_value_limit_error(cx) {
+            return false;
+        }
         let Some(change) = change else {
             return false;
         };
@@ -345,6 +377,17 @@ impl TextInput {
         self.emit_selection_changed(cx);
         cx.emit(TextInputEvent::Changed(change));
         cx.notify();
+        true
+    }
+
+    fn emit_value_limit_error(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(error) = self.state.take_value_limit_error() else {
+            return false;
+        };
+        cx.emit(TextInputEvent::ValueLimitExceeded {
+            limit: error.limit,
+            attempted_bytes: error.attempted_bytes,
+        });
         true
     }
 

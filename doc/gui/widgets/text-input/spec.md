@@ -26,6 +26,11 @@ source, or second rendering path.
 
 Hosts own validation, submission, persistence, labels, surrounding field chrome, and domain meaning of the text or atoms.
 
+Owned-value inputs support an optional host-supplied normalized UTF-8 value byte limit. Oversize
+mutations are refused whole before editing text, caret, selection, composition, atoms, history or
+scroll. Refusal reports bounded metadata separately from text changes and retains no attempted
+payload. The package design defines configuration and admission; range-backed protocols are unchanged.
+
 # References
 
 Contracts: N/A
@@ -292,12 +297,11 @@ only after that clipboard write succeeds. Clipboard failure deletes nothing. If 
 is rejected, conflicts, is cancelled, or fails, the clipboard may retain the copied representation
 but that deletion transaction applies no change.
 
-An editable owned-value host may provide one app-neutral pre-mutation edit filter. Before typing,
-paste, drop, replacement, deletion, or IME commit mutates owned editor state, the widget offers the
-proposed bounded replacement range and inserted UTF-8 text to that filter. Acceptance applies the
-edit normally. Rejection is atomic: no prefix is inserted, and text, caret, selection, marked-text
-state, scroll, and undo/redo history remain exactly as they were before the proposal. The widget
-reports rejection to the host and does not retry or truncate the edit.
+Owned-value byte-limit admission runs before typing, paste, drop, replacement, deletion, IME
+mutation or history selection. It checks the complete normalized successor and reports only its
+limit and attempted byte length on refusal. No arbitrary host edit-filter callback is part of this
+boundary. Refusal preserves text, caret, selection, marked-text state, scroll and undo/redo history;
+the widget does not retry, truncate or emit a successful text-change event for it.
 
 Pointer click focuses the input and moves the caret. Shift-click extends selection. Double-click
 selects a word. Triple-click selects a logical line in multiline mode or all text in single-line

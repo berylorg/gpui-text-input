@@ -72,6 +72,8 @@ pub struct TextInputState {
     pub(crate) options: TextInputOptions,
     pub(crate) undo_stack: VecDeque<EditSnapshot>,
     pub(crate) redo_stack: VecDeque<EditSnapshot>,
+    pub(crate) value_byte_limit: Option<usize>,
+    pub(crate) value_limit_error: Option<crate::TextInputValueLimitError>,
 }
 
 impl TextInputState {
@@ -89,6 +91,8 @@ impl TextInputState {
             options,
             undo_stack: VecDeque::new(),
             redo_stack: VecDeque::new(),
+            value_byte_limit: None,
+            value_limit_error: None,
         }
     }
 
@@ -114,7 +118,14 @@ impl TextInputState {
 
     /// Replaces the buffer from host state and clears transient edit history.
     pub fn reset_text(&mut self, text: impl Into<String>) -> bool {
-        let text = normalize_text(&text.into(), self.options.mode());
+        let text = text.into();
+        if !self.admit_value_bytes(crate::value_limit::normalized_value_bytes(
+            &text,
+            self.mode(),
+        )) {
+            return false;
+        }
+        let text = normalize_text(&text, self.options.mode());
         let cursor = text.len();
         self.clear_edit_history();
 
@@ -308,6 +319,9 @@ impl TextInputState {
         inserted_atoms: Vec<TextInputAtom>,
     ) -> Option<TextInputChange> {
         let range = normalize_edit_range_with_atoms(range, &self.text, &self.atoms);
+        if !self.admit_successor_bytes(self.text.len() - range.len(), replacement.len()) {
+            return None;
+        }
         let next_atoms =
             transform_atoms_after_edit(&self.atoms, &range, replacement.len(), inserted_atoms);
         let mut next_text =
